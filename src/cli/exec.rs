@@ -701,62 +701,28 @@ fn chart_values(
     as_json: bool,
     live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
-    let footprint = flag(m, "footprint");
-    if !footprint
-        && let Some(id) = ["row-ticks", "last", "from", "to"].into_iter().find(|id| arg(m, id).is_some())
-    {
-        return Err(Fault::usage(format!("--{id} reads a footprint out; add --footprint")));
-    }
-    let live = live.ok_or_else(no_chart_window)?;
-    let chart = chart_on_screen(store, m)?;
-    let read = live.read_chart(chart, 1)?;
-    if footprint {
-        return footprint_values(m, as_json, live, chart, &read);
-    }
-    if as_json {
-        return Ok(format!(
-            "{}\n",
-            json!({"chart": read.label, "symbol": read.symbol, "indicators": read.values, "levels": read.levels.json(read.places)})
-        ));
-    }
-    let mut lines = vec![read.label.clone()];
-    for value in &read.values {
-        let mut fields: Vec<String> = Vec::new();
-        if let Some(object) = value.as_object() {
-            for (key, field) in object {
-                if matches!(key.as_str(), "id" | "kind" | "label" | "visible") || field.is_null() {
-                    continue;
-                }
-                if let (Some(bands), "bands") = (field.as_array(), key.as_str()) {
-                    for band in bands {
-                        let at = |name: &str| band[name].as_f64().map_or("-".to_string(), |n| crate::trading::reading::num(n, read.places));
-                        fields.push(format!("{}sd {}/{}", at("deviations"), at("upper"), at("lower")));
-                    }
-                    continue;
-                }
-                fields.push(format!("{key} {field}"));
-            }
-        }
-        lines.push(format!(
-            "{} {}",
-            value["label"].as_str().unwrap_or(""),
-            fields.join(" ")
-        ));
-    }
-    lines.push(format!("levels {}", read.levels.text(read.places)));
-    Ok(format!("{}\n", lines.join("\n")))
-}
-
-/// `chart values --footprint`: each bar's footprint, row by row, as the
-/// chart draws it.
-fn footprint_values(
-    m: &clap::ArgMatches,
-    as_json: bool,
-    live: &dyn Live,
-    chart: u32,
-    read: &crate::trading::reading::ChartRead,
-) -> Result<String, Fault> {
+    use crate::trading::reading::{self, ValuesAsk};
     use omacharts_chart::BarPick;
+    let mut kinds = Vec::new();
+    for text in m.get_many::<String>("indicator").into_iter().flatten() {
+        let wanted = text.trim().to_lowercase();
+        let kind = IndicatorKind::ALL.into_iter().find(|kind| kind.key() == wanted).ok_or_else(|| {
+            Fault::usage(format!("{text:?} is not an indicator; try {}", IndicatorKind::ALL.map(|kind| kind.key()).join(", ")))
+        })?;
+        if kind == IndicatorKind::SessionTimes {
+            return Err(Fault::usage("session_times shades hours and has no values to read".into()));
+        }
+        if !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
+    }
+    if flag(m, "footprint") && !kinds.contains(&IndicatorKind::Footprint) {
+        kinds.push(IndicatorKind::Footprint);
+    }
+    let mut ids = Vec::new();
+    for text in m.get_many::<String>("id").into_iter().flatten() {
+        ids.push(text.trim().parse::<u32>().map_err(|_| Fault::usage(format!("{text:?} is not an indicator id")))?);
+    }
     let row_ticks = match arg(m, "row-ticks").map(|text| text.trim()) {
         None | Some("auto") => None,
         Some(text) => Some(
@@ -766,47 +732,62 @@ fn footprint_values(
                 .ok_or_else(|| Fault::usage(format!("--row-ticks is auto or a number of ticks from 1 to 10000, not {text:?}")))?,
         ),
     };
-    let pick = match (arg(m, "last"), arg(m, "from"), arg(m, "to")) {
-        (None, None, None) => BarPick::Visible,
-        (Some(text), None, None) => BarPick::Last(
+    let live = live.ok_or_else(no_chart_window)?;
+    let chart = chart_on_screen(store, m)?;
+    let zone = live.read_chart(chart, 1)?.zone;
+    let pick = match (arg(m, "last"), arg(m, "from"), arg(m, "to"), flag(m, "visible")) {
+        (None, None, None, false) => None,
+        (None, None, None, true) => Some(BarPick::Visible),
+        (Some(text), None, None, false) => Some(BarPick::Last(
             text.trim()
                 .parse::<usize>()
                 .ok()
                 .filter(|n| (1..=10_000).contains(n))
                 .ok_or_else(|| Fault::usage(format!("--last is a number of bars from 1 to 10000, not {text:?}")))?,
-        ),
-        (None, Some(from), to) => {
-            let from = read_when(from, "from", read.zone)?;
+        )),
+        (None, Some(from), to, false) => {
+            let from = read_when(from, "from", zone)?;
             let to = match to {
-                Some(to) => read_when(to, "to", read.zone)?,
+                Some(to) => read_when(to, "to", zone)?,
                 None => i64::MAX,
             };
             if to <= from {
                 return Err(Fault::usage("--to has to be after --from".into()));
             }
-            BarPick::Between(from, to)
+            Some(BarPick::Between(from, to))
         }
-        (None, None, Some(_)) => return Err(Fault::usage("--to needs a --from".into())),
-        _ => return Err(Fault::usage("say which bars with --last, or with --from and --to, not both".into())),
+        (None, None, Some(_), false) => return Err(Fault::usage("--to needs a --from".into())),
+        _ => return Err(Fault::usage("say which bars with one of --last, --from (and --to) or --visible".into())),
     };
-    let Some(footprint) = live.read_footprint(chart, pick, row_ticks)? else {
-        return Err(Fault::refused(format!(
-            "{} has no volume at price to read a footprint from: it needs a feed that sends each trade's side",
-            read.label
-        )));
-    };
+    let read = live.read_values(chart, &ValuesAsk { pick, kinds, ids, row_ticks })?;
     if as_json {
-        let mut out = crate::trading::reading::footprint_json(&footprint, read.places);
-        out["chart"] = json!(read.label);
-        out["symbol"] = json!(read.symbol);
-        out["resolution"] = json!(read.timeframe);
+        let indicators: Vec<Value> = read
+            .entries
+            .iter()
+            .map(|entry| {
+                let mut fields = entry.fields.clone();
+                if let (Some(footprint), Some(object)) = (&entry.footprint, fields.as_object_mut())
+                    && let Value::Object(rows) = reading::footprint_json(footprint, read.places)
+                {
+                    object.extend(rows);
+                }
+                fields
+            })
+            .collect();
+        let mut out = json!({"chart": read.label, "symbol": read.symbol, "resolution": read.timeframe, "indicators": indicators});
+        if let Some(levels) = &read.levels {
+            out["levels"] = levels.json(read.places);
+        }
         return Ok(format!("{out}\n"));
     }
-    Ok(format!(
-        "{}\n{}",
-        read.label,
-        crate::trading::reading::footprint_text(&footprint, read.places, read.intraday, read.zone)
-    ))
+    let mut out = format!("{}\n", read.label);
+    for entry in &read.entries {
+        out.push_str(&reading::entry_text(entry, &read));
+    }
+    if let Some(levels) = &read.levels {
+        out.push_str(&format!("levels {}\n", levels.text(read.places)));
+    }
+    Ok(out)
 }
 
 fn instrument_json(i: &omacharts_engine::Instrument) -> String {

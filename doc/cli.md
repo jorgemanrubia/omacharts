@@ -133,18 +133,9 @@ need a feed with volume at price; on any other they draw only a line saying
 so. The volume delta has no line, nor have the footprint and large orders, so
 they refuse `--color`, `--transparency`, `--width` and `--line-style`.
 
-`chart values --footprint` reads each bar's footprint back as the chart draws it, from the same
-ladders and the same fold into rows: `--row-ticks auto|N` (`auto` is the
-footprint's own, else the step it draws, else one tick), and the bars on
-screen, `--last N`, or `--from WHEN [--to WHEN]` (`--to` not included). It is
-refused without volume at price. `--json` writes `{chart, symbol,
-resolution, tick_size, row_ticks, bars: [{time, open, high, low, close,
-volume, delta, poc, rows: [{low, high, at_bid, at_ask, delta, total,
-trades}]}]}`. `time` is unix seconds, `rows` run lowest first, and `low` and
-`high` are the first and last price a row covers. `delta` is `at_ask` less
-`at_bid`, and `total` includes trades with no known side. `poc` is the low
-of the most traded row. Without `--json` it writes a line a bar, then its
-rows from the top.
+`chart values --indicator footprint` reads each bar's footprint back as the
+chart draws it, from the same ladders and the same fold into rows, in rows of
+`--row-ticks auto|N`; its schema is under "Reading a chart in numbers".
 
 Anything that draws a line also takes `--color`, `--transparency` (0 to 1:
 how much of the chart shows through the line, 0 solid, which it is unless
@@ -1522,7 +1513,8 @@ Provider, which is the same four facts with a button.
 
 Four commands read a chart on screen back as numbers, for a script or an
 agent: `chart bars` (its last bars, oldest first), `chart values` (each
-indicator's latest values, and the levels read off the chart), `symbol
+indicator's latest values and the levels read off the chart, or each bar's
+readings over a range), `symbol
 quote` (the last price) and `trading snapshot` (the price, the levels and
 the last bars in a few lines, with a token for asking what changed since).
 `trading wait` waits for a price to be crossed (`--cross`) or a bar to close
@@ -1532,6 +1524,27 @@ them is behind a flag: only trading is. With `agent-trading` on, the snapshot
 also says the chart's account, position and working orders, and a wait also
 wakes on a fill, an order or a position changing, or a price alert;
 `trading watch` and `trading alert` are behind it too.
+
+`chart values` takes `--indicator KIND` and `--id N` (each repeatable;
+neither means every indicator but `session_times`) and, for each bar's
+readings rather than the latest, one of `--last N`, `--from WHEN [--to
+WHEN]` or `--visible`. `--json` writes `{chart, symbol, resolution,
+indicators: [...], levels}`, `levels` only with no range. Each indicator is
+`{id, kind, label, visible, ...}`: with no range its latest (`value`, and
+`signal`, `histogram` or `bands` where it has them; a profile's `poc`, `vah`,
+`val`); with a range `bars: [{time, ...}]` in the field names of the
+omacharts-studies type it reads as (`value`; `line`, `signal`, `histogram`;
+`k`, `d`; `center` and `bands: [{deviations, upper, lower}]`; a delta's
+`open`, `high`, `low`, `close`, `estimated`, `starts`), or `profiles: [{from,
+to, poc, vah, val, ...}]` for a volume or market profile. A footprint adds
+`tick_size`, `row_ticks` and `bars: [{time, open, high, low, close, volume,
+delta, poc, rows: [{low, high, at_bid, at_ask, delta, total, trades}]}]`
+(the newest bar alone with no range; `rows` lowest first; `delta` is
+`at_ask` less `at_bid`; `total` includes trades with no known side; `poc`
+is the low of the most traded row). Large orders give `orders: [{time,
+time_ns, price, size, side, fills, regular}]`, `null` until the trades have
+been read. Something the feed cannot compute has `unmet`. An id or kind the
+chart has not got exits `3`.
 
 ## Trading from a terminal
 

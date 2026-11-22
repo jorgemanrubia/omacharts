@@ -26,30 +26,34 @@ omacharts chart indicator add footprint --intensity off
 omacharts chart indicator set footprint --numbers off
 omacharts chart indicator set footprint --row-ticks 4
 omacharts chart indicator set footprint --profile on --profile-color violet --profile-numbers off
-omacharts chart values --footprint --last 5 --row-ticks 2 --json
+omacharts chart values --indicator footprint --last 5 --row-ticks 2 --json
 ```
 
 ## Reading it out
 
-`chart values --footprint` reads each bar's footprint back in numbers, row by row as the chart draws it: the same ladders, summed and folded into rows the same way. Like `chart values`, it reads the chart on screen, so it needs a window open. It needs a feed with volume at price; on any other it is refused, as a footprint draws only its line there. No footprint has to be on the chart.
+`chart values --indicator footprint` reads each bar's footprint back in numbers, row by row as the chart draws it: the same ladders, summed and folded into rows the same way. It reads the chart on screen, so it needs a window open. No footprint has to be on the chart. On a feed without volume at price it reads only `unmet`, as a footprint draws only its line there. `--footprint` is the same as `--indicator footprint`.
 
 | Flag | Takes | For |
 |---|---|---|
 | `--row-ticks N` | `auto`, or ticks to a row, 1 to 10000 | How many ticks a row holds. `auto`, the default, is the footprint's own `--row-ticks`, else the step it draws, else one tick |
 | `--last N` | 1 to 10000 | The last N bars, the forming one among them |
 | `--from WHEN`, `--to WHEN` | `2026-09-01`, `2026-09-01T14:30` in the chart's clock, or unix seconds | The bars opening from `--from` up to, not including, `--to`; without `--to`, up to the newest |
+| `--visible` | | The bars on screen |
 
-With none of `--last`, `--from` and `--to` it reads the bars on screen.
+With none of them it reads the newest bar. The rest of `chart values` is in [Charts](/manual/cli/charts/#chart-values).
 
 `--json` writes one object:
 
 ```json
-{"chart": "pos:0 ES 1m", "symbol": "ES", "resolution": "1m", "tick_size": 0.25, "row_ticks": 4,
- "bars": [{"time": 1789990200, "open": 6000.25, "high": 6003.5, "low": 5999.75, "close": 6002.0,
-           "volume": 1834, "delta": 212, "poc": 6001.0,
-           "rows": [{"low": 5999.0, "high": 5999.75, "at_bid": 96, "at_ask": 40, "delta": -56, "total": 136, "trades": 51},
-                    {"low": 6000.0, "high": 6000.75, "at_bid": 210, "at_ask": 260, "delta": 50, "total": 470, "trades": 160}]}]}
+{"chart": "pos:0 ES 1m", "symbol": "ES", "resolution": "1m",
+ "indicators": [{"id": 3, "kind": "footprint", "label": "Footprint", "visible": true, "tick_size": 0.25, "row_ticks": 4,
+   "bars": [{"time": 1789990200, "open": 6000.25, "high": 6003.5, "low": 5999.75, "close": 6002.0,
+             "volume": 1834, "delta": 212, "poc": 6001.0,
+             "rows": [{"low": 5999.0, "high": 5999.75, "at_bid": 96, "at_ask": 40, "delta": -56, "total": 136, "trades": 51},
+                      {"low": 6000.0, "high": 6000.75, "at_bid": 210, "at_ask": 260, "delta": 50, "total": 470, "trades": 160}]}]}]}
 ```
+
+The footprint is an entry in `indicators`, its `id` `null` when none is drawn.
 
 - `time` is when the bar opens, in unix seconds.
 - `open`, `high`, `low`, `close` and `volume` are the bar's.

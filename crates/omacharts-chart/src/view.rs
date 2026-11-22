@@ -5787,6 +5787,25 @@ impl ChartView {
         footprint::read_out(&self.state.borrow(), pick, row_ticks)
     }
 
+    /// The indexes of `pick`'s bars in the series [`Self::with_bars`] reads.
+    pub fn bar_range(&self, pick: BarPick) -> std::ops::Range<usize> {
+        footprint::pick_range(&self.state.borrow(), pick)
+    }
+
+    /// The large orders indicator `id` would bubble over the bars `range`
+    /// indexes, oldest first, from the same book and by the same
+    /// [`Book::within`](omacharts_engine::studies::orders::Book::within) its
+    /// drawing finds them by, with the tick their prices are in. None until
+    /// the window has lent a book and it has come, or with no such
+    /// indicator.
+    pub fn read_large_orders(
+        &self,
+        id: u32,
+        range: std::ops::Range<usize>,
+    ) -> Option<(Vec<omacharts_engine::studies::orders::Placed>, f64)> {
+        bubbles::read(&self.state.borrow(), id, range)
+    }
+
     /// Whether any drawing on this chart is a volume profile, which reads
     /// what traded at each price as the study does.
     pub fn has_profile_drawing(&self) -> bool {

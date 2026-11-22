@@ -280,6 +280,241 @@ pub fn values(drawn: &[Drawn], places: usize, label: impl Fn(&Drawn) -> String) 
         .collect()
 }
 
+/// What `chart values` asks of a chart: which indicators (every one, with
+/// neither list given), and either their latest values or, with `pick`,
+/// each of those bars' readings.
+#[derive(Clone, Debug, Default)]
+pub struct ValuesAsk {
+    pub pick: Option<omacharts_chart::BarPick>,
+    pub kinds: Vec<Kind>,
+    pub ids: Vec<u32>,
+    /// Ticks a footprint's rows hold, or its own.
+    pub row_ticks: Option<u32>,
+}
+
+impl ValuesAsk {
+    /// Whether `indicator` is one asked for.
+    pub fn wants(&self, id: u32, kind: Kind) -> bool {
+        (self.kinds.is_empty() && self.ids.is_empty()) || self.ids.contains(&id) || self.kinds.contains(&kind)
+    }
+}
+
+/// One indicator read out: its id, kind, label and visibility with what it
+/// reads, and for a footprint its bars to write out.
+#[derive(Clone, Debug)]
+pub struct Entry {
+    pub fields: Value,
+    pub footprint: Option<omacharts_chart::FootprintRead>,
+}
+
+/// A chart's indicators in numbers, as `chart values` writes them.
+#[derive(Clone, Debug)]
+pub struct ValuesRead {
+    pub label: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub intraday: bool,
+    pub places: usize,
+    pub zone: chrono_tz::Tz,
+    /// Each bar's readings rather than the latest.
+    pub ranged: bool,
+    pub entries: Vec<Entry>,
+    /// Read off the chart with the latest values only.
+    pub levels: Option<Levels>,
+}
+
+/// A MACD's reading as the library names its fields.
+pub fn macd_json(value: omacharts_engine::studies::MacdValue) -> Value {
+    json!({"line": value.line, "signal": value.signal, "histogram": value.histogram})
+}
+
+/// A stochastic's reading as the library names its fields.
+pub fn stochastic_json(value: omacharts_engine::studies::StochasticValue) -> Value {
+    json!({"k": value.k, "d": value.d})
+}
+
+/// A bar of a delta as the library names its fields.
+pub fn delta_json(bar: &omacharts_engine::studies::DeltaBar) -> Value {
+    json!({"open": bar.open, "high": bar.high, "low": bar.low, "close": bar.close, "estimated": bar.estimated, "starts": bar.starts})
+}
+
+/// What `kind`'s `output` reads at bar `i`, in the library's field names:
+/// see the readings table in `omacharts_studies`. None where it reads
+/// nothing there; whole periods, footprints and large orders are read
+/// another way ([`profiles_json`], the chart's footprint and orders).
+pub fn reading_at(kind: Kind, output: &Output, i: usize, places: usize) -> Option<Value> {
+    let p = |value: Option<f64>| price(value, places);
+    let at = |values: &[Option<f64>]| values.get(i).copied().flatten();
+    match output {
+        Output::Line(line) => at(line).map(|value| json!({"value": p(Some(value))})),
+        Output::Bands(bands) => at(&bands.center).map(|center| {
+            json!({
+                "center": p(Some(center)),
+                "bands": bands.bands.iter().filter(|band| band.enabled).map(|band| json!({
+                    "deviations": band.deviations,
+                    "upper": p(at(&band.upper)),
+                    "lower": p(at(&band.lower)),
+                })).collect::<Vec<_>>(),
+            })
+        }),
+        Output::Volume { values, .. } => values.get(i).map(|value| json!({"value": value})),
+        Output::Pane(pane) => match (kind, &pane.delta) {
+            (_, Some(delta)) => delta.get(i).map(delta_json),
+            (Kind::Macd, None) => at(&pane.values).map(|line| {
+                macd_json(omacharts_engine::studies::MacdValue {
+                    line,
+                    signal: pane.signal.as_deref().and_then(at),
+                    histogram: pane.histogram.as_deref().and_then(at),
+                })
+            }),
+            (Kind::Stochastic, None) => at(&pane.values)
+                .map(|k| stochastic_json(omacharts_engine::studies::StochasticValue { k, d: pane.signal.as_deref().and_then(at) })),
+            _ => at(&pane.values).map(|value| json!({"value": value})),
+        },
+        _ => None,
+    }
+}
+
+/// Each period's profile that reaches into the bars `range` indexes, as
+/// `chart values` gives a volume or market profile's latest.
+pub fn profiles_json(output: &Output, range: std::ops::Range<usize>, places: usize) -> Option<Vec<Value>> {
+    let p = |value: f64| price(Some(value), places);
+    let within = |first: usize, last: usize| last >= range.start && first < range.end;
+    match output {
+        Output::Profiles(profiles) => Some(
+            profiles
+                .iter()
+                .filter(|profile| !profile.rows.is_empty() && within(profile.first_bar, profile.last_bar))
+                .map(|profile| {
+                    let (val, vah) = profile.value_area_bounds();
+                    json!({"from": profile.start_ts, "to": profile.end_ts, "poc": p(profile.poc_price()), "vah": p(vah), "val": p(val), "volume": profile.total_volume.round()})
+                })
+                .collect(),
+        ),
+        Output::MarketProfiles(profiles) => Some(
+            profiles
+                .iter()
+                .filter(|market| within(market.profile.first_bar, market.profile.last_bar))
+                .map(|market| {
+                    json!({
+                        "from": market.profile.start_ts,
+                        "to": market.profile.end_ts,
+                        "poc": p(market.reading.poc),
+                        "vah": p(market.reading.vah),
+                        "val": p(market.reading.val),
+                        "tpos": market.profile.total_volume,
+                        "row_ticks": market.row_ticks,
+                    })
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// Each bar of `range`'s reading of `drawn`, with its time.
+pub fn series_json(drawn: &Drawn, bars: &[Bar], range: std::ops::Range<usize>, places: usize) -> Vec<Value> {
+    range
+        .filter_map(|i| {
+            let bar = bars.get(i)?;
+            let mut row = reading_at(drawn.indicator.kind, &drawn.output, i, places)?;
+            if let Some(fields) = row.as_object_mut() {
+                fields.insert("time".into(), json!(bar.ts));
+            }
+            Some(row)
+        })
+        .collect()
+}
+
+/// Large orders, oldest first: when the first fill printed (unix seconds,
+/// and nanoseconds), the size-weighted price, size, side, fills and whether
+/// it printed in regular hours.
+pub fn orders_json(orders: &[omacharts_engine::studies::orders::Placed], tick_size: f64, places: usize) -> Vec<Value> {
+    use omacharts_engine::studies::orders::Aggressor;
+    orders
+        .iter()
+        .map(|placed| {
+            let order = &placed.order;
+            json!({
+                "time": order.ts_nanos.div_euclid(1_000_000_000),
+                "time_ns": order.ts_nanos,
+                "price": price(Some(order.tick * tick_size), places),
+                "size": order.size,
+                "side": match order.side { Aggressor::Buy => "buy", Aggressor::Sell => "sell", Aggressor::Unknown => "unknown" },
+                "fills": order.fills,
+                "regular": placed.regular,
+            })
+        })
+        .collect()
+}
+
+/// `fields` as `name value` pairs, a band as `2sd upper/lower`, leaving
+/// out what names the indicator, its time and nulls.
+fn fields_text(fields: &Value, places: usize) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let Some(object) = fields.as_object() else { return String::new() };
+    for (key, field) in object {
+        if matches!(key.as_str(), "id" | "kind" | "label" | "visible" | "time" | "bars" | "profiles" | "orders") || field.is_null() {
+            continue;
+        }
+        if let (Some(bands), "bands") = (field.as_array(), key.as_str()) {
+            for band in bands {
+                let at = |name: &str| band[name].as_f64().map_or("-".to_string(), |n| num(n, places));
+                out.push(format!("{}sd {}/{}", at("deviations"), at("upper"), at("lower")));
+            }
+            continue;
+        }
+        out.push(format!("{key} {field}"));
+    }
+    out.join(" ")
+}
+
+/// Unix seconds as the chart's clock reads them: `HH:MM` (with seconds
+/// when `seconds`) for intraday bars, the date for longer ones.
+fn clock(ts: i64, read: &ValuesRead, seconds: bool) -> String {
+    let at = chrono::DateTime::from_timestamp(ts, 0).map(|at| at.with_timezone(&read.zone));
+    match (at, read.intraday, seconds) {
+        (Some(at), true, false) => at.format("%m-%d %H:%M").to_string(),
+        (Some(at), true, true) => at.format("%m-%d %H:%M:%S").to_string(),
+        (Some(at), false, _) => at.format("%Y-%m-%d").to_string(),
+        (None, ..) => ts.to_string(),
+    }
+}
+
+/// One indicator of `chart values` as terse text: its label and latest
+/// reading on a line, or its label and then a line a bar, a profile or an
+/// order.
+pub fn entry_text(entry: &Entry, read: &ValuesRead) -> String {
+    let fields = &entry.fields;
+    let label = fields["label"].as_str().unwrap_or("");
+    if let Some(footprint) = &entry.footprint {
+        return format!("{label}\n{}", footprint_text(footprint, read.places, read.intraday, read.zone));
+    }
+    let mut out = format!("{label} {}\n", fields_text(fields, read.places));
+    for bar in fields["bars"].as_array().into_iter().flatten() {
+        out.push_str(&format!("{} {}\n", clock(bar["time"].as_i64().unwrap_or(0), read, false), fields_text(bar, read.places)));
+    }
+    for profile in fields["profiles"].as_array().into_iter().flatten() {
+        let from = clock(profile["from"].as_i64().unwrap_or(0), read, false);
+        let mut rest = profile.clone();
+        if let Some(object) = rest.as_object_mut() {
+            object.remove("from");
+            object.remove("to");
+        }
+        out.push_str(&format!("{from} {}\n", fields_text(&rest, read.places)));
+    }
+    for order in fields["orders"].as_array().into_iter().flatten() {
+        out.push_str(&format!(
+            "{} {} {} @ {}\n",
+            clock(order["time"].as_i64().unwrap_or(0), read, true),
+            order["side"].as_str().unwrap_or(""),
+            order["size"],
+            order["price"],
+        ));
+    }
+    out
+}
+
 /// A bar as `[time, open, high, low, close, volume]`, prices on their step.
 pub fn bar_json(bar: &Bar, places: usize) -> Value {
     let p = |value: f64| price(Some(value), places);

@@ -13,10 +13,9 @@ is in [Charts](/manual/charts/).
 
 `chart bars [--last N]` reads a chart's last bars back as the window holds
 them, oldest first: time, open, high, low, close and volume. `chart values`
-reads each indicator's latest values as drawn, and the levels read off the
-chart: the session's VWAP and bands, the volume profile's point of control
-and value area, and the session's range. Both read the chart on screen, so
-they need a window open; `--json` for a program.
+reads its indicators back as drawn, the latest or bar by bar, as described
+below. Both read the chart on screen, so they need a window open; `--json`
+for a program.
 
 ## `chart set`
 
@@ -133,6 +132,67 @@ It acts on the chart on screen, so with no window open it exits `6`. The
 window holds until the chart is zoomed or panned and is not stored, so a
 command that changes the arrangement, such as `chart set`, starts the view
 over. Run `chart range` last.
+
+## `chart values`
+
+Reads a chart's indicators back in numbers, exactly as they are drawn. With
+no bars named it gives each one's latest reading and the levels read off the
+chart: the session's VWAP and bands, the volume profile's point of control
+and value area, and the session's range. Name bars and it gives each of
+those bars' readings instead, without the levels.
+
+| Flag | Takes | For |
+|---|---|---|
+| `--indicator KIND` | an indicator kind, such as `sma` or `footprint`; once per kind | Only indicators of that kind. `footprint` reads the chart's volume at price whether a footprint is drawn or not |
+| `--id N` | an id from `chart indicator list`; once per indicator | Only that indicator |
+| `--last N` | 1 to 10000 | Every reading of the last N bars, the forming one among them |
+| `--from WHEN`, `--to WHEN` | `2026-09-01`, `2026-09-01T14:30` in the chart's clock, or unix seconds | Every reading of the bars opening from `--from` up to, not including, `--to`; without `--to`, up to the newest |
+| `--visible` | | Every reading of the bars on screen |
+| `--row-ticks N` | `auto`, or 1 to 10000 | Ticks a footprint's rows hold. `auto`, the default, is the step it draws |
+| `--footprint` | | The same as `--indicator footprint` |
+
+With neither `--indicator` nor `--id` it reads every indicator but Session
+times, which has no values. An id or a kind the chart does not have is
+refused with exit `3`, and a kind that does not exist with exit `2`, naming
+the kinds there are.
+
+```
+$ omacharts chart indicator add sma --period 3
+added SMA(3) on pos:0 ES 1D in "Chartbook 1"
+  [exit 0]
+
+$ omacharts chart values --indicator sma --last 2 --json
+{"chart":"pos:0 ES 1D in \"Chartbook 1\"","symbol":"ES","resolution":"1D","indicators":[{"id":1,"kind":"sma","label":"SMA 3","visible":true,"bars":[{"value":328.39,"time":1794268800},{"value":319.28,"time":1794355200}]}]}
+  [exit 0]
+```
+
+Every entry in `indicators` has the indicator's `id`, `kind`, `label` and
+`visible`, then what it reads. A bar's reading has its `time`, when the bar
+opens in unix seconds, and fields named as in the `omacharts-studies` type the
+indicator reads as, which is the arithmetic the chart draws from:
+
+| Indicator | The latest | A bar's reading in `bars` |
+|---|---|---|
+| SMA, EMA | `value` | `value` |
+| RSI, ATR, Volume | `value` | `value` |
+| MACD | `value`, `signal`, `histogram` | `line`, `signal`, `histogram` |
+| Stochastic | `value` (%K), `signal` (%D) | `k`, `d` |
+| VWAP, Bollinger | `value`, and `bands`: `deviations`, `upper`, `lower` for each band shown | `center`, and `bands` as for the latest |
+| Cumulative Delta, Volume Delta | `value` (the close) | `open`, `high`, `low`, `close`, `estimated` (read from the bar's direction, not volume at price), `starts` (the first bar of its period) |
+| Volume profile | `from`, `to`, `poc`, `vah`, `val`, `volume` of the newest period | `profiles`: the same for every period that reaches into the bars |
+| Market profile | `from`, `to`, `poc`, `vah`, `val`, `tpos`, `row_ticks` of the newest period | `profiles`, as for the volume profile |
+| Footprint | `tick_size`, `row_ticks` and the newest bar in `bars` | `tick_size`, `row_ticks` and `bars`, row by row: see [Footprint](/manual/cli/indicators/order-flow/footprint/#reading-it-out) |
+| Large orders | `orders` in the newest bar | `orders` in the bars |
+
+A large order is its `time` (unix seconds, and `time_ns` in nanoseconds), its
+`price` (the average of its fills, weighted by size), `size`, `side` (`buy`,
+`sell` or `unknown`), `fills` and `regular` (whether it printed in regular
+hours). `orders` is `null` until the chart has read its trades. An
+indicator the chart's feed cannot compute, such as a footprint without
+volume at price, has `unmet` with the line it draws instead.
+
+Without `--json` it writes each indicator's label and latest reading on a
+line, or its label and then a line a bar, a profile or an order.
 
 ## `config bars`
 

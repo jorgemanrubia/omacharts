@@ -53,6 +53,26 @@ pub(super) fn draw_all(cr: &cairo::Context, state: &State, columns: &Columns, to
     }
 }
 
+/// The orders large orders indicator `id` bubbles over the bars `range`
+/// indexes, and the tick their prices are in: see
+/// [`super::ChartView::read_large_orders`].
+pub(super) fn read(state: &State, id: u32, range: std::ops::Range<usize>) -> Option<(Vec<omacharts_engine::studies::orders::Placed>, f64)> {
+    let drawn = state.indicators.iter().find(|drawn| drawn.indicator.id == id)?;
+    let Params::LargeOrders { regular, extended, combine, .. } = &drawn.indicator.params else { return None };
+    let (book, tick_size) = state.large_orders.as_ref()?(*regular, *extended, *combine)?;
+    let bars = &state.bars;
+    let (first, end) = (range.start.min(bars.len()), range.end.min(bars.len()));
+    if first >= end {
+        return Some((Vec::new(), tick_size));
+    }
+    let from = bars[first].ts;
+    let to = match bars.get(end) {
+        Some(next) => next.ts,
+        None => state.timeframe.shift(bars[end - 1].ts, 1),
+    };
+    Some((book.within(from.saturating_mul(1_000_000_000), to.saturating_mul(1_000_000_000)).to_vec(), tick_size))
+}
+
 /// Draw `drawn`'s bubbles over the bars on screen.
 pub(super) fn draw(cr: &cairo::Context, state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
     let Params::LargeOrders { regular, extended, compare, combine, inks } = &drawn.indicator.params else { return };
@@ -182,6 +202,23 @@ fn sprite((red, green, blue, opaque): Rgba, alpha: f64, r: f64, scale: f64) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What `chart values` reads of large orders is the book the bubbles
+    /// are drawn from, over the same bars.
+    #[test]
+    fn the_orders_read_out_are_the_orders_bubbled() {
+        let scene = crate::flow_bench::FlowScene::new(240, 60, &["large_orders"], 40, 7);
+        let state = scene.state();
+        let range = super::super::footprint::pick_range(state, crate::BarPick::Visible);
+        let (orders, tick) = read(state, 1, range.clone()).expect("a book");
+        assert!(!orders.is_empty() && tick > 0.0);
+        let first = state.bars[range.start].ts * 1_000_000_000;
+        assert!(orders.iter().all(|placed| placed.order.ts_nanos >= first));
+        assert!(orders.windows(2).all(|two| two[0].order.ts_nanos <= two[1].order.ts_nanos));
+        let all = read(state, 1, 0..state.bars.len()).unwrap().0;
+        assert!(all.len() > orders.len());
+        assert_eq!(read(state, 2, range), None, "no such indicator");
+    }
 
     #[test]
     fn a_bubble_s_area_follows_its_order_and_stays_within_a_few_bars() {

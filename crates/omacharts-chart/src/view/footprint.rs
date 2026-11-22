@@ -286,6 +286,19 @@ fn read_step(state: &State) -> u32 {
     }
 }
 
+/// The indexes of `pick`'s bars in `state`.
+pub(super) fn pick_range(state: &State, pick: BarPick) -> std::ops::Range<usize> {
+    let bars = &state.bars;
+    match pick {
+        BarPick::Visible => {
+            let (first, visible) = state.slice();
+            first.min(bars.len())..(first + visible).min(bars.len())
+        }
+        BarPick::Last(n) => bars.len().saturating_sub(n)..bars.len(),
+        BarPick::Between(from, to) => bars.partition_point(|bar| bar.ts < from)..bars.partition_point(|bar| bar.ts < to),
+    }
+}
+
 /// `pick`'s bars of `state` read out as its footprint draws them, rows of
 /// `row_ticks` or [`read_step`]'s: the same ladders, summed by the same
 /// [`bar_ladder`] and folded by the same [`rows::fold`]. None where the
@@ -293,14 +306,7 @@ fn read_step(state: &State) -> u32 {
 pub(super) fn read_out(state: &State, pick: BarPick, row_ticks: Option<u32>) -> Option<FootprintRead> {
     let read = state.volume_at_price.as_ref()?;
     let bars = &state.bars;
-    let range = match pick {
-        BarPick::Visible => {
-            let (first, visible) = state.slice();
-            first..(first + visible).min(bars.len())
-        }
-        BarPick::Last(n) => bars.len().saturating_sub(n)..bars.len(),
-        BarPick::Between(from, to) => bars.partition_point(|bar| bar.ts < from)..bars.partition_point(|bar| bar.ts < to),
-    };
+    let range = pick_range(state, pick);
     let first = bars.first()?.ts;
     let step = row_ticks.unwrap_or_else(|| read_step(state)).clamp(1, rows::MAX_ROW_TICKS);
     let tf = state.timeframe;

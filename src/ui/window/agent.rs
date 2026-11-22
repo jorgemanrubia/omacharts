@@ -590,15 +590,95 @@ impl Window {
         Ok(self.chart_read(&pane, last))
     }
 
-    /// Chart `chart`'s footprint in numbers: see [`omacharts_chart::ChartView::read_footprint`].
-    pub fn read_footprint(
-        &self,
-        chart: u32,
-        pick: omacharts_chart::BarPick,
-        row_ticks: Option<u32>,
-    ) -> Result<Option<omacharts_chart::FootprintRead>, Fault> {
+    /// Chart `chart`'s indicators in numbers, as `ask` asks: see
+    /// [`reading::ValuesAsk`]. Refused when an id or a kind asked for is not
+    /// on the chart, but for a footprint, read from the chart's volume at
+    /// price whether one is drawn or not.
+    pub fn read_values(&self, chart: u32, ask: &reading::ValuesAsk) -> Result<reading::ValuesRead, Fault> {
+        use omacharts_engine::indicators::{Kind, Output};
         let pane = self.agent_pane(chart)?;
-        Ok(pane.view.read_footprint(pick, row_ticks))
+        let base = self.chart_read(&pane, 1);
+        let view = &pane.view;
+        let len = view.bar_count();
+        let range = ask.pick.map(|pick| view.bar_range(pick));
+        // The latest is the newest bar, for what is read a bar at a time.
+        let pick = ask.pick.unwrap_or(omacharts_chart::BarPick::Last(1));
+        let shown = range.clone().unwrap_or(len.saturating_sub(1)..len);
+        let places = base.places;
+        let timeframe = view.timeframe();
+        let footprint = |id: Option<u32>, label: String, visible: bool| {
+            let mut fields = json!({"id": id, "kind": Kind::Footprint.key(), "label": label, "visible": visible});
+            let read = view.read_footprint(pick, ask.row_ticks);
+            if read.is_none() {
+                fields["unmet"] = json!(omacharts_engine::indicators::NEEDS_VOLUME_AT_PRICE);
+            }
+            reading::Entry { fields, footprint: read }
+        };
+        let mut entries = Vec::new();
+        let mut found_ids = Vec::new();
+        let mut found_kinds = Vec::new();
+        view.with_indicators(|drawn| {
+            view.with_bars(|bars| {
+                for one in drawn {
+                    let (id, kind) = (one.indicator.id, one.indicator.kind);
+                    if !ask.wants(id, kind) || matches!(one.output, Output::Time(_)) {
+                        continue;
+                    }
+                    found_ids.push(id);
+                    found_kinds.push(kind);
+                    let label = one.indicator.label_for(timeframe);
+                    if kind == Kind::Footprint && !matches!(one.output, Output::Unmet(_)) {
+                        entries.push(footprint(Some(id), label, one.indicator.visible));
+                        continue;
+                    }
+                    let mut fields = json!({"id": id, "kind": kind.key(), "label": label, "visible": one.indicator.visible});
+                    match (&one.output, &range) {
+                        (Output::Unmet(why), _) => fields["unmet"] = json!(why),
+                        (Output::LargeOrders, _) => {
+                            fields["orders"] = match view.read_large_orders(id, shown.clone()) {
+                                Some((orders, tick)) => json!(reading::orders_json(&orders, tick, places)),
+                                None => Value::Null,
+                            };
+                        }
+                        (Output::Profiles(_) | Output::MarketProfiles(_), Some(range)) => {
+                            fields["profiles"] = json!(reading::profiles_json(&one.output, range.clone(), places));
+                        }
+                        (_, Some(range)) => fields["bars"] = json!(reading::series_json(one, bars, range.clone(), places)),
+                        (_, None) => {
+                            let latest = reading::values(std::slice::from_ref(one), places, |one| one.indicator.label_for(timeframe));
+                            fields = latest.into_iter().next().unwrap_or(fields);
+                        }
+                    }
+                    entries.push(reading::Entry { fields, footprint: None });
+                }
+            })
+        });
+        for id in &ask.ids {
+            if !found_ids.contains(id) {
+                return Err(Fault::not_found(format!("{} has no indicator {id}; `chart indicator list` says which it has", base.label)));
+            }
+        }
+        for kind in &ask.kinds {
+            if found_kinds.contains(kind) {
+                continue;
+            }
+            if *kind == Kind::Footprint {
+                entries.push(footprint(None, "Footprint".into(), false));
+                continue;
+            }
+            return Err(Fault::not_found(format!("{} has no {}; `chart indicator list` says what it has", base.label, kind.key())));
+        }
+        Ok(reading::ValuesRead {
+            label: base.label,
+            symbol: base.symbol,
+            timeframe: base.timeframe,
+            intraday: base.intraday,
+            places,
+            zone: base.zone,
+            ranged: range.is_some(),
+            entries,
+            levels: range.is_none().then_some(base.levels),
+        })
     }
 
     fn chart_read(&self, pane: &ChartPane, last: usize) -> reading::ChartRead {
@@ -1136,6 +1216,55 @@ mod tests {
             assert_eq!(code, 0, "{out}");
             let read: Value = serde_json::from_str(&out).expect("JSON");
             assert!(read["acct"].is_object() && read["pos"].is_object(), "on, the account and the position: {read}");
+        });
+    }
+
+    /// `chart values` reads every bar of a range in the library's field
+    /// names, the newest the latest it gives with no range; refuses an
+    /// indicator the chart has not got, and names the kinds there are.
+    #[test]
+    fn a_charts_indicators_are_read_bar_by_bar() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, _session, _) = long_es(trading::Linking::AfterTheFact);
+            assert!(settle(&window, || pane.view.bar_count() > 40));
+            for add in ["chart indicator add sma --period 3", "chart indicator add macd"] {
+                let (code, out) = command(&window, add);
+                assert_eq!(code, 0, "{out}");
+            }
+            let read = |line: &str| {
+                let (code, out) = command(&window, line);
+                assert_eq!(code, 0, "{line}: {out}");
+                serde_json::from_str::<Value>(&out).expect("JSON")
+            };
+            let latest = read("chart values --indicator sma --json");
+            let ranged = read("chart values --indicator sma --last 4 --json");
+            assert_eq!(ranged["indicators"].as_array().map(Vec::len), Some(1), "{ranged}");
+            let bars = ranged["indicators"][0]["bars"].as_array().cloned().unwrap_or_default();
+            assert_eq!(bars.len(), 4, "{ranged}");
+            assert!(bars.windows(2).all(|two| two[0]["time"].as_i64() < two[1]["time"].as_i64()), "{ranged}");
+            assert_eq!(bars[3]["value"], latest["indicators"][0]["value"], "the newest is the latest");
+            assert!(ranged.get("levels").is_none(), "{ranged}");
+
+            let macd = read("chart values --indicator macd --last 2 --json");
+            let bar = &macd["indicators"][0]["bars"][1];
+            for field in ["time", "line", "signal", "histogram"] {
+                assert!(bar.get(field).is_some(), "{field}: {macd}");
+            }
+            let both = read("chart values --indicator sma --indicator macd --visible --json");
+            assert_eq!(both["indicators"].as_array().map(Vec::len), Some(2), "{both}");
+
+            let footprint = read("chart values --footprint --json");
+            assert_eq!(footprint["indicators"][0]["kind"], "footprint", "{footprint}");
+
+            let (code, _) = command(&window, "chart values --id 999");
+            assert_eq!(code, crate::cli::EXIT_NOT_FOUND);
+            let (code, _) = command(&window, "chart values --indicator rsi");
+            assert_eq!(code, crate::cli::EXIT_NOT_FOUND);
+            let (code, why) = command(&window, "chart values --indicator nope");
+            assert_eq!(code, crate::cli::EXIT_USAGE);
+            assert!(why.contains("large_orders"), "{why}");
+            let (code, _) = command(&window, "chart values --last 3 --visible");
+            assert_eq!(code, crate::cli::EXIT_USAGE);
         });
     }
 

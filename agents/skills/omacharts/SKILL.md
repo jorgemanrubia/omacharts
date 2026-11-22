@@ -438,14 +438,18 @@ omacharts chart indicator add volume_delta --colouring monochrome --sell-transpa
 ```
 
 To read a footprint in numbers rather than look at it, use `chart values
---footprint` (it needs volume at price). It reads the bars on screen, `--last N`, or `--from WHEN [--to
-WHEN]`, in rows of `--row-ticks auto|N`. `--json` gives each bar's `time`,
-OHLC, `volume`, `delta` and `poc`, and `rows` lowest first, each with `low`,
-`high`, `at_bid`, `at_ask`, `delta`, `total` and `trades`. These are exactly
-the rows drawn. Look for absorption (a big `at_bid` at a low that holds),
-imbalances (one side several times the other) and where the `poc` sits in
-the bar. For a quick look at the last few bars, pipe `chart values
---footprint --last 3 --json` into `jq '.bars[] | {time, delta, poc}'`.
+--indicator footprint` (it needs volume at price). It reads the newest bar,
+or `--last N`, `--from WHEN [--to WHEN]` or `--visible`, in rows of
+`--row-ticks auto|N`. `--json` gives an entry in `indicators` with each bar's
+`time`, OHLC, `volume`, `delta` and `poc`, and `rows` lowest first, each with
+`low`, `high`, `at_bid`, `at_ask`, `delta`, `total` and `trades`. These are
+exactly the rows drawn. Look for absorption (a big `at_bid` at a low that
+holds), imbalances (one side several times the other) and where the `poc`
+sits in the bar. For a quick look at the last few bars, pipe `chart values
+--indicator footprint --last 3 --json` into `jq '.indicators[0].bars[] |
+{time, delta, poc}'`. The same range flags read any indicator bar by bar:
+`chart values --indicator rsi --last 20 --json` gives `bars` of `{time,
+value}`, a MACD `{time, line, signal, histogram}`, large orders `orders`.
 
 **A volume profile of any span is a drawing.** `profile` (or `vp`) profiles
 the bars between `--from` and `--to`; only their times are read. `--color` is
