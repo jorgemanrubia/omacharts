@@ -88,25 +88,14 @@ fn use_face(cr: &cairo::Context) {
     });
 }
 
-/// One bar's ladder as a footprint keeps it: each tick's delta and total,
-/// from `low_tick` up, a total of nought where nothing traded.
+/// One bar's footprint as the chart keeps it to draw: each tick's delta
+/// and total, folded into rows by the fold it is read out by too.
 #[derive(Default, Debug)]
 struct Cells {
-    low_tick: i32,
-    cells: Vec<rows::Tick>,
+    footprint: rows::BarFootprint<rows::Tick>,
     /// The bar's volume when it was read, by its bits: a bar that has
     /// traded since is read again.
     volume: u64,
-}
-
-impl Cells {
-    /// Each row of `step` ticks that traded, lowest first, as its low tick
-    /// and its delta and total: [`rows::fold`] over what was kept, the fold
-    /// the footprint is read out by too.
-    #[inline]
-    fn each_row(&self, step: u32, each: impl FnMut(i32, rows::Tick)) {
-        rows::fold(self.low_tick, &self.cells, step, each);
-    }
 }
 
 /// What a chart's footprint has read, by bar.
@@ -193,10 +182,9 @@ impl Cache {
                 continue;
             }
             let mut cells = self.bars.remove(&bar.ts).or_else(|| self.spare.pop()).unwrap_or_default();
-            cells.low_tick = self.scratch.low_tick;
             cells.volume = volume;
-            cells.cells.clear();
-            cells.cells.extend(self.scratch.levels.iter().map(|level| rows::Tick::of(level.at_bid, level.at_ask, level.unknown)));
+            let ticks = self.scratch.levels.iter().map(|level| rows::Tick::of(level.at_bid, level.at_ask, level.unknown));
+            cells.footprint.refill(self.scratch.low_tick, ticks);
             self.bars.insert(bar.ts, cells);
         }
         // Scrolled a long way, the bars far off screen go.
@@ -266,13 +254,14 @@ pub struct FootprintRow {
     pub sides: rows::Sides,
 }
 
-/// One bar read out: the bar, its rows lowest first, and the low tick of
-/// its most traded row.
+/// One bar read out: the bar, its rows lowest first, the low tick of its
+/// most traded row, and everything in it as one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FootprintBar {
     pub bar: omacharts_engine::Bar,
     pub rows: Vec<FootprintRow>,
     pub poc: Option<i32>,
+    pub totals: rows::Sides,
 }
 
 /// A chart's footprint read out: the tick its rows are counted in, how many
@@ -320,23 +309,24 @@ pub(super) fn read_out(state: &State, pick: BarPick, row_ticks: Option<u32>) -> 
     read(first, &mut |held, _| {
         let Some(held) = held else { return };
         let mut ladder = Ladder::default();
-        let mut cells: Vec<rows::Sides> = Vec::new();
+        let mut footprint: rows::BarFootprint<rows::Sides> = rows::BarFootprint::new();
         let mut read_bars = Vec::with_capacity(range.len());
         for bar in &bars[range.clone()] {
             let mut rows_out = Vec::new();
-            let mut poc = None;
+            let (mut poc, mut totals) = (None, rows::Sides::default());
             if bar_ladder(held, bar.ts, tf, days.as_ref(), &mut ladder) {
-                cells.clear();
-                cells.extend(ladder.levels.iter().map(|level| rows::Sides {
+                let sides = ladder.levels.iter().map(|level| rows::Sides {
                     at_bid: level.at_bid,
                     at_ask: level.at_ask,
                     unknown: level.unknown,
                     trades: u64::from(level.bid_trades) + u64::from(level.ask_trades),
-                }));
-                rows::fold(ladder.low_tick, &cells, step, |low_tick, sides| rows_out.push(FootprintRow { low_tick, sides }));
-                poc = rows::point_of_control(ladder.low_tick, &cells, step, rows::Sides::total);
+                });
+                footprint.refill(ladder.low_tick, sides);
+                footprint.each_row(step, |low_tick, sides| rows_out.push(FootprintRow { low_tick, sides }));
+                poc = footprint.point_of_control(step, rows::Sides::total);
+                totals = footprint.totals();
             }
-            read_bars.push(FootprintBar { bar: *bar, rows: rows_out, poc });
+            read_bars.push(FootprintBar { bar: *bar, rows: rows_out, poc, totals });
         }
         out = Some(FootprintRead { tick_size: held.tick_size, row_ticks: step, bars: read_bars });
     });
@@ -604,18 +594,13 @@ fn paint(
     // The biggest row on screen, which every row's length and strength is
     // measured against; and the most traded, which every profile row is,
     // in the same pass.
-    let mut largest: u64 = 0;
-    let mut most: u64 = 0;
+    let mut on_screen = rows::Largest::default();
     for bar in bars {
         if let Some(cells) = cache.bars.get(&bar.ts) {
-            cells.each_row(step, |_, tick| {
-                largest = largest.max(tick.delta.unsigned_abs());
-                if profiled {
-                    most = most.max(tick.total);
-                }
-            });
+            cells.footprint.each_row(step, |_, tick| on_screen.take(tick));
         }
     }
+    let (largest, most) = (on_screen.delta, on_screen.total);
 
     let (buy, sell) = inks(state, chosen_inks);
     let (buy_alpha, sell_alpha) = chosen_inks.alphas(flow::FOOTPRINT_ALPHA);
@@ -634,17 +619,12 @@ fn paint(
             false => strong,
         }
     };
-    // A row's length against the biggest it is measured with.
-    let bar_length = |value: i64, room: f64, largest: u64| match largest {
-        0 => 0.0,
-        largest => (room * value.unsigned_abs() as f64 / largest as f64).max(1.0),
-    };
     // A row is drawn at least as long as its figure, so the figure sits
     // inside its box however small the delta: a box round each number, the
     // bar running on past it as the delta is big.
     let advance = figure_size(row_h) * 0.6;
     let fitted = |value: i64, room: f64, largest: u64, written: bool| {
-        let long = bar_length(value, room, largest);
+        let long = rows::length(value, room, largest);
         if !written {
             return long;
         }
@@ -668,7 +648,7 @@ fn paint(
             for (at, bar) in bars.iter().enumerate() {
                 let Some(cells) = cache.bars.get(&bar.ts) else { continue };
                 let (x, room) = across(columns, at, with_bar, profiled).rows;
-                cells.each_row(step, |low, tick| {
+                cells.footprint.each_row(step, |low, tick| {
                     let delta = tick.delta;
                     if delta == 0 || (delta > 0) != buying || rows::strength(delta, largest, levels) != level {
                         return;
@@ -692,7 +672,7 @@ fn paint(
         for (at, bar) in bars.iter().enumerate() {
             let Some(cells) = cache.bars.get(&bar.ts) else { continue };
             let (x, room) = across(columns, at, with_bar, profiled).rows;
-            cells.each_row(step, |low, tick| {
+            cells.footprint.each_row(step, |low, tick| {
                 let delta = tick.delta;
                 if delta == 0 || (delta > 0) != buying {
                     return;
@@ -723,7 +703,7 @@ fn paint(
             for (at, bar) in bars.iter().enumerate() {
                 let Some(cells) = cache.bars.get(&bar.ts) else { continue };
                 let (x, room) = across(columns, at, with_bar, true).profile;
-                cells.each_row(step, |low, tick| {
+                cells.footprint.each_row(step, |low, tick| {
                     if rows::strength(tick.total as i64, most, levels) != level {
                         return;
                     }
@@ -746,7 +726,7 @@ fn paint(
         for (at, bar) in bars.iter().enumerate() {
             let Some(cells) = cache.bars.get(&bar.ts) else { continue };
             let (x, room) = across(columns, at, with_bar, true).profile;
-            cells.each_row(step, |low, tick| {
+            cells.footprint.each_row(step, |low, tick| {
                 let (top, bottom) = row_y(low);
                 let h = bottom - top;
                 if h < 3.0 {
@@ -863,7 +843,7 @@ fn figures(
                 Lane::Delta { profiled } => across(columns, at, with_bar, profiled).rows,
                 Lane::Profile => across(columns, at, with_bar, true).profile,
             };
-            cells.each_row(step, |low, tick| {
+            cells.footprint.each_row(step, |low, tick| {
                 let value = match lane {
                     Lane::Delta { .. } => tick.delta,
                     Lane::Profile => tick.total as i64,
@@ -1029,7 +1009,7 @@ mod tests {
         for bar in &read.bars {
             let kept = cache.bars.get(&bar.bar.ts).expect("drawn");
             let mut drawn = Vec::new();
-            kept.each_row(step, |low, tick| drawn.push((low, tick)));
+            kept.footprint.each_row(step, |low, tick| drawn.push((low, tick)));
             let out: Vec<(i32, rows::Tick)> = bar.rows.iter().map(|row| (row.low_tick, row.sides.tick())).collect();
             assert_eq!(out, drawn, "bar {}", bar.bar.ts);
             let volume: u64 = bar.rows.iter().map(|row| row.sides.total()).sum();
@@ -1191,17 +1171,5 @@ mod tests {
             let delta = -magnitude.min(99_949_999);
             assert!(rows::short(delta, &mut buf).len() <= WIDEST_FIGURE.len(), "{delta} wider than {WIDEST_FIGURE}");
         }
-    }
-
-    #[test]
-    fn rows_fold_kept_ticks_on_the_fly() {
-        let tick = |bid, ask| rows::Tick::of(bid, ask, 0);
-        let cells = Cells { low_tick: 99, cells: vec![tick(3, 2), tick(1, 3), tick(2, 2), rows::Tick::default(), tick(0, 4)], volume: 0 };
-        let mut seen = Vec::new();
-        cells.each_row(1, |low, tick| seen.push((low, tick.delta, tick.total)));
-        assert_eq!(seen, vec![(99, -1, 5), (100, 2, 4), (101, 0, 4), (103, 4, 4)], "nothing traded, no row");
-        seen.clear();
-        cells.each_row(2, |low, tick| seen.push((low, tick.delta, tick.total)));
-        assert_eq!(seen, vec![(98, -1, 5), (100, 2, 8), (102, 4, 4)]);
     }
 }

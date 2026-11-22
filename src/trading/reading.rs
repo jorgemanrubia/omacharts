@@ -334,7 +334,6 @@ pub fn footprint_json(read: &omacharts_chart::FootprintRead, places: usize) -> V
                     })
                 })
                 .collect();
-            let delta: i64 = one.rows.iter().map(|row| row.sides.delta()).sum();
             json!({
                 "time": bar.ts,
                 "open": p(bar.open),
@@ -342,7 +341,7 @@ pub fn footprint_json(read: &omacharts_chart::FootprintRead, places: usize) -> V
                 "low": p(bar.low),
                 "close": p(bar.close),
                 "volume": bar.volume.round(),
-                "delta": delta,
+                "delta": one.totals.delta(),
                 "poc": one.poc.map_or(Value::Null, at),
                 "rows": rows,
             })
@@ -366,7 +365,7 @@ pub fn footprint_text(read: &omacharts_chart::FootprintRead, places: usize, intr
             (None, _) => bar.ts.to_string(),
         };
         let n = |price: f64| num(price, places);
-        let delta: i64 = one.rows.iter().map(|row| row.sides.delta()).sum();
+        let delta = one.totals.delta();
         let poc = one.poc.map_or("-".to_string(), |t| n(omacharts_engine::ladders::to_price(t, tick)));
         out.push_str(&format!(
             "{time} {} {} {} {} vol {} delta {delta:+} poc {poc}\n",
@@ -416,8 +415,9 @@ mod tests {
                     bar: Bar { ts: 1_700_000_040, open: 100.25, high: 101.0, low: 100.0, close: 100.75, volume: 40.0 },
                     rows: vec![row(400, 6, 2, 0, 5), row(402, 3, 20, 1, 9), row(404, 0, 8, 0, 2)],
                     poc: Some(402),
+                    totals: Sides { at_bid: 9, at_ask: 30, unknown: 1, trades: 16 },
                 },
-                FootprintBar { bar: bar(1_700_000_100, 100.0, 100.0, 100.0, 100.0), rows: Vec::new(), poc: None },
+                FootprintBar { bar: bar(1_700_000_100, 100.0, 100.0, 100.0, 100.0), rows: Vec::new(), poc: None, totals: Sides::default() },
             ],
         };
         let json = footprint_json(&read, 2);

@@ -7,41 +7,6 @@
 //! is compared with, and the short way its number is written. Nothing here
 //! allocates; rows go into a buffer the caller keeps.
 
-/// One row of a footprint.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct Row {
-    /// Its lowest tick. The row covers this and the `ticks - 1` above it.
-    pub low_tick: i32,
-    /// Volume traded at the ask less volume traded at the bid.
-    pub delta: i64,
-    /// Everything that traded in it, sides or not.
-    pub volume: u64,
-}
-
-/// Fold a bar's prices, lowest first as `(tick, at_bid, at_ask, unknown)`,
-/// into rows of `ticks` ticks each, aligned to multiples of `ticks` so a row
-/// covers the same prices on every bar. Rows with nothing traded are left
-/// out. `out` is cleared first and keeps its allocation.
-pub fn rows(levels: impl Iterator<Item = (i32, u64, u64, u64)>, ticks: u32, out: &mut Vec<Row>) {
-    out.clear();
-    let ticks = ticks.max(1) as i32;
-    for (tick, at_bid, at_ask, unknown) in levels {
-        let volume = at_bid + at_ask + unknown;
-        if volume == 0 {
-            continue;
-        }
-        let low_tick = tick.div_euclid(ticks) * ticks;
-        let delta = at_ask as i64 - at_bid as i64;
-        match out.last_mut() {
-            Some(row) if row.low_tick == low_tick => {
-                row.delta += delta;
-                row.volume += volume;
-            }
-            _ => out.push(Row { low_tick, delta, volume }),
-        }
-    }
-}
-
 /// The steps a row may be, in ticks.
 const STEPS: [u32; 15] = [1, 2, 4, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000];
 
@@ -96,7 +61,7 @@ pub fn fixed_ticks(chosen: u32, tick_px: f64, least: f64) -> u32 {
 }
 
 /// What a footprint keeps of one tick and sums into a row: the renderer's
-/// [`Tick`] and the export's [`Sides`] are folded by the one [`fold`], so
+/// [`Tick`] and the read-out's [`Sides`] are folded by the one [`fold`], so
 /// what is drawn and what is read out are the same rows.
 pub trait Cell: Copy {
     /// Whether anything traded at it: a row of nothing is no row.
@@ -211,6 +176,94 @@ pub fn fold<C: Cell>(low_tick: i32, cells: &[C], step: u32, mut each: impl FnMut
     }
 }
 
+/// One bar's footprint: what traded at each tick of it, `cells[i]` being
+/// the tick `low_tick + i` — a [`Tick`] each as a chart keeps it to draw, or
+/// [`Sides`] as it is read out — and the rows it folds into.
+///
+/// ```
+/// use omacharts_studies::footprint::{BarFootprint, Sides};
+///
+/// let side = |at_bid, at_ask| Sides { at_bid, at_ask, unknown: 0, trades: 1 };
+/// let mut bar = BarFootprint::new();
+/// // Ticks 4000 to 4003 of a bar: sold at the bid, bought at the ask.
+/// bar.refill(4000, [side(12, 3), side(5, 20), side(0, 0), side(7, 7)].into_iter());
+/// let mut rows = Vec::new();
+/// bar.each_row(2, |low, row: Sides| rows.push((low, row.delta(), row.total())));
+/// assert_eq!(rows, vec![(4000, 6, 40), (4002, 0, 14)]);
+/// assert_eq!(bar.point_of_control(2, Sides::total), Some(4000));
+/// assert_eq!(bar.totals().delta(), 6);
+/// ```
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BarFootprint<C> {
+    pub low_tick: i32,
+    pub cells: Vec<C>,
+}
+
+impl<C: Cell + Default> BarFootprint<C> {
+    pub fn new() -> BarFootprint<C> {
+        BarFootprint { low_tick: 0, cells: Vec::new() }
+    }
+
+    /// Read a bar's ticks again, from `low_tick` up, keeping the allocation.
+    #[inline]
+    pub fn refill(&mut self, low_tick: i32, cells: impl Iterator<Item = C>) {
+        self.low_tick = low_tick;
+        self.cells.clear();
+        self.cells.extend(cells);
+    }
+
+    /// Each row of `step` ticks that traded, lowest first, as its low tick
+    /// and its sum: see [`fold`].
+    #[inline]
+    pub fn each_row(&self, step: u32, each: impl FnMut(i32, C)) {
+        fold(self.low_tick, &self.cells, step, each);
+    }
+
+    /// The low tick of the row of `step` ticks that traded most, by
+    /// `total`: see [`point_of_control`].
+    #[inline]
+    pub fn point_of_control(&self, step: u32, total: impl Fn(&C) -> u64) -> Option<i32> {
+        point_of_control(self.low_tick, &self.cells, step, total)
+    }
+
+    /// Everything in the bar as one: its delta, its volume.
+    pub fn totals(&self) -> C {
+        let mut sum = C::default();
+        for cell in &self.cells {
+            sum.add(cell);
+        }
+        sum
+    }
+}
+
+/// The biggest rows of a footprint on screen, which every row is measured
+/// against: the biggest delta either way, and the most traded.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Largest {
+    pub delta: u64,
+    pub total: u64,
+}
+
+impl Largest {
+    /// Measure `row` too.
+    #[inline]
+    pub fn take(&mut self, row: Tick) {
+        self.delta = self.delta.max(row.delta.unsigned_abs());
+        self.total = self.total.max(row.total);
+    }
+}
+
+/// How long a row of `value` is drawn in `room` against the biggest it is
+/// measured with, `largest`: its share of the room, and at least a pixel;
+/// nothing against nothing.
+#[inline]
+pub fn length(value: i64, room: f64, largest: u64) -> f64 {
+    match largest {
+        0 => 0.0,
+        largest => (room * value.unsigned_abs() as f64 / largest as f64).max(1.0),
+    }
+}
+
 /// The low tick of the row that traded most: a bar's point of control,
 /// the lower of two that traded alike.
 pub fn point_of_control<C: Cell>(low_tick: i32, cells: &[C], step: u32, total: impl Fn(&C) -> u64) -> Option<i32> {
@@ -307,25 +360,43 @@ pub fn short(value: i64, buf: &mut [u8; 12]) -> &str {
 mod tests {
     use super::*;
 
+    /// A bar's ticks fold into rows aligned to multiples of the step, the
+    /// ticks nothing traded at left out, and its point of control and totals
+    /// read off the same ticks.
     #[test]
-    fn rows_fold_prices_into_aligned_steps_and_skip_empty_ones() {
-        let levels = [(99, 1, 0, 0), (100, 3, 5, 1), (101, 0, 0, 0), (102, 2, 2, 0), (103, 0, 4, 0)];
-        let mut out = Vec::new();
-        rows(levels.into_iter(), 1, &mut out);
-        assert_eq!(out.len(), 4);
-        assert_eq!(out[1], Row { low_tick: 100, delta: 2, volume: 9 });
-        rows(levels.into_iter(), 2, &mut out);
-        assert_eq!(
-            out,
-            vec![Row { low_tick: 98, delta: -1, volume: 1 }, Row { low_tick: 100, delta: 2, volume: 9 }, Row {
-                low_tick: 102,
-                delta: 4,
-                volume: 8
-            }]
-        );
-        let negative = [(-3, 1, 0, 0), (-2, 0, 1, 0)];
-        rows(negative.into_iter(), 2, &mut out);
-        assert_eq!(out.iter().map(|r| r.low_tick).collect::<Vec<_>>(), vec![-4, -2]);
+    fn a_bar_folds_into_aligned_rows_and_skips_empty_ones() {
+        let tick = |at_bid, at_ask, unknown| Sides { at_bid, at_ask, unknown, trades: 0 };
+        let mut bar = BarFootprint::new();
+        bar.refill(99, [tick(1, 0, 0), tick(3, 5, 1), tick(0, 0, 0), tick(2, 2, 0), tick(0, 4, 0)].into_iter());
+        let rows = |bar: &BarFootprint<Sides>, step| {
+            let mut out = Vec::new();
+            bar.each_row(step, |low, row: Sides| out.push((low, row.delta(), row.total())));
+            out
+        };
+        assert_eq!(rows(&bar, 1), vec![(99, -1, 1), (100, 2, 9), (102, 0, 4), (103, 4, 4)]);
+        assert_eq!(rows(&bar, 2), vec![(98, -1, 1), (100, 2, 9), (102, 4, 8)]);
+        assert_eq!(bar.point_of_control(1, Sides::total), Some(100));
+        let totals = bar.totals();
+        assert_eq!((totals.delta(), totals.total()), (5, 18));
+
+        bar.refill(-3, [tick(1, 0, 0), tick(0, 1, 0)].into_iter());
+        let lows: Vec<i32> = rows(&bar, 2).into_iter().map(|(low, _, _)| low).collect();
+        assert_eq!(lows, vec![-4, -2]);
+    }
+
+    /// The biggest row on screen is the biggest delta either way and the
+    /// most traded; a row's length is its share of the room against it.
+    #[test]
+    fn rows_are_measured_against_the_largest_on_screen() {
+        let mut largest = Largest::default();
+        for tick in [Tick { delta: 4, total: 10 }, Tick { delta: -9, total: 12 }, Tick { delta: 2, total: 30 }] {
+            largest.take(tick);
+        }
+        assert_eq!((largest.delta, largest.total), (9, 30));
+        assert_eq!(length(-9, 90.0, largest.delta), 90.0);
+        assert_eq!(length(3, 90.0, largest.delta), 30.0);
+        assert_eq!(length(0, 90.0, largest.delta), 1.0, "a row that traded is at least a pixel");
+        assert_eq!(length(5, 90.0, 0), 0.0);
     }
 
     #[test]
