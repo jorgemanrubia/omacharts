@@ -42,8 +42,6 @@ use crate::colors;
 pub(super) const LEVELS: usize = 5;
 /// The weakest row's opacity, against the strongest's.
 const FAINT: f64 = 0.16;
-/// The fill past which a row's number is written dark.
-const DARK_FIGURES: f64 = 0.5;
 /// The least a row is drawn tall, in pixels: thinner, ticks fold together.
 const ROW_MIN: f64 = 3.0;
 /// The least a row is tall for its figure to be written in it.
@@ -400,15 +398,22 @@ fn paint(
 
     // The figures, where the rows are tall enough to read them.
     if row_h >= FIGURE_MIN {
-        // A number goes dark where it sits wholly on a row filled solidly
-        // enough that the light one would fade into it.
+        // A number goes dark where it sits wholly on a row whose fill, laid
+        // over the background, is nearer the text's lightness than the
+        // background's: there a light number would fade into it. Lightness
+        // is a sum of the channels, so a fill's is the blend of the two.
+        use omacharts_engine::theme::luminance;
+        let ground = luminance(&state.theme.ui.background);
+        let text = luminance(&state.theme.ui.text);
+        let (buy_light, sell_light) = (luminance(&buy), luminance(&sell));
         let on_fill = |delta: i64, room: f64, text_px: f64| {
-            let full = if delta > 0 { buy_alpha } else { sell_alpha };
+            let (full, light) = if delta > 0 { (buy_alpha, buy_light) } else { (sell_alpha, sell_light) };
             let alpha = match intensity {
                 true => rows::step_alpha(rows::strength(delta, largest, levels), levels, FAINT * full, full),
                 false => full,
             };
-            alpha >= DARK_FIGURES && length(delta, room) >= text_px + 5.0
+            let fill = ground + (light - ground) * alpha;
+            (fill - ground).abs() > (fill - text).abs() && length(delta, room) >= text_px + 5.0
         };
         figures(cr, state, cache, step, columns, &row_y, &on_fill);
     }
