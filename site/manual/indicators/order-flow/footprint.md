@@ -18,8 +18,8 @@ window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandbox
 state:
   key ctrl+comma; click 267 252 (Data); click 939 222 (Sign in, Fake Rich Feed)
   click 643 419; type 12345; click 606 473; type demo; click 767 542; click 1166 91; key Escape
-  omacharts chartbook create "Order flow" --symbol ES --switch
-  omacharts chart set --resolution 1m
+  omacharts chartbook create "Order flow" --symbol ES --switch; omacharts chartbook sidebar off
+  omacharts chart set --resolution 1m --feed fake --auto-scale on
   omacharts chart indicator add footprint
   scroll 1000 400 -2, nine times, to zoom in until the footprint shows
 capture: bin/headless-window cli chart screenshot --output /tmp/footprint.png; magick /tmp/footprint.png -quality 88 site/assets/manual/indicators/footprint.jpg
@@ -52,6 +52,19 @@ With **Automatic rows** on, a row holds 1, 2, 4, 5, 10, 20, 25, 50 or more ticks
 With **Volume profile** on, each bar also shows everything that traded at each of its rows, sides or not: at_bid plus at_ask, and any volume whose side the feed did not say. The profile takes the left of the bar's column, each row ending against the narrow bar and as long as its total, and the narrow bar and the delta rows move right to make room, the two sides sharing the column half and half. Its rows are the delta rows' own: the same ticks to a row, the same height, gaps and grid, the same outline, and with **Shade by delta** on the same five strengths. A row's length and strength are measured against the most traded row on screen, as a delta row's are against the biggest delta on screen. Its total is written inside it, against the narrow bar, in the type the deltas are written in and written short the same way, dark on a row solid enough to need it. Its colour says nothing of up or down: one swatch, the theme's **Blue** unless another is picked, following the theme as it changes, at 55% at its strongest so it stays quieter than the deltas.
 
 A footprint with its profile needs room for both sides, so it comes on at about twice the bar width: about 130 px with both sides' numbers, less with either turned off. A chart with a footprint on can be zoomed in to four bars across, rather than twelve, to give it that room. With **Volume profile** off, nothing of it is drawn or measured and the footprint is exactly as it was.
+
+<!-- regenerate:
+as the footprint picture above, then:
+  omacharts chart indicator set footprint --profile on
+capture: bin/headless-window cli chart screenshot --output /tmp/footprint-profile.png; magick /tmp/footprint-profile.png -quality 88 site/assets/manual/indicators/footprint-profile.jpg
+then:
+  omacharts chart indicator set footprint --numbers off --profile-numbers off
+capture: bin/headless-window cli chart screenshot --output /tmp/footprint-profile-numbers-off.png; magick /tmp/footprint-profile-numbers-off.png -quality 88 site/assets/manual/indicators/footprint-profile-numbers-off.jpg
+crop: none
+-->
+{% include figure.html src="/assets/manual/indicators/footprint-profile.jpg" alt="ES one-minute footprint bars, each with blue rows of total volume at its left, the narrow candle in the middle and the delta rows at its right, every row with its number" caption="The footprint with its volume profile, on ES 1m, on the synthetic feed." %}
+
+{% include figure.html src="/assets/manual/indicators/footprint-profile-numbers-off.jpg" alt="The same footprint bars with their volume profiles, the rows drawn without numbers" caption="The same, with Numbers and Profile numbers off." %}
 
 ## Shade by delta
 

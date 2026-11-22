@@ -18,8 +18,8 @@ window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandbox
 state:
   key ctrl+comma; click 267 252 (Data); click 939 222 (Sign in, Fake Rich Feed)
   click 643 419; type 12345; click 606 473; type demo; click 767 542; click 1166 91; key Escape
-  omacharts chartbook create "Order flow" --symbol ES --switch
-  omacharts chart set --resolution 1m
+  omacharts chartbook create "Order flow" --symbol ES --switch; omacharts chartbook sidebar off
+  omacharts chart set --resolution 1m --feed fake --auto-scale on
   omacharts chart indicator add large_orders
   (wait for the bubbles: the trades are read after the bars)
   scroll 1000 450 -2 (zoom in to about 1h45m); scroll 700 889 0 (park the pointer on the tab bar, no crosshair)
