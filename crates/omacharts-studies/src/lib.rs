@@ -41,6 +41,7 @@ pub mod oscillators;
 pub mod orders;
 pub mod series;
 pub mod volume;
+pub mod volume_profile;
 pub mod vwap;
 
 pub use at_price::{AtPrice, AtPriceStudy, DeltaReading, DevelopingProfile, ProfileReading, VolumeDelta};

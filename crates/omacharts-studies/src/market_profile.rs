@@ -90,29 +90,7 @@ pub fn point_of_control(len: usize, count: impl Fn(usize) -> u32) -> Option<usiz
 /// `fraction` of `total`. The rule a volume profile grows its value area
 /// by, on TPOs.
 pub fn value_area(len: usize, count: impl Fn(usize) -> u32, poc: usize, total: u64, fraction: f64) -> (usize, usize) {
-    let target = total as f64 * fraction.clamp(0.0, 1.0);
-    let (mut lower, mut upper) = (poc, poc);
-    let mut covered = u64::from(count(poc));
-    while (covered as f64) < target && (lower > 0 || upper + 1 < len) {
-        let below = (lower > 0).then(|| count(lower - 1));
-        let above = (upper + 1 < len).then(|| count(upper + 1));
-        match (below, above) {
-            (Some(b), Some(a)) if b > a => {
-                lower -= 1;
-                covered += u64::from(b);
-            }
-            (Some(_), Some(a)) | (None, Some(a)) => {
-                upper += 1;
-                covered += u64::from(a);
-            }
-            (Some(b), None) => {
-                lower -= 1;
-                covered += u64::from(b);
-            }
-            (None, None) => break,
-        }
-    }
-    (lower, upper)
+    crate::volume_profile::value_area(len, |row| f64::from(count(row)), poc, total as f64, fraction)
 }
 
 /// The prices a row holds: its lowest tick and its highest.
