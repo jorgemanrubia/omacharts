@@ -25,7 +25,8 @@ tag="v$version"
 say() { printf '\033[1;34m==>\033[0m %s\n' "$1"; }
 die() { printf '\033[1;31m✗\033[0m %s\n' "$1" >&2; exit 1; }
 
-[ -z "$(git status --porcelain)" ] || die "working tree is not clean"
+# Untracked files are left alone: the commit below names its three files.
+[ -z "$(git status --porcelain --untracked-files=no)" ] || die "working tree is not clean"
 [ "$(git rev-parse --abbrev-ref HEAD)" = main ] || die "not on main"
 git fetch -q origin
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || die "main is not in step with origin"
@@ -34,14 +35,29 @@ if git ls-remote --exit-code --tags origin "$tag" >/dev/null 2>&1; then
   die "$tag already exists on origin — a published tag must never move, since the PKGBUILD digest would stop matching for everybody"
 fi
 
+# The suite already ran in CI, on a clean runner. Running it again here would
+# add nothing but GTK windows on the maintainer's desktop. The release
+# workflow's own digest commit never starts CI (a GITHUB_TOKEN push starts no
+# workflow), so the commit CI vouches for may sit a little below HEAD, as long
+# as nothing above it touches more than the PKGBUILD.
+say "Waiting for CI"
+tested=""
+for sha in $(git rev-list -n 20 HEAD); do
+  run="$(gh run list --workflow CI --commit "$sha" --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+  if [ -n "$run" ]; then tested="$sha"; break; fi
+done
+[ -n "$tested" ] || die "CI has not run on main lately; push and try again"
+untested="$(git diff --name-only "$tested" HEAD | grep -vx 'packaging/aur/PKGBUILD' || true)"
+[ -z "$untested" ] || die "CI has not run on $(git rev-parse --short HEAD) yet; wait for it"
+gh run watch "$run" --exit-status >/dev/null || die "CI is not green on $(git rev-parse --short "$tested")"
+
 say "Writing $version into the three places a tag cannot float"
 sed -i -E "0,/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/s||version = \"$version\"|" Cargo.toml
 sed -i -E "s|^pkgver=.*|pkgver=$version|" packaging/aur/PKGBUILD
 cargo update -p omacharts
 
 say "Checking the tree agrees with itself"
-cargo build --workspace --locked
-cargo test --workspace --locked
+cargo check --workspace --locked
 grep -q "^version = \"$version\"" Cargo.toml || die "Cargo.toml did not take"
 grep -q "^pkgver=$version$" packaging/aur/PKGBUILD || die "PKGBUILD did not take"
 grep -A1 '^name = "omacharts"' Cargo.lock | grep -q "^version = \"$version\"" \
