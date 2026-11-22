@@ -525,7 +525,7 @@ const LINKS: &[&str] = &["focus", "follow", "pinned"];
 const COLOURING: &[&str] = &["vivid", "soft", "quiet", "monochrome", "coloured", "hollow", "red-up"];
 /// What a volume pane's bars may be painted from: the chart's own colouring
 /// (`default`, or `chart` as a released version spelled it), or one of the
-/// four colourings, Monochrome as one ink at two strengths (`monochrome`
+/// four colourings, Monochrome as one colour for both sides (`monochrome`
 /// is `theme-mono`); and a delta volume profile's two sides, a cumulative
 /// delta's and the order flow indicators': the colouring chosen in
 /// Preferences, or one of the same four.
@@ -619,7 +619,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("cvd-style", "HOW", "a cumulative delta drawn as candles of its running sum, or as a line").of(CVD_STYLES),
     Flag::valued("rows", "N", "volume profile rows, or `auto` to follow the instrument's own increment"),
     Flag::valued("tpo-minutes", "N", "how long a market profile's TPO periods are, 1-1440 minutes (default 30)"),
-    Flag::valued("row-ticks", "N", "how many ticks tall a market profile's rows are, or `auto` for the smallest round height that keeps a typical period within 60 rows"),
+    Flag::valued("row-ticks", "N", "how many ticks tall a market profile's or a footprint's rows are, 1-10000, or `auto`: for a market profile the smallest round height that keeps a typical period within 60 rows, for a footprint a compact line's worth at the chart's price scale"),
     Flag::valued("tpo-style", "HOW", "a market profile's TPOs drawn as their periods' letters, or as blocks").of(TPO_STYLES),
     Flag::valued("open-close", "BOOL", "whether a market profile marks its open and its close: an arrow beside the TPO at its first bar's opening price and one beside the TPO at its last bar's closing price (on unless set off)").of(SWITCHES),
     Flag::valued("expand-last", "BOOL", "whether a market profile always draws its newest profile, the one forming, expanded: its TPOs laid out over time, a column for each TPO period at its bars (off unless set); `chart profile expand` expands any one").of(SWITCHES),
@@ -652,7 +652,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
     Flag::valued("up-transparency", "F", "how much of the chart shows through volume bars of a rising session, 0-1, or `default` to follow --opacity"),
     Flag::valued("down-transparency", "F", "the same for volume bars of a falling session"),
-    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles (default, or chart), or in theme, theme-soft, theme-quiet or theme-mono (monochrome: one ink, solid for up and faint for down); and a delta volume profile's bought and sold rows, a cumulative delta's rises and falls, and the buying and selling of a volume delta, a footprint or large orders: in the colouring chosen in Preferences (default), or theme, theme-soft, theme-quiet or theme-mono").of(VOLUME_COLOURINGS),
+    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles (default, or chart), or in theme, theme-soft, theme-quiet or theme-mono (monochrome: one colour for up and down alike); and a delta volume profile's bought and sold rows, a cumulative delta's rises and falls, and the buying and selling of a volume delta, a footprint or large orders: in the colouring chosen in Preferences (default), or theme, theme-soft, theme-quiet or theme-mono").of(VOLUME_COLOURINGS),
     Flag::valued("opacity", "F", "how solid volume bars are drawn, rising and falling alike, 0-1; 1 is fully opaque"),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
     Flag::valued("d-transparency", "F", "how much of the chart shows through the stochastic's %D line, 0-1, or `default` to follow --transparency"),
@@ -681,6 +681,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("sell-transparency", "F", "the same for selling"),
     Flag::valued("show-from", "PX", "the bar width, 24-400 pixels, a footprint is drawn from in place of the candles (default 64)"),
     Flag::valued("intensity", "BOOL", "whether a footprint's rows are filled more solidly the bigger their delta against the biggest on screen (on unless set off); off fills every row alike").of(SWITCHES),
+    Flag::valued("numbers", "BOOL", "whether a footprint writes each row's delta in it (on unless set off); off draws the rows alone").of(SWITCHES),
     Flag::valued("rth-threshold", "N", "the size, in contracts, an order in regular hours has to be bigger than to be a large order (default 50)"),
     Flag::valued("eth-threshold", "N", "the same outside regular hours (default 20)"),
     Flag::valued("size-against", "WHAT", "what a large order's bubble is sized against: the large orders on screen, the session's, or the session's regular or extended hours' (default session)").of(SIZE_AGAINST),

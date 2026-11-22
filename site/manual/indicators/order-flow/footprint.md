@@ -1,12 +1,12 @@
 ---
 title: "Footprint"
-description: "Each bar's delta at every price, drawn beside a narrow candle once the bars are wide enough"
+description: "Each bar's delta at every price, drawn beside a narrow bar once the bars are wide enough"
 section: charting
 parent: indicators/order-flow
 nav_order: 3
 ---
 
-Each bar's volume at the ask less its volume at the bid, at every price it traded, drawn inside the bar. The candle narrows to the bar's left edge and is drawn hollow. Beside it each price is a row, its bar as long as its delta and its number inside it, or just past its end when it is short, in the buying colour when more was bought there and the selling colour when more was sold. Zoomed out, the chart shows its ordinary candles.
+Each bar's volume at the ask less its volume at the bid, at every price it traded, drawn inside the bar. The chart's own bar narrows to the bar's left edge, in the chart's style and colours: a narrow candle, filled or hollow as the chart's are, a narrow OHLC bar, or no bar at all on a **Line** chart, where the rows take its place. Beside it each price is a row, a line of small type high, its bar as long as its delta and its number written inside it at its left, in the buying colour when more was bought there and the selling colour when more was sold. The footprint's colours are its own: changing them leaves the bars alone, and changing the chart's colours leaves the rows alone. Zoomed out, the chart shows its ordinary bars.
 
 | Drawn | Legend | Type to add | CLI |
 |---|---|---|---|
@@ -33,17 +33,20 @@ crop: none
 |---|---|---|
 | **Min bar width px** | 64 px | 24 to 400 px. Narrower bars are drawn as candles |
 | **Shade by delta** | On | Off fills every row alike, at the side's **Opacity** |
+| **Numbers** | On | Off draws the rows alone, with no number in them |
+| **Automatic rows** | On | Off sets **Row height (ticks)** by hand |
+| **Row height (ticks)** | Greyed while automatic, showing the ticks a row holds | 1 to 10000 ticks a row |
 | **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet** or **Monochrome** ([Colours](/manual/indicators/order-flow/#colours)) |
 | **Buying** | The colouring's up colour, at 85% opacity | A palette name, or a custom colour, with its **Opacity** |
 | **Selling** | The colouring's down colour, at 85% opacity | The same |
 
 ## Rows
 
-A row is one tick while the ticks are at least 3 px tall. When they are thinner, a row holds 2, 4, 5, 10, 20, 25, 50 or more ticks together, so the rows stay readable, and every bar's rows cover the same prices. A row's number is written inside it when the row is long enough to hold it and just past its end when not. It is left out once the rows are under 11 px tall, and written short past a thousand: **1.2K**, **-35K**, **2.5M**.
+With **Automatic rows** on, a row holds 1, 2, 4, 5, 10, 20, 25, 50 or more ticks, the fewest that make it about a line of small type tall, 16 px, at the chart's price scale. The choice is made again only when the price scale changes, and kept while its rows stay between 13 and 40 px, so scrolling and small rescales leave the rows as they are. With it off, a row holds the **Row height (ticks)** set, or a multiple of it when that would make rows under 3 px. Every bar's rows cover the same prices. However far the chart is zoomed in, a row is never drawn taller than a line of small type: it is centred on its prices with a gap of a pixel or two to the next. A row's number is written inside it at its left, even when its bar is shorter than the number. It is left out once the rows are under 11 px tall, and written short past a thousand: **1.2K**, **-35K**, **2.5M**. With **Numbers** off, none is written and the rows' lengths and shades carry the delta alone, which also makes each frame cheaper to draw.
 
 ## Shade by delta
 
-With **Shade by delta** on, a row is filled more solidly the bigger its delta, in five steps from faint up to the side's **Opacity**. The strongest is measured against the biggest delta of any row on screen, so a row's length and its strength say the same thing, and scrolling to a busier stretch makes the rest fainter. Each row keeps a thin outline in its own colour, so a faint row is still seen. In **Monochrome**, buying is never fainter than half and selling never more solid than half, so the strongest sell does not read as a buy.
+With **Shade by delta** on, a row is filled more solidly the bigger its delta, in five steps from faint up to the side's **Opacity**. The strongest is measured against the biggest delta of any row on screen, so a row's length and its strength say the same thing, and scrolling to a busier stretch makes the rest fainter. Each row keeps a thin outline in its own colour, so a faint row is still seen. In **Monochrome** every row is the one colour, so a strength says only how big a delta is, and the minus sign in a row's number says which way it went.
 
 ## See also
 

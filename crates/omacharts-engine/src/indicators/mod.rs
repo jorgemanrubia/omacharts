@@ -501,6 +501,8 @@ impl Kind {
             Kind::Footprint => Params::Footprint {
                 zoom: flow::FOOTPRINT_ZOOM,
                 intensity: true,
+                numbers: true,
+                row_ticks: None,
                 inks: flow::Inks::default(),
             },
             Kind::LargeOrders => Params::LargeOrders {
@@ -891,6 +893,14 @@ pub enum Params {
         /// every row alike.
         #[serde(default = "flow::yes")]
         intensity: bool,
+        /// Whether each row's delta is written in it, or the rows are drawn
+        /// alone.
+        #[serde(default = "flow::yes")]
+        numbers: bool,
+        /// How many ticks a row holds, or `None` for a compact line's worth
+        /// at the chart's price scale, as a market profile's row height.
+        #[serde(default)]
+        row_ticks: Option<u32>,
         #[serde(default)]
         inks: flow::Inks,
     },
@@ -2292,6 +2302,26 @@ mod tests {
         }
         let read: Indicator = serde_json::from_str(&serde_json::to_string(&volume).unwrap()).unwrap();
         assert_eq!(read.params.volume_alphas(), Some((0.2, 0.9)));
+    }
+
+    /// A footprint stored before its figures could be turned off or its rows
+    /// set reads with them on and its rows automatic; one turned off reads
+    /// back off.
+    #[test]
+    fn a_stored_footprint_keeps_its_numbers() {
+        let mut stored = serde_json::to_value(Indicator::new(1, Kind::Footprint)).unwrap();
+        let params = stored["params"].as_object_mut().unwrap();
+        params.remove("numbers");
+        params.remove("row_ticks");
+        let read: Indicator = serde_json::from_value(stored).unwrap();
+        assert!(matches!(read.params, Params::Footprint { numbers: true, row_ticks: None, .. }), "{read:?}");
+
+        let mut off = Indicator::new(1, Kind::Footprint);
+        if let Params::Footprint { numbers, .. } = &mut off.params {
+            *numbers = false;
+        }
+        let read: Indicator = serde_json::from_value(serde_json::to_value(&off).unwrap()).unwrap();
+        assert!(matches!(read.params, Params::Footprint { numbers: false, .. }), "{read:?}");
     }
 
     /// A volume profile stored before its strength, highlight and value

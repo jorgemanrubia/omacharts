@@ -54,6 +54,76 @@ pub fn ticks_per_row(tick_px: f64, least: f64) -> u32 {
     STEPS.into_iter().find(|step| f64::from(*step) * tick_px >= least).unwrap_or(*STEPS.last().unwrap_or(&1))
 }
 
+/// The compact pitch an automatic row is aimed at, in logical pixels: a
+/// line of small type and a gap of a pixel or two.
+pub const ROW_PITCH: f64 = 16.0;
+/// The least pitch an automatic row may keep before a coarser step is
+/// taken, and the most before a finer one is: inside the two, the step held
+/// is kept, so a price scale that breathes a little leaves the rows alone.
+pub const PITCH_KEPT: (f64, f64) = (13.0, 40.0);
+/// The most ticks a row may be set to hold.
+pub const MAX_ROW_TICKS: u32 = 10_000;
+
+/// The ticks an automatic row holds when a tick is `tick_px` pixels tall:
+/// `held`, the step drawn so far, while its rows stay between
+/// [`PITCH_KEPT`]'s bounds; otherwise the fewest of 1, 2, 4, 5, 10 and on
+/// that make a row [`ROW_PITCH`] tall or more.
+pub fn auto_ticks(tick_px: f64, held: Option<u32>) -> u32 {
+    if let Some(held) = held.filter(|held| STEPS.contains(held)) {
+        let pitch = f64::from(held) * tick_px;
+        // Finer is only taken when a finer step would still be tall enough.
+        let finer = STEPS.iter().rev().find(|step| **step < held).copied();
+        let finer_fits = finer.is_some_and(|finer| f64::from(finer) * tick_px >= ROW_PITCH);
+        if pitch >= PITCH_KEPT.0 && (pitch <= PITCH_KEPT.1 || !finer_fits) {
+            return held;
+        }
+    }
+    ticks_per_row(tick_px, ROW_PITCH)
+}
+
+/// The ticks a row of a footprint set to `chosen` ticks holds: `chosen`
+/// itself, or the fewest of its multiples that leave a row `least` pixels
+/// tall when a tick is `tick_px`, so a fine setting zoomed far out still
+/// draws rows that can be told apart. A multiple of `chosen` keeps the rows
+/// on its grid.
+pub fn fixed_ticks(chosen: u32, tick_px: f64, least: f64) -> u32 {
+    let chosen = chosen.clamp(1, MAX_ROW_TICKS);
+    if !(tick_px.is_finite() && tick_px > 0.0) {
+        return chosen;
+    }
+    let needed = (least / (f64::from(chosen) * tick_px)).ceil().max(1.0);
+    (f64::from(chosen) * needed).min(f64::from(MAX_ROW_TICKS * 10)) as u32
+}
+
+/// Fold one bar's ticks, `cells[i]` being the delta at `low_tick + i` or
+/// `untraded` where nothing traded, into rows of `step` ticks aligned to
+/// multiples of `step`, so a row covers the same prices on every bar. Each
+/// row that traded is handed to `each`, lowest first, as its low tick and
+/// its delta. Nothing is allocated.
+#[inline]
+pub fn fold(low_tick: i32, cells: &[i64], untraded: i64, step: u32, mut each: impl FnMut(i32, i64)) {
+    let step = step.max(1) as i32;
+    let mut open: Option<(i32, i64)> = None;
+    for (i, delta) in cells.iter().enumerate() {
+        if *delta == untraded {
+            continue;
+        }
+        let low = (low_tick + i as i32).div_euclid(step) * step;
+        match &mut open {
+            Some((at, sum)) if *at == low => *sum += *delta,
+            _ => {
+                if let Some((at, sum)) = open.take() {
+                    each(at, sum);
+                }
+                open = Some((low, *delta));
+            }
+        }
+    }
+    if let Some((at, sum)) = open {
+        each(at, sum);
+    }
+}
+
 /// How strongly a row of `delta` is filled, as one of `levels` steps from 1
 /// to `levels`, against the strongest row it is compared with, `largest`
 /// (by size, either sign). The strongest is the last step; a row of nought
@@ -164,6 +234,44 @@ mod tests {
         assert_eq!(ticks_per_row(1.0, 3.0), 4);
         assert_eq!(ticks_per_row(0.7, 3.0), 5);
         assert_eq!(ticks_per_row(0.0, 3.0), 5000);
+    }
+
+    #[test]
+    fn an_automatic_row_is_a_compact_line_and_holds_its_step() {
+        assert_eq!(auto_ticks(20.0, None), 1, "a tick taller than a line is a row of its own");
+        assert_eq!(auto_ticks(5.0, None), 4);
+        assert_eq!(auto_ticks(1.0, None), 20);
+        // The scale breathes: the step held is kept while its rows stay
+        // comfortable, either way.
+        assert_eq!(auto_ticks(3.5, Some(4)), 4, "14 px rows are kept");
+        assert_eq!(auto_ticks(9.0, Some(4)), 4, "36 px rows are kept: 2 ticks would be 18, but 4 is held");
+        assert_eq!(auto_ticks(3.0, Some(4)), 10, "12 px rows are too thin: the fewest ticks that make 16 px");
+        assert_eq!(auto_ticks(11.0, Some(4)), 2, "44 px rows are too fat once 2 ticks make 22");
+        assert_eq!(auto_ticks(30.0, Some(1)), 1, "nothing finer than a tick");
+        assert_eq!(auto_ticks(5.0, Some(3)), 4, "a step that is not a round one is not held");
+    }
+
+    #[test]
+    fn a_fixed_row_keeps_its_ticks_until_they_are_too_thin() {
+        assert_eq!(fixed_ticks(4, 2.0, 3.0), 4);
+        assert_eq!(fixed_ticks(1, 0.5, 3.0), 6);
+        assert_eq!(fixed_ticks(4, 0.25, 3.0), 12, "a multiple of 4, on its grid");
+        assert_eq!(fixed_ticks(0, 4.0, 3.0), 1, "never under a tick");
+        assert_eq!(fixed_ticks(4, 0.0, 3.0), 4);
+    }
+
+    #[test]
+    fn folding_lines_rows_up_across_bars() {
+        const NONE: i64 = i64::MIN;
+        let mut seen = Vec::new();
+        fold(99, &[-1, 2, 0, NONE, 4], NONE, 1, |low, delta| seen.push((low, delta)));
+        assert_eq!(seen, vec![(99, -1), (100, 2), (101, 0), (103, 4)], "nothing traded, no row");
+        seen.clear();
+        fold(99, &[-1, 2, 0, NONE, 4], NONE, 2, |low, delta| seen.push((low, delta)));
+        assert_eq!(seen, vec![(98, -1), (100, 2), (102, 4)]);
+        seen.clear();
+        fold(-3, &[1, 1, 1], NONE, 2, |low, delta| seen.push((low, delta)));
+        assert_eq!(seen, vec![(-4, 1), (-2, 2)], "below nought on the same grid");
     }
 
     #[test]

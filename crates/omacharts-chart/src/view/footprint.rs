@@ -4,8 +4,15 @@
 //! candles' place: a narrow candle at each bar's left, and beside it a row
 //! for each price the bar traded at, as long as what was bought there less
 //! what was sold, in buying's colour or selling's, with the figure written
-//! in it where the row is tall enough to read. Rows too thin to tell apart
-//! are folded into rows of several ticks.
+//! in it at its left where the row is tall enough to read.
+//!
+//! **Rows.** A row holds so many ticks as its settings say, or
+//! automatically a compact line's worth for the price scale
+//! ([`rows::auto_ticks`]): worked out again only when the scale changes,
+//! and then kept while it still makes a comfortable row, so scrolling never
+//! makes the rows jump. Rows sit on the same grid on every bar, and are
+//! never drawn taller than a line of small type ([`ROW_MAX`]), centred on
+//! their prices, however far the chart is zoomed in.
 //!
 //! **Smooth.** A footprint is redrawn on every frame of a scroll and every
 //! tick, so each bar's ladder is kept once read ([`Cache`]), keyed by the
@@ -14,6 +21,9 @@
 //! drawn. Nothing is allocated per frame once the bars on screen are kept:
 //! figures are written into a buffer of bytes and drawn as glyphs looked up
 //! once, and each colour's rows are filled as one path.
+//!
+//! **Numbers.** With them off, only the rows and candles are drawn: no
+//! figure is placed, no font is set and no glyph is looked up.
 //!
 //! **Strength.** With intensity on, a row is filled more solidly the bigger
 //! its delta against the biggest on screen — the same reference the rows'
@@ -43,17 +53,20 @@ pub(super) const LEVELS: usize = 5;
 /// The weakest row's opacity, against the strongest's.
 const FAINT: f64 = 0.16;
 
-/// Monochrome's buying, never fainter than this share of its opacity, and
-/// its selling never stronger: one ink, two sides that do not overlap.
-const MONO_BUY_FLOOR: f64 = 0.45;
-const MONO_SELL_CEILING: f64 = 0.5;
-
 /// The space between a number and a row's edge.
 const PAD: f64 = 4.0;
+/// Where a number starts in its row: at the row's left, just inside.
+const INSIDE: f64 = 3.0;
 /// The least a row is drawn tall, in pixels: thinner, ticks fold together.
 const ROW_MIN: f64 = 3.0;
 /// The least a row is tall for its figure to be written in it.
 const FIGURE_MIN: f64 = 11.0;
+/// The tallest a row is drawn, in pixels, however tall its ticks are: a line
+/// of small type, centred on the row's prices, so a tick zoomed in a long
+/// way is still a row and never a block.
+const ROW_MAX: f64 = 15.0;
+/// The figures' type size, in pixels, at its largest.
+const FIGURE_SIZE: f64 = 11.0;
 /// What a figure is written with: [`rows::short`]'s characters.
 const CHARS: &[u8; 14] = b"0123456789-.KM";
 const FACE: &str = "monospace";
@@ -79,30 +92,10 @@ struct Cells {
 
 impl Cells {
     /// Each row of `step` ticks that traded, lowest first, as its low tick
-    /// and its delta.
+    /// and its delta: [`rows::fold`] over what was kept.
     #[inline]
-    fn each_row(&self, step: u32, mut each: impl FnMut(i32, i64)) {
-        let step = step.max(1) as i32;
-        let mut open: Option<(i32, i64)> = None;
-        for (i, delta) in self.cells.iter().enumerate() {
-            if *delta == UNTRADED {
-                continue;
-            }
-            let tick = self.low_tick + i as i32;
-            let low = tick.div_euclid(step) * step;
-            match &mut open {
-                Some((at, sum)) if *at == low => *sum += *delta,
-                _ => {
-                    if let Some((at, sum)) = open.take() {
-                        each(at, sum);
-                    }
-                    open = Some((low, *delta));
-                }
-            }
-        }
-        if let Some((at, sum)) = open {
-            each(at, sum);
-        }
+    fn each_row(&self, step: u32, each: impl FnMut(i32, i64)) {
+        rows::fold(self.low_tick, &self.cells, UNTRADED, step, each);
     }
 }
 
@@ -120,9 +113,37 @@ pub(super) struct Cache {
     scratch: Ladder,
     /// Kept bars let go, kept for theirs.
     spare: Vec<Cells>,
+    /// The ticks a row held when last drawn, and the height of a tick it
+    /// was worked out for: worked out again only when the price scale
+    /// changes, and then held while it still makes a comfortable row.
+    step: Option<(u32, u64)>,
 }
 
 impl Cache {
+    /// The ticks a row holds: so many as chosen, or automatically a compact
+    /// line's worth, held from frame to frame while it still is one.
+    fn step_for(&mut self, chosen: Option<u32>, tick_px: f64) -> u32 {
+        match chosen {
+            Some(chosen) => rows::fixed_ticks(chosen, tick_px, ROW_MIN),
+            None => {
+                let scale = tick_px.to_bits();
+                match self.step {
+                    Some((step, at)) if at == scale => step,
+                    held => {
+                        let step = rows::auto_ticks(tick_px, held.map(|(step, _)| step));
+                        self.step = Some((step, scale));
+                        step
+                    }
+                }
+            }
+        }
+    }
+
+    /// The ticks a row held when last drawn automatically.
+    pub(super) fn auto_step(&self) -> Option<u32> {
+        self.step.map(|(step, _)| step)
+    }
+
     fn reset(&mut self) {
         self.spare.extend(self.bars.drain().map(|(_, cells)| cells));
     }
@@ -247,7 +268,9 @@ pub(super) fn inks<'a>(state: &'a State, inks: &'a flow::Inks) -> (Cow<'a, str>,
 /// Draw `drawn`'s footprint over the columns: falls back to the candles
 /// where there is nothing to read it from.
 pub(super) fn draw(cr: &cairo::Context, state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
-    let Params::Footprint { intensity, inks: chosen_inks, .. } = &drawn.indicator.params else { return };
+    let Params::Footprint { intensity, numbers, row_ticks, inks: chosen_inks, .. } = &drawn.indicator.params else {
+        return;
+    };
     let Some(read) = state.volume_at_price.as_ref() else { return };
     let Some(first) = state.bars.first() else { return };
     let mut drew = false;
@@ -255,10 +278,12 @@ pub(super) fn draw(cr: &cairo::Context, state: &State, drawn: &Drawn, columns: &
         let Some(held) = held else { return };
         let mut cache = state.footprint.borrow_mut();
         cache.fill(state, held, columns);
-        paint(cr, state, &cache, held.tick_size, *intensity, chosen_inks, columns, to_y);
+        let tick_px = (to_y(0.0) - to_y(held.tick_size)).abs();
+        let step = cache.step_for(*row_ticks, tick_px);
+        paint(cr, state, &cache, held.tick_size, step, (*intensity, *numbers), chosen_inks, columns, to_y);
         drew = true;
     });
-    if !drew {
+    if !drew && bar_drawn(state) {
         super::candles(cr, state.bar_style, state.ohlc_thickness, &state.scheme, columns, to_y);
     }
 }
@@ -266,22 +291,49 @@ pub(super) fn draw(cr: &cairo::Context, state: &State, drawn: &Drawn, columns: &
 /// Where a bar's parts go across its column.
 #[derive(Clone, Copy)]
 struct Across {
-    /// The candle's body, as a left edge and a width, and its wick.
-    body: (f64, f64),
-    wick: f64,
     /// Where the rows start and how far they may reach.
     rows: (f64, f64),
 }
 
-fn across(columns: &Columns, at: usize) -> Across {
-    let bar_px = columns.bar_px;
-    let left = columns.x(at) - bar_px / 2.0;
+/// The space either side of the narrow bar, and its body's width: an odd
+/// number of pixels, so its wick has a middle.
+fn narrow(bar_px: f64) -> (f64, f64) {
     let gap = (bar_px * 0.06).clamp(2.0, 6.0).round();
     let body_w = ((bar_px * 0.1).clamp(3.0, 9.0) / 2.0).floor() * 2.0 + 1.0;
-    let body_x = (left + gap).round();
-    let rows_x = body_x + body_w + gap;
+    (gap, body_w)
+}
+
+/// Across column `at`: the rows start past the narrow bar, or at the
+/// column's left where the chart draws no bar.
+fn across(columns: &Columns, at: usize, bar: bool) -> Across {
+    let bar_px = columns.bar_px;
+    let left = columns.x(at) - bar_px / 2.0;
+    let (gap, body_w) = narrow(bar_px);
+    let rows_x = match bar {
+        true => (left + gap).round() + body_w + gap,
+        false => (left + gap).round(),
+    };
     let rows_w = (left + bar_px - gap - rows_x).max(0.0);
-    Across { body: (body_x, body_w), wick: body_x + (body_w - 1.0) / 2.0 + 0.5, rows: (rows_x, rows_w) }
+    Across { rows: (rows_x, rows_w) }
+}
+
+/// Whether the chart draws a bar at all, which a footprint then draws
+/// narrow: not for a line, nor with its bars hidden.
+fn bar_drawn(state: &State) -> bool {
+    !state.bars_hidden && state.bar_style != omacharts_engine::bars::BarStyle::Line
+}
+
+/// The chart's own bars, in its own style and colours, narrow at each
+/// column's left: the routine that draws them across a whole column, handed
+/// the columns narrowed.
+fn narrow_bars(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
+    let (gap, body_w) = narrow(columns.bar_px);
+    // The face a body of `body_w` is drawn from, and its middle's offset
+    // from the column's.
+    let face = body_w / 0.68;
+    let nudge = gap + body_w / 2.0 - columns.bar_px / 2.0;
+    let narrowed = columns.narrowed(face, nudge);
+    super::candles(cr, state.bar_style, state.ohlc_thickness, &state.scheme, &narrowed, to_y);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -290,22 +342,32 @@ fn paint(
     state: &State,
     cache: &Cache,
     tick_size: f64,
-    intensity: bool,
+    step: u32,
+    (intensity, numbers): (bool, bool),
     chosen_inks: &flow::Inks,
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
     let bars = columns.slice;
+    let with_bar = bar_drawn(state);
     let tick_px = (to_y(0.0) - to_y(tick_size)).abs();
-    let step = rows::ticks_per_row(tick_px, ROW_MIN);
-    let row_y = |low: i32| {
-        let top = to_y((f64::from(low) + f64::from(step) - 0.5) * tick_size);
-        let bottom = to_y((f64::from(low) - 0.5) * tick_size);
-        (top, bottom)
+    // A row's pitch, and the height drawn in it: a gap of a pixel or two
+    // between rows, and never taller than a line of small type.
+    let pitch = tick_px * f64::from(step);
+    let gap = if pitch >= 8.0 {
+        2.0
+    } else if pitch >= 4.0 {
+        1.0
+    } else {
+        0.0
     };
-    let row_h = tick_px * f64::from(step);
-    // A pixel between rows, when they have one to spare.
-    let inset = if row_h >= 5.0 { 0.5 } else { 0.0 };
+    let row_h = (pitch - gap).clamp(1.0, ROW_MAX).round();
+    // Each row centred on the middle of its prices, on whole pixels.
+    let row_y = |low: i32| {
+        let middle = to_y((f64::from(low) + (f64::from(step) - 1.0) / 2.0) * tick_size);
+        let top = (middle - row_h / 2.0).round();
+        (top, top + row_h)
+    };
 
     // The biggest row on screen, which every row's length and strength is
     // measured against.
@@ -319,19 +381,12 @@ fn paint(
     let (buy, sell) = inks(state, chosen_inks);
     let (buy_alpha, sell_alpha) = chosen_inks.alphas(flow::FOOTPRINT_ALPHA);
     let levels = if intensity { LEVELS } else { 1 };
-    // Each side's faintest and strongest. Monochrome paints both in one
-    // ink, so there the sides keep apart: buying from half solid up, selling
-    // no stronger than half, or the strongest sell reads as a middling buy.
-    let mono = chosen_inks.buy.is_none()
-        && chosen_inks.sell.is_none()
-        && chosen_inks.colouring.unwrap_or(state.house.0) == omacharts_engine::theme::BarColouring::Monochrome;
+    // Each side's faintest and strongest. In Monochrome both sides are the
+    // one ink at the one opacity: a row's strength says how big its delta
+    // is, never which way.
     let span = |buying: bool| {
         let full = if buying { buy_alpha } else { sell_alpha };
-        match (mono, buying) {
-            (false, _) => (FAINT * full, full),
-            (true, true) => (MONO_BUY_FLOOR * full, full),
-            (true, false) => (FAINT * full, MONO_SELL_CEILING * full),
-        }
+        (FAINT * full, full)
     };
     let alpha_of = |delta: i64| {
         let (faint, strong) = span(delta > 0);
@@ -353,13 +408,13 @@ fn paint(
             let mut any = false;
             for (at, bar) in bars.iter().enumerate() {
                 let Some(cells) = cache.bars.get(&bar.ts) else { continue };
-                let (x, room) = across(columns, at).rows;
+                let (x, room) = across(columns, at, with_bar).rows;
                 cells.each_row(step, |low, delta| {
                     if delta == 0 || (delta > 0) != buying || rows::strength(delta, largest, levels) != level {
                         return;
                     }
                     let (top, bottom) = row_y(low);
-                    cr.rectangle(x, top.round() + inset, length(delta, room), (bottom.round() - top.round() - 2.0 * inset).max(1.0));
+                    cr.rectangle(x, top, length(delta, room), bottom - top);
                     any = true;
                 });
             }
@@ -376,17 +431,17 @@ fn paint(
         let mut any = false;
         for (at, bar) in bars.iter().enumerate() {
             let Some(cells) = cache.bars.get(&bar.ts) else { continue };
-            let (x, room) = across(columns, at).rows;
+            let (x, room) = across(columns, at, with_bar).rows;
             cells.each_row(step, |low, delta| {
                 if delta == 0 || (delta > 0) != buying {
                     return;
                 }
                 let (top, bottom) = row_y(low);
-                let h = (bottom.round() - top.round() - 2.0 * inset).max(1.0);
+                let h = bottom - top;
                 if h < 3.0 {
                     return;
                 }
-                cr.rectangle(x + 0.5, top.round() + inset + 0.5, (length(delta, room) - 1.0).max(0.0), h - 1.0);
+                cr.rectangle(x + 0.5, top + 0.5, (length(delta, room) - 1.0).max(0.0), h - 1.0);
                 any = true;
             });
         }
@@ -397,37 +452,15 @@ fn paint(
         }
     }
 
-    // The narrow candles, hollow, in the chart's own colours.
-    cr.set_line_width(1.0);
-    for rising in [false, true] {
-        let mut any = false;
-        for (at, bar) in bars.iter().enumerate() {
-            if (bar.close >= bar.open) != rising || !bar.close.is_finite() {
-                continue;
-            }
-            let Across { body: (x, w), wick, .. } = across(columns, at);
-            let top = to_y(bar.open.max(bar.close)).round();
-            let bottom = to_y(bar.open.min(bar.close)).round().max(top + 1.0);
-            let (high, low) = (to_y(bar.high).round(), to_y(bar.low).round());
-            cr.rectangle(x + 0.5, top + 0.5, w - 1.0, bottom - top);
-            if high < top {
-                cr.move_to(wick, high);
-                cr.line_to(wick, top);
-            }
-            if low > bottom {
-                cr.move_to(wick, bottom + 1.0);
-                cr.line_to(wick, low);
-            }
-            any = true;
-        }
-        if any {
-            colors::set_source(cr, if rising { &state.scheme.up } else { &state.scheme.down });
-            let _ = cr.stroke();
-        }
+    // The chart's own bars, narrow, in its own style and colours: the
+    // footprint's colouring is the rows' alone.
+    if with_bar {
+        narrow_bars(cr, state, columns, to_y);
     }
 
-    // The figures, where the rows are tall enough to read them.
-    if row_h >= FIGURE_MIN {
+    // The figures, where the rows are tall enough to read them, unless
+    // they are turned off: then no text is laid out or drawn at all.
+    if numbers && row_h >= FIGURE_MIN {
         // A number goes dark where it sits wholly on a row whose fill, laid
         // over the background, is nearer the text's lightness than the
         // background's: there a light number would fade into it. Lightness
@@ -436,24 +469,17 @@ fn paint(
         let ground = luminance(&state.theme.ui.background);
         let text = luminance(&state.theme.ui.text);
         let (buy_light, sell_light) = (luminance(&buy), luminance(&sell));
-        // Where a number goes along its row, and whether it is dark: inside
-        // a row long enough to hold it, after the end of a shorter one, so
-        // the row's edge never cuts through a digit, and inside again, over
-        // the end, when there is no room after it either.
+        // Where a number goes along its row, and whether it is dark: always
+        // inside at the row's left, on the bar, so the figures make a column
+        // down the bar; dark only where the row runs on past all of it.
         let place = |delta: i64, room: f64, text_px: f64| {
             let long = length(delta, room);
             let light = if delta > 0 { buy_light } else { sell_light };
             let fill = ground + (light - ground) * alpha_of(delta);
             let dark = (fill - ground).abs() > (fill - text).abs();
-            if long >= text_px + 2.0 * PAD {
-                (PAD, dark)
-            } else if long + PAD + text_px <= room {
-                (long + PAD, false)
-            } else {
-                (PAD, dark && long >= text_px)
-            }
+            (INSIDE, dark && long >= text_px + INSIDE)
         };
-        figures(cr, state, cache, step, columns, &row_y, &place);
+        figures(cr, state, cache, (step, with_bar), columns, &row_y, &place);
     }
     cr.restore().ok();
 }
@@ -464,14 +490,14 @@ fn figures(
     cr: &cairo::Context,
     state: &State,
     cache: &Cache,
-    step: u32,
+    (step, with_bar): (u32, bool),
     columns: &Columns,
     row_y: &impl Fn(i32) -> (f64, f64),
     place: &impl Fn(i64, f64, f64) -> (f64, bool),
 ) {
     const BATCH: usize = 256;
     let row_h = row_y(0).1 - row_y(0).0;
-    let size = (row_h * 0.7).clamp(8.0, 12.0);
+    let size = (row_h * 0.75).clamp(8.0, FIGURE_SIZE);
     cr.select_font_face(FACE, cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     cr.set_font_size(size);
     let Some(table) = glyphs(cr) else { return };
@@ -489,7 +515,7 @@ fn figures(
         let mut n = 0;
         for (at, bar) in columns.slice.iter().enumerate() {
             let Some(cells) = cache.bars.get(&bar.ts) else { continue };
-            let (x, room) = across(columns, at).rows;
+            let (x, room) = across(columns, at, with_bar).rows;
             cells.each_row(step, |low, delta| {
                 let text = rows::short(delta, &mut buf);
                 let text_px = text.len() as f64 * advance;
@@ -542,6 +568,77 @@ fn glyphs(cr: &cairo::Context) -> Option<[c_ulong; 14]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The automatic step is worked out when the price scale changes and
+    /// held while it still makes a compact row; a fixed one is taken as set.
+    #[test]
+    fn a_row_step_is_held_until_the_scale_moves_it() {
+        let mut cache = Cache::default();
+        assert_eq!(cache.step_for(None, 4.0), 4, "16 px rows");
+        assert_eq!(cache.step_for(None, 3.6), 4, "14.4 px rows are kept");
+        assert_eq!(cache.step_for(None, 2.0), 10, "8 px rows are not");
+        assert_eq!(cache.step_for(Some(2), 4.0), 2, "as set");
+        assert_eq!(cache.auto_step(), Some(10), "a fixed step leaves the automatic one alone");
+    }
+
+    /// A frame of a footprint zoomed in, as its pixels.
+    fn frame(numbers: bool) -> Vec<u8> {
+        shot(crate::flow_bench::FlowScene::new(120, 20, &["footprint"], 60, 0).footprint_numbers(numbers))
+    }
+
+    fn shot(scene: crate::flow_bench::FlowScene) -> Vec<u8> {
+        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 1600, 900).unwrap();
+        {
+            let cr = cairo::Context::new(&surface).unwrap();
+            scene.view_frame(&cr, 1600.0, 900.0);
+        }
+        surface.flush();
+        surface.data().unwrap().to_vec()
+    }
+
+    /// Numbers off leaves the figures out and the rows and candles drawn:
+    /// a frame without them differs from one with them only where they
+    /// were written.
+    #[test]
+    fn numbers_off_draws_the_rows_alone() {
+        let (on, off) = (frame(true), frame(false));
+        assert_ne!(on, off, "figures written with numbers on");
+        let changed = on.chunks(4).zip(off.chunks(4)).filter(|(a, b)| a != b).count();
+        assert!(changed < on.len() / 4 / 10, "only the figures' pixels differ: {changed}");
+        assert_eq!(off, frame(false), "the same rows every frame");
+    }
+
+    /// The bar beside each column is the chart's own, in its style and its
+    /// colours: a narrow candle, a narrow OHLC bar, or none for a line. The
+    /// footprint's colouring, Monochrome here, never reaches it, and the
+    /// chart's colours never reach the rows.
+    #[test]
+    fn the_bar_beside_the_rows_follows_the_chart() {
+        use omacharts_engine::bars::BarStyle;
+        use omacharts_engine::theme::BarColouring;
+        let frame = |style: BarStyle| {
+            shot(
+                crate::flow_bench::FlowScene::new(120, 20, &["footprint"], 60, 0)
+                    .footprint_numbers(false)
+                    .footprint_colouring(BarColouring::Monochrome)
+                    .bars(style, "#ff00ff", "#00ffff"),
+            )
+        };
+        // Cairo's pixels are blue, green, red and alpha.
+        let bar_pixels = |pixels: &[u8]| {
+            pixels.chunks(4).filter(|p| *p == [255, 0, 255, 255] || *p == [255, 255, 0, 255]).count()
+        };
+        let (candles, ohlc, line) = (frame(BarStyle::Candles), frame(BarStyle::Ohlc), frame(BarStyle::Line));
+        assert!(bar_pixels(&candles) > 200, "narrow candles in the chart's colours: {}", bar_pixels(&candles));
+        assert!(bar_pixels(&ohlc) > 100, "narrow OHLC bars in the chart's colours: {}", bar_pixels(&ohlc));
+        assert!(bar_pixels(&ohlc) < bar_pixels(&candles), "bars are thinner than filled candles");
+        assert_ne!(candles, ohlc);
+        assert_eq!(bar_pixels(&line), 0, "a line chart's footprint draws no bar");
+        assert_ne!(line, candles, "and its rows take the bar's room");
+        // Nothing but the bars is in the chart's colours: with no bar, the
+        // rows are the footprint's Monochrome ink alone.
+        assert!(line.chunks(4).all(|p| !(p[2] > 200 && p[1] < 60 && p[0] > 200)), "no magenta in the rows");
+    }
 
     #[test]
     fn rows_fold_kept_ticks_on_the_fly() {

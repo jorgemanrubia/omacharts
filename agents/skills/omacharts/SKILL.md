@@ -387,9 +387,11 @@ omacharts chart indicator set market_profile --tpo-style blocks --poc-color Ambe
 family. `cvd` (Cumulative Delta) is buying less selling added up over a
 period, in a strip; `volume_delta` (VD) is the same delta bar by bar, one
 candle per bar from nought, in a strip; `footprint` (FP) replaces each candle,
-once bars are `--show-from` pixels wide (64 unless set), with a narrow candle
+once bars are `--show-from` pixels wide (64 unless set), with a narrow bar of the chart's own style (none on a line chart)
 and each price's delta beside it, rows filled more solidly the bigger the
-delta unless `--intensity off`; `large_orders` draws a bubble at the price of
+delta unless `--intensity off`, the figures written in them unless
+`--numbers off`, `--row-ticks N` ticks a row or `auto` (the default: a
+compact line's worth); `large_orders` draws a bubble at the price of
 each order bigger than `--rth-threshold` (50) in regular hours or
 `--eth-threshold` (20) outside them, sized against `--size-against visible`,
 `session` or `hours`, prints of one moment and side counted as one order
@@ -397,8 +399,8 @@ unless `--combine off`. The footprint and large orders need a feed with
 volume at price and say so on any other; the two deltas are estimated
 there and their legends read `≈`. The three new ones are painted by
 `--colouring default|theme|theme-soft|theme-quiet|theme-mono` (Monochrome,
-also spelled `monochrome`: one ink, solid for buying and faint for
-selling; every colouring flag takes it, Volume's too), with `--buy-color`,
+also spelled `monochrome`: one colour for buying and selling alike, the
+Monochrome candles' ink; every colouring flag takes it, Volume's too), with `--buy-color`,
 `--sell-color` (`none` for the colouring's) and `--buy-transparency`,
 `--sell-transparency` (`default` for their own); `volume_delta` takes
 `--height`. They have no line, so `--color` and `--transparency` are refused.

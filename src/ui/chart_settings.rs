@@ -1891,7 +1891,7 @@ fn parameters_group(
             }
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
-        Params::Footprint { zoom, intensity, .. } => {
+        Params::Footprint { zoom, intensity, numbers, row_ticks, .. } => {
             group.add(&spin_row(
                 owner,
                 refresh,
@@ -1907,9 +1907,38 @@ fn parameters_group(
                     }
                 },
             ));
+            // Automatic, or so many ticks a row, as a market profile's:
+            // greyed while automatic, showing the ticks being drawn.
+            let granularity = {
+                let owner = owner.clone();
+                let refresh = refresh.clone();
+                let drawn: Rc<dyn Fn() -> Option<usize>> = {
+                    let owner = owner.clone();
+                    Rc::new(move || owner.profile_rows(id))
+                };
+                profile_rows::granularity(row_ticks.map(|t| t as usize), drawn, move |ticks| {
+                    update(&owner, id, move |indicator| {
+                        if let Params::Footprint { row_ticks, .. } = &mut indicator.params {
+                            *row_ticks = ticks.map(|t| t as u32);
+                        }
+                    });
+                    refresh.run();
+                })
+            };
+            granularity.rows.set_title(MARKET_ROW_TICKS_LABEL);
+            granularity.automatic.set_title(profile_rows::AUTOMATIC);
+            granularity.rows.set_range(1.0, f64::from(omacharts_engine::studies::footprint::MAX_ROW_TICKS));
+            (granularity.show)(row_ticks.map(|t| t as usize));
+            group.add(&granularity.automatic);
+            group.add(&granularity.rows);
             group.add(&flow_switch(owner, refresh, id, FOOTPRINT_INTENSITY_LABEL, *intensity, |params, on| {
                 if let Params::Footprint { intensity, .. } = params {
                     *intensity = on;
+                }
+            }));
+            group.add(&flow_switch(owner, refresh, id, FOOTPRINT_NUMBERS_LABEL, *numbers, |params, on| {
+                if let Params::Footprint { numbers, .. } = params {
+                    *numbers = on;
                 }
             }));
         }
@@ -2751,6 +2780,7 @@ fn colouring_row(owner: &Rc<Owner>, refresh: &Refresh, id: u32, current: Option<
 /// The rows of the order flow indicators' own.
 pub const FOOTPRINT_ZOOM_LABEL: &str = "Min bar width px";
 pub const FOOTPRINT_INTENSITY_LABEL: &str = "Shade by delta";
+pub const FOOTPRINT_NUMBERS_LABEL: &str = "Numbers";
 pub const LARGE_RTH_LABEL: &str = "RTH threshold";
 pub const LARGE_ETH_LABEL: &str = "ETH threshold";
 pub const LARGE_COMPARE_LABEL: &str = "Size against";

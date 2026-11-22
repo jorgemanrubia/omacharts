@@ -4846,6 +4846,8 @@ struct Edits {
     show_from: Option<f64>,
     /// Whether a footprint's rows are filled by their strength.
     intensity: Option<bool>,
+    /// Whether a footprint's rows have their figures written in them.
+    numbers: Option<bool>,
     /// The sizes a large order is bigger than, in and out of regular hours.
     rth_threshold: Option<u64>,
     eth_threshold: Option<u64>,
@@ -5155,6 +5157,7 @@ impl Edits {
                 bounded(m, "show-from", MIN_FOOTPRINT_ZOOM, MAX_FOOTPRINT_ZOOM)?
             },
             intensity: switch(m, "intensity")?,
+            numbers: switch(m, "numbers")?,
             rth_threshold: threshold(m, "rth-threshold")?,
             eth_threshold: threshold(m, "eth-threshold")?,
             size_against: match arg(m, "size-against") {
@@ -5242,6 +5245,7 @@ impl Edits {
             && self.sell_alpha.is_none()
             && self.show_from.is_none()
             && self.intensity.is_none()
+            && self.numbers.is_none()
             && self.rth_threshold.is_none()
             && self.eth_threshold.is_none()
             && self.size_against.is_none()
@@ -5295,6 +5299,12 @@ impl Edits {
             match kind == IndicatorKind::Footprint {
                 true => params["intensity"] = json!(on),
                 false => return Err(refuse("intensity")),
+            }
+        }
+        if let Some(on) = self.numbers {
+            match kind == IndicatorKind::Footprint {
+                true => params["numbers"] = json!(on),
+                false => return Err(refuse("numbers")),
             }
         }
         for (size, key, what) in
@@ -5441,7 +5451,7 @@ impl Edits {
             }
         }
         if let Some(ticks) = self.row_ticks {
-            match kind == IndicatorKind::MarketProfile {
+            match matches!(kind, IndicatorKind::MarketProfile | IndicatorKind::Footprint) {
                 true => params["row_ticks"] = json!(ticks),
                 false => return Err(refuse("row height in ticks")),
             }
@@ -10272,6 +10282,8 @@ mod tests {
         let fp = listed(&store, "footprint");
         assert_eq!(fp["params"]["zoom"], 64.0);
         assert_eq!(fp["params"]["intensity"], true);
+        assert_eq!(fp["params"]["numbers"], true);
+        assert!(fp["params"]["row_ticks"].is_null(), "automatic rows unless set");
         let large = listed(&store, "large_orders");
         assert_eq!((large["params"]["regular"].as_u64(), large["params"]["extended"].as_u64()), (Some(50), Some(20)));
         assert_eq!(large["params"]["compare"], "session");
@@ -10322,6 +10334,16 @@ mod tests {
         assert_eq!(out.code, 0, "{}", out.err);
         let fp = listed(&store, "footprint");
         assert_eq!((fp["params"]["zoom"].as_f64(), fp["params"]["intensity"].as_bool()), (Some(120.0), Some(false)));
+        for (ticks, read) in [("4", Some(4)), ("auto", None)] {
+            let out = run(&format!("chart indicator set footprint --book Macro --row-ticks {ticks}"), &store);
+            assert_eq!(out.code, 0, "{}", out.err);
+            assert_eq!(listed(&store, "footprint")["params"]["row_ticks"].as_u64(), read);
+        }
+        for (numbers, read) in [("off", false), ("on", true)] {
+            let out = run(&format!("chart indicator set footprint --book Macro --numbers {numbers}"), &store);
+            assert_eq!(out.code, 0, "{}", out.err);
+            assert_eq!(listed(&store, "footprint")["params"]["numbers"].as_bool(), Some(read));
+        }
 
         let out = run(
             "chart indicator set large_orders --book Macro --rth-threshold 75 --eth-threshold 0 --size-against hours --combine off",
@@ -10343,6 +10365,10 @@ mod tests {
             "chart indicator set footprint --book Macro --rth-threshold 5",
             "chart indicator set footprint --book Macro --height 0.3",
             "chart indicator set volume_delta --book Macro --intensity on",
+            "chart indicator set footprint --book Macro --numbers maybe",
+            "chart indicator set footprint --book Macro --row-ticks 0",
+            "chart indicator set large_orders --book Macro --row-ticks 4",
+            "chart indicator set large_orders --book Macro --numbers off",
             "chart indicator set large_orders --book Macro --rth-threshold -1",
             "chart indicator set large_orders --book Macro --eth-threshold 2.5",
             "chart indicator set large_orders --book Macro --size-against week",

@@ -828,6 +828,11 @@ struct Columns<'a> {
     /// pixel the first column is, counted from the series' own first pixel.
     groups: std::ops::RangeInclusive<usize>,
     pixel: i64,
+    /// The width a bar is drawn at, and how far its middle sits from its
+    /// column's: the column's own width and nothing, but for the narrow bar a
+    /// footprint draws at each column's left ([`Columns::narrowed`]).
+    face: f64,
+    nudge: f64,
 }
 
 /// The fewest whole bars that make a group at least half a pixel wide,
@@ -857,6 +862,8 @@ impl<'a> Columns<'a> {
             per,
             groups: 0..=0,
             pixel: 0,
+            face: bar_px,
+            nudge: 0.0,
         };
         if bar_px >= 1.0 || bars.len() < visible {
             return columns;
@@ -872,6 +879,7 @@ impl<'a> Columns<'a> {
         columns.pixel = from;
         columns.left = origin + from as f64;
         columns.bar_w = 1.0;
+        columns.face = 1.0;
         columns.start = origin + first as f64 * bar_px;
         let count = (to - from + 1) as usize;
         let mut aggregated = Vec::with_capacity(count);
@@ -952,7 +960,32 @@ impl<'a> Columns<'a> {
 
     /// The middle of a column, which is where a candle is centred.
     fn x(&self, at: usize) -> f64 {
-        self.left + (at as f64 + 0.5) * self.bar_w
+        self.left + (at as f64 + 0.5) * self.bar_w + self.nudge
+    }
+
+    /// The same columns, their bars drawn `face` pixels wide with their
+    /// middles `nudge` pixels off the columns': what a footprint hands the
+    /// chart's own bar drawing to draw a narrow bar at each column's left.
+    /// Borrowed, so nothing is allocated, at a bar a column, where a
+    /// footprint is drawn.
+    fn narrowed(&self, face: f64, nudge: f64) -> Columns<'_> {
+        Columns {
+            bars: Cow::Borrowed(&self.bars),
+            first: self.first,
+            visible: self.visible,
+            plot_x: self.plot_x,
+            left: self.left,
+            bar_w: self.bar_w,
+            bar_px: self.bar_px,
+            start: self.start,
+            end: self.end,
+            slice: self.slice,
+            per: self.per,
+            groups: self.groups.clone(),
+            pixel: self.pixel,
+            face,
+            nudge: self.nudge + nudge,
+        }
     }
 
     /// How many bars a column stands for, on average: one at a bar a
@@ -981,8 +1014,8 @@ impl<'a> Columns<'a> {
     /// four pixels no odd body fits, which is why a candle that narrow is
     /// drawn as its wick alone.
     fn body(&self, at: usize) -> (f64, f64) {
-        let wanted = (self.bar_w * 0.68).clamp(1.0, 24.0);
-        let room = (self.bar_w.floor() - 1.0).max(1.0);
+        let wanted = (self.face * 0.68).clamp(1.0, 24.0);
+        let room = (self.face.floor() - 1.0).max(1.0);
         let odd = ((wanted - 1.0) / 2.0).round() * 2.0 + 1.0;
         let width = if odd <= room { odd } else { wanted.round().min(room) };
         (self.x(at).round() - ((width - 1.0) / 2.0).floor(), width)
@@ -5573,7 +5606,8 @@ impl ChartView {
     }
 
     /// How many rows the volume profile with this id is actually drawing,
-    /// or for a market profile how many ticks tall its rows are.
+    /// or for a market profile or a footprint how many ticks tall its rows
+    /// are.
     ///
     /// The settings panel shows this when the count is automatic, so the
     /// number on screen is the number being drawn rather than a placeholder.
@@ -5583,6 +5617,10 @@ impl ChartView {
             match &drawn.output {
                 Output::Profiles(profiles) => profiles.first().map(|p| p.rows.len()),
                 Output::MarketProfiles(profiles) => profiles.first().map(|p| p.row_ticks as usize),
+                Output::Footprint => match drawn.indicator.params {
+                    omacharts_engine::Params::Footprint { row_ticks: Some(ticks), .. } => Some(ticks as usize),
+                    _ => state.footprint.borrow().auto_step().map(|ticks| ticks as usize),
+                },
                 _ => None,
             }
         })
@@ -7631,16 +7669,20 @@ fn axis_time(bars: &[Bar], timeframe: Timeframe, per: f64, at: i64) -> Option<i6
 /// Up and down candles in two passes, each building one path for wicks and one
 /// for bodies.
 fn draw_candles(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
+    // Zoomed in far enough, a footprint takes the bars' place, a narrow bar
+    // of the chart's own style at each column's left, or none where the
+    // chart draws none: a line, or its bars hidden. A comparison drawing
+    // every market as a line keeps its lines.
+    let lines_only = state.compare.as_ref().is_some_and(|overlay| overlay.spec.lines_only);
+    if !lines_only && let Some(drawn) = footprint::shown(state, columns) {
+        footprint::draw(cr, state, drawn, columns, to_y);
+        return;
+    }
     if state.bars_hidden {
         return;
     }
     if state.drawn_as_line() {
         compare::draw_own_line(cr, state, columns, to_y);
-        return;
-    }
-    // Zoomed in far enough, a footprint takes the candles' place.
-    if let Some(drawn) = footprint::shown(state, columns) {
-        footprint::draw(cr, state, drawn, columns, to_y);
         return;
     }
     candles(cr, state.bar_style, state.ohlc_thickness, &state.scheme, columns, to_y);
@@ -7664,7 +7706,7 @@ fn candles(
         ohlc(cr, scheme, columns, to_y, ohlc_thickness);
         return;
     }
-    let (bars, bar_w) = (&columns.bars, columns.bar_w);
+    let (bars, bar_w) = (&columns.bars, columns.face);
     // Below four pixels a candle is a line. The only body that leaves a
     // pixel to its neighbour there is two pixels wide, with no middle for
     // the wick, so the wick sat off to one side of every body; and outlining
@@ -7772,15 +7814,17 @@ fn stroke_wicks(cr: &cairo::Context, columns: &Columns) {
 
 /// Open and close as ticks either side of a high-low line.
 fn ohlc(cr: &cairo::Context, scheme: &BarScheme, columns: &Columns, to_y: &impl Fn(f64) -> f64, thickness: u8) {
-    let tick = (columns.bar_w * 0.32).clamp(1.0, 10.0);
+    // At the bar's own width: a column's, or a footprint's narrow bar.
+    let face = if columns.sub_pixel() { columns.bar_px } else { columns.face };
+    let tick = (columns.face * 0.32).clamp(1.0, 10.0);
     let ticked = tick > 1.0;
-    let width = ohlc_width(thickness, columns.bar_px, ticked);
+    let width = ohlc_width(thickness, face, ticked);
     // On a pixel's edge for an even width and through its middle for an
     // odd one, so the line covers whole pixels and stays crisp.
     let centre = if width as i64 % 2 == 1 { 0.5 } else { 0.0 };
     // Showing as much past the line as a thin line's did, a pixel at the
     // least, and ending on a pixel's edge; short of the next bar's tick.
-    let reach = (width / 2.0 + (tick - 0.5).max(1.0)).min(((columns.bar_px - 1.0) / 2.0).max(1.0));
+    let reach = (width / 2.0 + (tick - 0.5).max(1.0)).min(((face - 1.0) / 2.0).max(1.0));
     let reach = (reach - centre).round() + centre;
     cr.set_line_width(width);
     for rising in [false, true] {
@@ -10827,7 +10871,8 @@ pub fn volume_colours(
         return (scheme.up.clone(), scheme.down.clone());
     };
     // Its own colouring paints a rise and a fall as a delta does, Monochrome
-    // in one ink at two strengths; Default echoes the chart's candles.
+    // in its one ink for both; Default echoes the chart's candles, which in
+    // Monochrome are that one ink too.
     let own;
     let (up, down) = match colouring {
         Some(colouring) => {
@@ -13165,7 +13210,7 @@ mod tests {
     /// A volume pane on Default, which every volume pane before its
     /// Colouring was a delta's is, paints as the chart's candles do; one of
     /// the palettes paints its rises and falls as a delta does, Monochrome in
-    /// one ink, solid and faint.
+    /// one ink for both.
     #[test]
     fn a_volume_pane_on_default_is_painted_as_the_chart_s_candles() {
         let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
@@ -13178,10 +13223,15 @@ mod tests {
             }
             assert_eq!(volume_colours(&indicator, &theme, &scheme), own.signed(&theme, false), "{own:?}");
         }
-        // Monochrome tells a rise from a fall by strength alone.
-        let (up, down) = BarColouring::Monochrome.signed(&theme, false);
-        assert_ne!(up, down);
-        assert_eq!(up, BarColouring::Monochrome.scheme(&theme).mono);
+        // Monochrome is one colour at one strength, as its candles are, and
+        // so is a chart in Monochrome left on Default.
+        let mono = BarColouring::Monochrome.scheme(&theme);
+        assert_eq!(BarColouring::Monochrome.signed(&theme, false), (mono.mono.clone(), mono.mono.clone()));
+        assert_eq!(BarColouring::Monochrome.signed(&theme, true), (mono.mono.clone(), mono.mono.clone()));
+        if let omacharts_engine::Params::Volume { colouring, .. } = &mut indicator.params {
+            *colouring = None;
+        }
+        assert_eq!(volume_colours(&indicator, &theme, &mono), (mono.mono.clone(), mono.mono.clone()));
     }
 
     /// A chart of the regular session out of hours: the last price is the

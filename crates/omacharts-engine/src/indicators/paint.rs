@@ -173,7 +173,7 @@ impl Params {
             // nothing of either computed here: every setting is paint. The
             // large orders' thresholds sort the prints, but in the chart's
             // registry of them, not in this output.
-            Params::Footprint { zoom, intensity, inks } => blank!(zoom, intensity, inks),
+            Params::Footprint { zoom, intensity, numbers, row_ticks, inks } => blank!(zoom, intensity, numbers, row_ticks, inks),
             Params::LargeOrders { regular, extended, compare, combine, inks } => {
                 blank!(regular, extended, compare, combine, inks)
             }

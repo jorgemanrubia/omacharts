@@ -194,6 +194,35 @@ impl FlowScene {
         forming.add_trade(tick, price, size, if step >= 0 { Side::Buy } else { Side::Sell }, 1);
     }
 
+    /// The footprint's figures written in its rows, or left out.
+    pub fn footprint_numbers(mut self, on: bool) -> FlowScene {
+        for drawn in &mut self.state.indicators {
+            if let Params::Footprint { numbers, .. } = &mut drawn.indicator.params {
+                *numbers = on;
+            }
+        }
+        self
+    }
+
+    /// The chart's bars drawn in `style`, rising in `up` and falling in
+    /// `down`, filled.
+    pub fn bars(mut self, style: omacharts_engine::bars::BarStyle, up: &str, down: &str) -> FlowScene {
+        self.state.bar_style = style;
+        let scheme = &mut self.state.scheme;
+        (scheme.up, scheme.up_fill, scheme.down, scheme.down_fill) = (up.into(), up.into(), down.into(), down.into());
+        self
+    }
+
+    /// The footprint painted in `colouring`.
+    pub fn footprint_colouring(mut self, colouring: omacharts_engine::theme::BarColouring) -> FlowScene {
+        for drawn in &mut self.state.indicators {
+            if let Params::Footprint { inks, .. } = &mut drawn.indicator.params {
+                inks.colouring = Some(colouring);
+            }
+        }
+        self
+    }
+
     /// What a pointer motion costs before anything is repainted.
     pub fn motion(&self, width: f64, height: f64) -> usize {
         let state = &self.state;
