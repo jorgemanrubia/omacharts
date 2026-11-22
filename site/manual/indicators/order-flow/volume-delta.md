@@ -12,6 +12,18 @@ Each bar's volume traded at the ask less its volume traded at the bid, drawn as 
 |---|---|---|---|
 | In a strip of its own | **VD** | `vd` | `volume_delta` |
 
+<!-- regenerate:
+theme: a fresh profile's default
+window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*, signed in to the Fake Rich Feed in Preferences, Data
+state:
+  omacharts chartbook create "Order flow" --symbol ES --switch
+  omacharts chart set --resolution 1m
+  omacharts chart indicator add volume_delta
+capture: bin/headless-window cli chart screenshot --output /tmp/volume-delta.png; magick /tmp/volume-delta.png -quality 88 site/assets/manual/indicators/volume-delta.jpg
+crop: none
+-->
+{% include figure.html src="/assets/manual/indicators/volume-delta.jpg" alt="ES one-minute candles with a strip under them of one candle a bar, rising from nought for more buying and falling for more selling" caption="Volume Delta under ES 1m, on the synthetic feed." %}
+
 ## Settings
 
 | Setting | Default | Allowed |

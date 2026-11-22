@@ -12,6 +12,18 @@ A bubble at the price and bar of every trade bigger than a size you choose, in t
 |---|---|---|---|
 | Over the candles | **Large > 50 · 20** | `large` | `large_orders` |
 
+<!-- regenerate:
+theme: a fresh profile's default
+window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*, signed in to the Fake Rich Feed in Preferences, Data
+state:
+  omacharts chartbook create "Order flow" --symbol ES --switch
+  omacharts chart set --resolution 1m
+  omacharts chart indicator add large_orders
+capture: bin/headless-window cli chart screenshot --output /tmp/large-orders.png; magick /tmp/large-orders.png -quality 88 site/assets/manual/indicators/large-orders.jpg
+crop: none
+-->
+{% include figure.html src="/assets/manual/indicators/large-orders.jpg" alt="ES one-minute candles with bubbles of different sizes at the prices of large trades, green for buying and red for selling" caption="Large Orders on ES 1m, on the synthetic feed." %}
+
 ## Settings
 
 | Setting | Default | Allowed |
@@ -21,8 +33,8 @@ A bubble at the price and bar of every trade bigger than a size you choose, in t
 | **Size against** | Session | **Visible bars**: the large orders on screen, so bubbles change size as the chart scrolls. **Session**: the session's. **RTH or ETH**: the session's regular or extended hours', each against its own |
 | **Combine same-time prints** | On | Off makes every print its own order |
 | **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet** or **Monochrome** ([Colours](/manual/indicators/order-flow/#colours)) |
-| **Buying** | The colouring's up colour, at 55% opacity | A palette name, or a custom colour, with its **Opacity** |
-| **Selling** | The colouring's down colour, at 55% opacity | The same |
+| **Buying** | The colouring's up colour, at 35% opacity, its rim stronger | A palette name, or a custom colour, with its **Opacity** |
+| **Selling** | The colouring's down colour, at 35% opacity, its rim stronger | The same |
 
 ## Combining prints
 
@@ -30,7 +42,9 @@ An order that takes more than the best price offers fills against several restin
 
 ## How far back
 
-Large orders start where the feed's trades start. On Rithmic, the trades of earlier days are fetched once from its history and kept on disk by symbol and day, newest first, until a day comes back empty. Rithmic publishes no limit on how far back that goes. On Sierra Chart they are read from its own data files. Nothing is shown for days before the trades begin, and the chart is drawn first: the bubbles appear once their trades are read.
+Large orders start where the feed's trades start. On Rithmic, earlier days' trades are fetched once from its history and kept on disk, back to the first weekday it has none of. Rithmic publishes no limit on how far back that goes. On Sierra Chart they are read from its own data files. Nothing is shown for days before the trades begin, and the chart is drawn first: the bubbles of the last two days appear once their trades are read, and the earlier ones after.
+
+A continuous chart of a futures root shows the large orders of the month that is front now. An earlier month traded at prices of its own, and its trades are not moved onto the continuous chart.
 
 ## See also
 
