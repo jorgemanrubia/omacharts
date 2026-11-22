@@ -258,7 +258,7 @@ On a chart that is on a template, every change to its indicators changes the tem
 
 ## Reset periods
 
-The [VWAP](/manual/indicators/averages-and-bands/vwap/), the [volume profile](/manual/indicators/volume/volume-profile/), the [market profile](/manual/indicators/volume/market-profile/) and the [cumulative delta](/manual/indicators/volume/cumulative-delta/) start over at the beginning of each period, chosen with **Reset every** in their settings. A cumulative delta can also be set to Never, one running total over the whole chart.
+The [VWAP](/manual/indicators/averages-and-bands/vwap/), the [volume profile](/manual/indicators/volume/volume-profile/), the [market profile](/manual/indicators/volume/market-profile/) and the [cumulative delta](/manual/indicators/order-flow/cumulative-delta/) start over at the beginning of each period, chosen with **Reset every** in their settings. A cumulative delta can also be set to Never, one running total over the whole chart.
 
 | Period | Starts over |
 |---|---|
@@ -274,6 +274,7 @@ A period needs at least five bars at the chart's resolution. One with fewer uses
 
 - [Averages and bands](/manual/indicators/averages-and-bands/)
 - [Volume](/manual/indicators/volume/)
+- [Order flow](/manual/indicators/order-flow/)
 - [Momentum and volatility](/manual/indicators/momentum-and-volatility/)
 - [Session times](/manual/indicators/session-times/)
 - [Indicators from the CLI](/manual/cli/indicators/)

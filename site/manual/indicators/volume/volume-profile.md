@@ -56,7 +56,8 @@ The settings are in four groups, in the order below. A switch's rows show while 
 | **Reset every** | Session | Session, Week, Month, Quarter, Year ([Reset periods](/manual/indicators/#reset-periods)) |
 | **Last period only** | Off | On draws the newest period's profile alone: the same profile, with the same rows, as among the others, and past the last bar when aligned right |
 | **Calculation method** | Total volume | Total volume, or [Ask volume - bid volume](#ask-volume---bid-volume) |
-| **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet**. Only for Ask volume - bid volume |
+| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet**, **Monochrome** or **Custom**. Only for Ask volume - bid volume |
+| **Buying**, **Selling** | The colours drawn before **Custom** was chosen | A palette name, or a custom colour, for rows where more was bought, and where more was sold. Shown only for **Custom**. |
 | **Automatic rows**, **Rows** | On | A number of [rows](#rows) per period, 4 to 800, with **Automatic rows** off |
 | **Value area %** | 70% | 10 to 100%. Greyed for Ask volume - bid volume |
 
@@ -98,7 +99,7 @@ Several profiles aligned to the same edge sit side by side, in the order the leg
 
 Each row is what was bought at the ask less what was sold at the bid at its prices: rows where buyers took more reach out in the up colour of its **Colouring**, rows where sellers took more in the down colour. The point of control is the row furthest either way, and there is no value area. The legend reads **VP Δ**.
 
-**Default** is the colouring set in Preferences for new charts ([Defaults for new charts](/manual/chart-settings/#defaults-for-new-charts)), and changes when that does. Pick **Vivid**, **Soft** or **Quiet** to keep this profile in that colouring. Either way it is swapped when Preferences' **Swap up and down colours** is on. Monochrome is not offered, because it paints buying and selling alike.
+**Default** paints it as the chart's bars. Pick **Vivid**, **Soft**, **Quiet** or **Monochrome** to keep this profile in that colouring, or **Custom** to pick its two colours yourself, starting from the ones it was drawn in: the same list as every other study's ([Colours](/manual/indicators/order-flow/#colours)). **Monochrome** paints buying and selling in one colour, the ink of the chart's Monochrome candles, so colour no longer tells one from the other, as on the candles.
 
 Which side a trade took is not in a bar, so this needs a data feed with volume at price: on any other it is one line saying so, and a period from before the feed's history begins is not drawn.
 

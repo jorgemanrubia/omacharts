@@ -268,6 +268,9 @@ pub fn values(drawn: &[Drawn], places: usize, label: impl Fn(&Drawn) -> String) 
                 }),
                 Output::Time(_) => return None,
                 Output::Unmet(why) => json!({"unmet": why}),
+                // Drawn from the ladders and the prints, with no series of
+                // their own to read back: their settings are in `indicator list`.
+                Output::Footprint | Output::LargeOrders => json!({}),
             };
             if let (Some(row), Value::Object(fields)) = (row.as_object_mut(), fields) {
                 row.extend(fields);
@@ -275,6 +278,258 @@ pub fn values(drawn: &[Drawn], places: usize, label: impl Fn(&Drawn) -> String) 
             Some(row)
         })
         .collect()
+}
+
+/// What `chart values` asks of a chart: which indicators (every one, with
+/// neither list given), and either their latest values or, with `pick`,
+/// each of those bars' readings.
+#[derive(Clone, Debug, Default)]
+pub struct ValuesAsk {
+    pub pick: Option<omacharts_chart::BarPick>,
+    pub kinds: Vec<Kind>,
+    pub ids: Vec<u32>,
+    /// Ticks a footprint's rows hold, or its own.
+    pub row_ticks: Option<u32>,
+}
+
+impl ValuesAsk {
+    /// Whether `indicator` is one asked for.
+    pub fn wants(&self, id: u32, kind: Kind) -> bool {
+        (self.kinds.is_empty() && self.ids.is_empty()) || self.ids.contains(&id) || self.kinds.contains(&kind)
+    }
+}
+
+/// What `chart stream` asks of a chart: which indicators, as
+/// [`ValuesAsk`] says without a pick, how often to say them and for how
+/// long, and where to.
+pub struct StreamAsk {
+    pub chart: u32,
+    pub want: ValuesAsk,
+    /// An update at most this often; zero, every change.
+    pub every: std::time::Duration,
+    /// Stop after this many updates and closes.
+    pub count: Option<u64>,
+    /// Stop after this long.
+    pub lasting: Option<std::time::Duration>,
+    /// The reading process's name on the session bus, to stop when it goes.
+    pub caller: Option<String>,
+    pub sink: Option<std::rc::Rc<dyn crate::cli::Sink>>,
+}
+
+/// One indicator read out: its id, kind, label and visibility with what it
+/// reads, and for a footprint its bars to write out.
+#[derive(Clone, Debug)]
+pub struct Entry {
+    pub fields: Value,
+    pub footprint: Option<omacharts_chart::FootprintRead>,
+}
+
+/// A chart's indicators in numbers, as `chart values` writes them.
+#[derive(Clone, Debug)]
+pub struct ValuesRead {
+    pub label: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub intraday: bool,
+    pub places: usize,
+    pub zone: chrono_tz::Tz,
+    /// Each bar's readings rather than the latest.
+    pub ranged: bool,
+    pub entries: Vec<Entry>,
+    /// Read off the chart with the latest values only.
+    pub levels: Option<Levels>,
+}
+
+/// A MACD's reading as the library names its fields.
+pub fn macd_json(value: omacharts_engine::studies::MacdValue) -> Value {
+    json!({"line": value.line, "signal": value.signal, "histogram": value.histogram})
+}
+
+/// A stochastic's reading as the library names its fields.
+pub fn stochastic_json(value: omacharts_engine::studies::StochasticValue) -> Value {
+    json!({"k": value.k, "d": value.d})
+}
+
+/// A bar of a delta as the library names its fields.
+pub fn delta_json(bar: &omacharts_engine::studies::DeltaBar) -> Value {
+    json!({"open": bar.open, "high": bar.high, "low": bar.low, "close": bar.close, "estimated": bar.estimated, "starts": bar.starts})
+}
+
+/// What `kind`'s `output` reads at bar `i`, in the library's field names:
+/// see the readings table in `omacharts_studies`. None where it reads
+/// nothing there; whole periods, footprints and large orders are read
+/// another way ([`profiles_json`], the chart's footprint and orders).
+pub fn reading_at(kind: Kind, output: &Output, i: usize, places: usize) -> Option<Value> {
+    let p = |value: Option<f64>| price(value, places);
+    let at = |values: &[Option<f64>]| values.get(i).copied().flatten();
+    match output {
+        Output::Line(line) => at(line).map(|value| json!({"value": p(Some(value))})),
+        Output::Bands(bands) => at(&bands.center).map(|center| {
+            json!({
+                "center": p(Some(center)),
+                "bands": bands.bands.iter().filter(|band| band.enabled).map(|band| json!({
+                    "deviations": band.deviations,
+                    "upper": p(at(&band.upper)),
+                    "lower": p(at(&band.lower)),
+                })).collect::<Vec<_>>(),
+            })
+        }),
+        Output::Volume { values, .. } => values.get(i).map(|value| json!({"value": value})),
+        Output::Pane(pane) => match (kind, &pane.delta) {
+            (_, Some(delta)) => delta.get(i).map(delta_json),
+            (Kind::Macd, None) => at(&pane.values).map(|line| {
+                macd_json(omacharts_engine::studies::MacdValue {
+                    line,
+                    signal: pane.signal.as_deref().and_then(at),
+                    histogram: pane.histogram.as_deref().and_then(at),
+                })
+            }),
+            (Kind::Stochastic, None) => at(&pane.values)
+                .map(|k| stochastic_json(omacharts_engine::studies::StochasticValue { k, d: pane.signal.as_deref().and_then(at) })),
+            _ => at(&pane.values).map(|value| json!({"value": value})),
+        },
+        _ => None,
+    }
+}
+
+/// Each period's profile that reaches into the bars `range` indexes, as
+/// `chart values` gives a volume or market profile's latest.
+pub fn profiles_json(output: &Output, range: std::ops::Range<usize>, places: usize) -> Option<Vec<Value>> {
+    let p = |value: f64| price(Some(value), places);
+    let within = |first: usize, last: usize| last >= range.start && first < range.end;
+    match output {
+        Output::Profiles(profiles) => Some(
+            profiles
+                .iter()
+                .filter(|profile| !profile.rows.is_empty() && within(profile.first_bar, profile.last_bar))
+                .map(|profile| {
+                    let (val, vah) = profile.value_area_bounds();
+                    json!({"from": profile.start_ts, "to": profile.end_ts, "poc": p(profile.poc_price()), "vah": p(vah), "val": p(val), "volume": profile.total_volume.round()})
+                })
+                .collect(),
+        ),
+        Output::MarketProfiles(profiles) => Some(
+            profiles
+                .iter()
+                .filter(|market| within(market.profile.first_bar, market.profile.last_bar))
+                .map(|market| {
+                    json!({
+                        "from": market.profile.start_ts,
+                        "to": market.profile.end_ts,
+                        "poc": p(market.reading.poc),
+                        "vah": p(market.reading.vah),
+                        "val": p(market.reading.val),
+                        "tpos": market.profile.total_volume,
+                        "row_ticks": market.row_ticks,
+                    })
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// Each bar of `range`'s reading of `drawn`, with its time.
+pub fn series_json(drawn: &Drawn, bars: &[Bar], range: std::ops::Range<usize>, places: usize) -> Vec<Value> {
+    range
+        .filter_map(|i| {
+            let bar = bars.get(i)?;
+            let mut row = reading_at(drawn.indicator.kind, &drawn.output, i, places)?;
+            if let Some(fields) = row.as_object_mut() {
+                fields.insert("time".into(), json!(bar.ts));
+            }
+            Some(row)
+        })
+        .collect()
+}
+
+/// Large orders, oldest first: when the first fill printed (unix seconds,
+/// and nanoseconds), the size-weighted price, size, side, fills and whether
+/// it printed in regular hours.
+pub fn orders_json(orders: &[omacharts_engine::studies::orders::Placed], tick_size: f64, places: usize) -> Vec<Value> {
+    use omacharts_engine::studies::orders::Aggressor;
+    orders
+        .iter()
+        .map(|placed| {
+            let order = &placed.order;
+            json!({
+                "time": order.ts_nanos.div_euclid(1_000_000_000),
+                "time_ns": order.ts_nanos,
+                "price": price(Some(order.tick * tick_size), places),
+                "size": order.size,
+                "side": match order.side { Aggressor::Buy => "buy", Aggressor::Sell => "sell", Aggressor::Unknown => "unknown" },
+                "fills": order.fills,
+                "regular": placed.regular,
+            })
+        })
+        .collect()
+}
+
+/// `fields` as `name value` pairs, a band as `2sd upper/lower`, leaving
+/// out what names the indicator, its time and nulls.
+fn fields_text(fields: &Value, places: usize) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let Some(object) = fields.as_object() else { return String::new() };
+    for (key, field) in object {
+        if matches!(key.as_str(), "id" | "kind" | "label" | "visible" | "time" | "bars" | "profiles" | "orders") || field.is_null() {
+            continue;
+        }
+        if let (Some(bands), "bands") = (field.as_array(), key.as_str()) {
+            for band in bands {
+                let at = |name: &str| band[name].as_f64().map_or("-".to_string(), |n| num(n, places));
+                out.push(format!("{}sd {}/{}", at("deviations"), at("upper"), at("lower")));
+            }
+            continue;
+        }
+        out.push(format!("{key} {field}"));
+    }
+    out.join(" ")
+}
+
+/// Unix seconds as the chart's clock reads them: `HH:MM` (with seconds
+/// when `seconds`) for intraday bars, the date for longer ones.
+fn clock(ts: i64, read: &ValuesRead, seconds: bool) -> String {
+    let at = chrono::DateTime::from_timestamp(ts, 0).map(|at| at.with_timezone(&read.zone));
+    match (at, read.intraday, seconds) {
+        (Some(at), true, false) => at.format("%m-%d %H:%M").to_string(),
+        (Some(at), true, true) => at.format("%m-%d %H:%M:%S").to_string(),
+        (Some(at), false, _) => at.format("%Y-%m-%d").to_string(),
+        (None, ..) => ts.to_string(),
+    }
+}
+
+/// One indicator of `chart values` as terse text: its label and latest
+/// reading on a line, or its label and then a line a bar, a profile or an
+/// order.
+pub fn entry_text(entry: &Entry, read: &ValuesRead) -> String {
+    let fields = &entry.fields;
+    let label = fields["label"].as_str().unwrap_or("");
+    if let Some(footprint) = &entry.footprint {
+        return format!("{label}\n{}", footprint_text(footprint, read.places, read.intraday, read.zone));
+    }
+    let mut out = format!("{label} {}\n", fields_text(fields, read.places));
+    for bar in fields["bars"].as_array().into_iter().flatten() {
+        out.push_str(&format!("{} {}\n", clock(bar["time"].as_i64().unwrap_or(0), read, false), fields_text(bar, read.places)));
+    }
+    for profile in fields["profiles"].as_array().into_iter().flatten() {
+        let from = clock(profile["from"].as_i64().unwrap_or(0), read, false);
+        let mut rest = profile.clone();
+        if let Some(object) = rest.as_object_mut() {
+            object.remove("from");
+            object.remove("to");
+        }
+        out.push_str(&format!("{from} {}\n", fields_text(&rest, read.places)));
+    }
+    for order in fields["orders"].as_array().into_iter().flatten() {
+        out.push_str(&format!(
+            "{} {} {} @ {}\n",
+            clock(order["time"].as_i64().unwrap_or(0), read, true),
+            order["side"].as_str().unwrap_or(""),
+            order["size"],
+            order["price"],
+        ));
+    }
+    out
 }
 
 /// A bar as `[time, open, high, low, close, volume]`, prices on their step.
@@ -301,12 +556,133 @@ pub fn bars_text(bars: &[Bar], places: usize, intraday: bool, zone: chrono_tz::T
     out
 }
 
+/// A footprint read out, bar by bar, as `chart values --footprint --json`
+/// writes it: see `doc/cli.md` for the schema. A row's `low` and `high`
+/// are the first and last price it covers; `poc` is the low of the bar's
+/// most traded row.
+pub fn footprint_json(read: &omacharts_chart::FootprintRead, places: usize) -> Value {
+    let tick = read.tick_size;
+    let step = read.row_ticks as i32;
+    let at = |t: i32| price(Some(omacharts_engine::ladders::to_price(t, tick)), places);
+    let bars: Vec<Value> = read
+        .bars
+        .iter()
+        .map(|one| {
+            let bar = &one.bar;
+            let p = |value: f64| price(Some(value), places);
+            let rows: Vec<Value> = one
+                .rows
+                .iter()
+                .map(|row| {
+                    let s = &row.sides;
+                    json!({
+                        "low": at(row.low_tick),
+                        "high": at(row.low_tick + step - 1),
+                        "at_bid": s.at_bid,
+                        "at_ask": s.at_ask,
+                        "delta": s.delta(),
+                        "total": s.total(),
+                        "trades": s.trades,
+                    })
+                })
+                .collect();
+            json!({
+                "time": bar.ts,
+                "open": p(bar.open),
+                "high": p(bar.high),
+                "low": p(bar.low),
+                "close": p(bar.close),
+                "volume": bar.volume.round(),
+                "delta": one.totals.delta(),
+                "poc": one.poc.map_or(Value::Null, at),
+                "rows": rows,
+            })
+        })
+        .collect();
+    json!({"tick_size": tick, "row_ticks": read.row_ticks, "bars": bars})
+}
+
+/// The same as a terse table: a line a bar — time, open, high, low, close,
+/// volume, delta, point of control — then its rows from the top, each its
+/// low price, sold at the bid x bought at the ask, delta, total, trades.
+pub fn footprint_text(read: &omacharts_chart::FootprintRead, places: usize, intraday: bool, zone: chrono_tz::Tz) -> String {
+    let tick = read.tick_size;
+    let mut out = format!("rows of {} tick{}\n", read.row_ticks, if read.row_ticks == 1 { "" } else { "s" });
+    for one in &read.bars {
+        let bar = &one.bar;
+        let at = chrono::DateTime::from_timestamp(bar.ts, 0).map(|at| at.with_timezone(&zone));
+        let time = match (at, intraday) {
+            (Some(at), true) => at.format("%m-%d %H:%M").to_string(),
+            (Some(at), false) => at.format("%Y-%m-%d").to_string(),
+            (None, _) => bar.ts.to_string(),
+        };
+        let n = |price: f64| num(price, places);
+        let delta = one.totals.delta();
+        let poc = one.poc.map_or("-".to_string(), |t| n(omacharts_engine::ladders::to_price(t, tick)));
+        out.push_str(&format!(
+            "{time} {} {} {} {} vol {} delta {delta:+} poc {poc}\n",
+            n(bar.open),
+            n(bar.high),
+            n(bar.low),
+            n(bar.close),
+            bar.volume.round()
+        ));
+        for row in one.rows.iter().rev() {
+            let s = &row.sides;
+            out.push_str(&format!(
+                "  {} {} x {} {:+} {} {}\n",
+                n(omacharts_engine::ladders::to_price(row.low_tick, tick)),
+                s.at_bid,
+                s.at_ask,
+                s.delta(),
+                s.total(),
+                s.trades
+            ));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn bar(ts: i64, open: f64, high: f64, low: f64, close: f64) -> Bar {
         Bar { ts, open, high, low, close, volume: 10.0 }
+    }
+
+    /// The footprint read out keeps its schema: a bar's fields, its rows
+    /// lowest first with each side, the price a row covers, and the point
+    /// of control at its row's low.
+    #[test]
+    fn a_footprint_reads_out_in_its_schema() {
+        use omacharts_chart::{FootprintBar, FootprintRead, FootprintRow};
+        use omacharts_engine::studies::footprint::Sides;
+        let row = |low_tick, at_bid, at_ask, unknown, trades| FootprintRow { low_tick, sides: Sides { at_bid, at_ask, unknown, trades } };
+        let read = FootprintRead {
+            tick_size: 0.25,
+            row_ticks: 2,
+            bars: vec![
+                FootprintBar {
+                    bar: Bar { ts: 1_700_000_040, open: 100.25, high: 101.0, low: 100.0, close: 100.75, volume: 40.0 },
+                    rows: vec![row(400, 6, 2, 0, 5), row(402, 3, 20, 1, 9), row(404, 0, 8, 0, 2)],
+                    poc: Some(402),
+                    totals: Sides { at_bid: 9, at_ask: 30, unknown: 1, trades: 16 },
+                },
+                FootprintBar { bar: bar(1_700_000_100, 100.0, 100.0, 100.0, 100.0), rows: Vec::new(), poc: None, totals: Sides::default() },
+            ],
+        };
+        let json = footprint_json(&read, 2);
+        let expected: Value = serde_json::from_str(
+            r#"{"bars":[{"close":100.75,"delta":21,"high":101.0,"low":100.0,"open":100.25,"poc":100.5,"rows":[{"at_ask":2,"at_bid":6,"delta":-4,"high":100.25,"low":100.0,"total":8,"trades":5},{"at_ask":20,"at_bid":3,"delta":17,"high":100.75,"low":100.5,"total":24,"trades":9},{"at_ask":8,"at_bid":0,"delta":8,"high":101.25,"low":101.0,"total":8,"trades":2}],"time":1700000040,"volume":40.0},{"close":100.0,"delta":0,"high":100.0,"low":100.0,"open":100.0,"poc":null,"rows":[],"time":1700000100,"volume":10.0}],"row_ticks":2,"tick_size":0.25}"#,
+        )
+        .unwrap();
+        assert_eq!(json, expected);
+        let text = footprint_text(&read, 2, true, chrono_tz::UTC);
+        assert_eq!(
+            text,
+            "rows of 2 ticks\n11-14 22:14 100.25 101 100 100.75 vol 40 delta +21 poc 100.5\n  101 0 x 8 +8 8 2\n  100.5 3 x 20 +17 24 9\n  100 6 x 2 -4 8 5\n11-14 22:15 100 100 100 100 vol 10 delta +0 poc -\n"
+        );
     }
 
     #[test]
@@ -392,3 +768,4 @@ mod tests {
         assert_eq!(bar_json(&bar(5, 1.0, 2.0, 0.5, 1.5), 2), json!([5, 1.0, 2.0, 0.5, 1.5, 10.0]));
     }
 }
+

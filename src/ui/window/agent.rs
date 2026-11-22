@@ -1,7 +1,8 @@
-//! What an agent trading from the command line asks of the window, behind
-//! the `agent-trading` feature flag: a snapshot of a chart and its account
-//! in a few lines, a wait for the next thing that matters, a stream of
-//! every order, position and P&L change, and price alerts.
+//! What an agent asks of the window from the command line: a snapshot of a
+//! chart in a few lines, and a wait for the next thing that matters. Behind
+//! the `agent-trading` feature flag, what is trading's: the chart's account,
+//! position and orders in the snapshot, a stream of every order, position
+//! and P&L change, and price alerts.
 //!
 //! Everything is answered from what the window already holds — the book
 //! its sessions keep, the bars and indicators on screen — so a snapshot
@@ -26,6 +27,8 @@ use crate::cli::trading::{Ask, Token};
 use crate::cli::{Fault, Sink};
 use crate::trading::{self, events, reading};
 use crate::ui::pane::ChartPane;
+
+mod stream;
 
 /// How many events are kept for a token to be answered from.
 const KEPT: usize = 512;
@@ -79,6 +82,8 @@ enum Kind {
     Stream { pnl_every: Option<Duration> },
     /// `trading wait`: the first event that wakes it, or the time.
     Wait(Waiting),
+    /// `chart stream`: one chart's readings as it moves.
+    Chart(Box<stream::Charting>),
 }
 
 struct Waiting {
@@ -368,7 +373,7 @@ impl Window {
                     (settling, began) = (true, true);
                 }
                 Kind::Wait(_) if events::wakes(&event) => woken.push(listener.id),
-                Kind::Wait(_) => {}
+                Kind::Wait(_) | Kind::Chart(_) => {}
             }
         }
         for id in woken {
@@ -426,7 +431,7 @@ impl Window {
             .iter()
             .filter_map(|listener| match listener.kind {
                 Kind::Stream { pnl_every } => pnl_every,
-                Kind::Wait(_) => None,
+                Kind::Wait(_) | Kind::Chart(_) => None,
             })
             .min();
         let Some(every) = every else { return };
@@ -450,13 +455,12 @@ impl Window {
         }
     }
 
-    /// Chart `pane` moved: alerts and waits on its price, and on its bars.
+    /// Chart `pane` moved: streams of it, alerts and waits on its price,
+    /// and on its bars.
     pub(super) fn agent_heard_price(self: &Rc<Self>, pane: &ChartPane) {
-        if !crate::features::agent_trading() {
-            return;
-        }
+        self.stream_heard(pane);
         if self.agent.alerts.borrow().is_empty()
-            && self.agent.listeners.borrow().iter().all(|listener| matches!(listener.kind, Kind::Stream { .. }))
+            && self.agent.listeners.borrow().iter().all(|listener| matches!(listener.kind, Kind::Stream { .. } | Kind::Chart(_)))
         {
             return;
         }
@@ -592,6 +596,97 @@ impl Window {
         Ok(self.chart_read(&pane, last))
     }
 
+    /// Chart `chart`'s indicators in numbers, as `ask` asks: see
+    /// [`reading::ValuesAsk`]. Refused when an id or a kind asked for is not
+    /// on the chart, but for a footprint, read from the chart's volume at
+    /// price whether one is drawn or not.
+    pub fn read_values(&self, chart: u32, ask: &reading::ValuesAsk) -> Result<reading::ValuesRead, Fault> {
+        use omacharts_engine::indicators::{Kind, Output};
+        let pane = self.agent_pane(chart)?;
+        let base = self.chart_read(&pane, 1);
+        let view = &pane.view;
+        let len = view.bar_count();
+        let range = ask.pick.map(|pick| view.bar_range(pick));
+        // The latest is the newest bar, for what is read a bar at a time.
+        let pick = ask.pick.unwrap_or(omacharts_chart::BarPick::Last(1));
+        let shown = range.clone().unwrap_or(len.saturating_sub(1)..len);
+        let places = base.places;
+        let timeframe = view.timeframe();
+        let footprint = |id: Option<u32>, label: String, visible: bool| {
+            let mut fields = json!({"id": id, "kind": Kind::Footprint.key(), "label": label, "visible": visible});
+            let read = view.read_footprint(pick, ask.row_ticks);
+            if read.is_none() {
+                fields["unmet"] = json!(omacharts_engine::indicators::NEEDS_VOLUME_AT_PRICE);
+            }
+            reading::Entry { fields, footprint: read }
+        };
+        let mut entries = Vec::new();
+        let mut found_ids = Vec::new();
+        let mut found_kinds = Vec::new();
+        view.with_indicators(|drawn| {
+            view.with_bars(|bars| {
+                for one in drawn {
+                    let (id, kind) = (one.indicator.id, one.indicator.kind);
+                    if !ask.wants(id, kind) || matches!(one.output, Output::Time(_)) {
+                        continue;
+                    }
+                    found_ids.push(id);
+                    found_kinds.push(kind);
+                    let label = one.indicator.label_for(timeframe);
+                    if kind == Kind::Footprint && !matches!(one.output, Output::Unmet(_)) {
+                        entries.push(footprint(Some(id), label, one.indicator.visible));
+                        continue;
+                    }
+                    let mut fields = json!({"id": id, "kind": kind.key(), "label": label, "visible": one.indicator.visible});
+                    match (&one.output, &range) {
+                        (Output::Unmet(why), _) => fields["unmet"] = json!(why),
+                        (Output::LargeOrders, _) => {
+                            fields["orders"] = match view.read_large_orders(id, shown.clone()) {
+                                Some((orders, tick)) => json!(reading::orders_json(&orders, tick, places)),
+                                None => Value::Null,
+                            };
+                        }
+                        (Output::Profiles(_) | Output::MarketProfiles(_), Some(range)) => {
+                            fields["profiles"] = json!(reading::profiles_json(&one.output, range.clone(), places));
+                        }
+                        (_, Some(range)) => fields["bars"] = json!(reading::series_json(one, bars, range.clone(), places)),
+                        (_, None) => {
+                            let latest = reading::values(std::slice::from_ref(one), places, |one| one.indicator.label_for(timeframe));
+                            fields = latest.into_iter().next().unwrap_or(fields);
+                        }
+                    }
+                    entries.push(reading::Entry { fields, footprint: None });
+                }
+            })
+        });
+        for id in &ask.ids {
+            if !found_ids.contains(id) {
+                return Err(Fault::not_found(format!("{} has no indicator {id}; `chart indicator list` says which it has", base.label)));
+            }
+        }
+        for kind in &ask.kinds {
+            if found_kinds.contains(kind) {
+                continue;
+            }
+            if *kind == Kind::Footprint {
+                entries.push(footprint(None, "Footprint".into(), false));
+                continue;
+            }
+            return Err(Fault::not_found(format!("{} has no {}; `chart indicator list` says what it has", base.label, kind.key())));
+        }
+        Ok(reading::ValuesRead {
+            label: base.label,
+            symbol: base.symbol,
+            timeframe: base.timeframe,
+            intraday: base.intraday,
+            places,
+            zone: base.zone,
+            ranged: range.is_some(),
+            entries,
+            levels: range.is_none().then_some(base.levels),
+        })
+    }
+
     fn chart_read(&self, pane: &ChartPane, last: usize) -> reading::ChartRead {
         let instrument = pane.instrument.borrow().clone();
         let timeframe = pane.view.timeframe();
@@ -657,7 +752,10 @@ impl Window {
             Some(since) => self.agent.log.borrow().iter().filter(|(seq, _)| *seq > since.seq).map(|(_, event)| event.clone()).collect(),
             None => Vec::new(),
         };
-        let target = self.order_target(pane).ok();
+        // The account, the position and the orders are trading's, behind
+        // its flag; the chart's own numbers are anybody's.
+        let trades = crate::features::agent_trading();
+        let target = if trades { self.order_target(pane).ok() } else { None };
         let view = self.trading.borrow();
         let key = target.as_ref().map(|target| target.account.key());
         let contract = target.as_ref().map(|target| target.contract.clone());
@@ -676,29 +774,32 @@ impl Window {
         let day = money.and_then(|money| money.day_pnl);
         if as_json {
             let p = |price: Option<f64>| price.map(|price| reading::num(price, places).parse::<f64>().unwrap_or(price));
-            return format!(
-                "{}\n",
-                json!({
-                    "tok": token.to_string(),
-                    "sym": read.symbol,
-                    "contract": contract,
-                    "tf": read.timeframe,
-                    "last": p(last),
-                    "bid": null,
-                    "ask": null,
-                    "acct": key.as_ref().map(|key| json!({
-                        "id": events::number(key),
-                        "bal": money.and_then(|money| money.balance),
-                        "day": day,
-                        "open": money.and_then(|money| money.unrealized),
-                    })),
-                    "pos": held.as_ref().map(|held| json!({"net": held.net, "avg": p(held.avg), "open": held.open_pnl})),
-                    "ord": working.iter().map(|order| json!([order.basket_id, side_letter(order.side), order.qty, kind_word(order.kind), p(order.price)])).collect::<Vec<_>>(),
-                    "lv": read.levels.json(places),
-                    "bars": shown.iter().map(|bar| reading::bar_json(bar, places)).collect::<Vec<_>>(),
-                    "ev": happened,
-                })
-            );
+            let mut said = json!({
+                "tok": token.to_string(),
+                "sym": read.symbol,
+                "contract": contract,
+                "tf": read.timeframe,
+                "last": p(last),
+                "bid": null,
+                "ask": null,
+                "acct": key.as_ref().map(|key| json!({
+                    "id": events::number(key),
+                    "bal": money.and_then(|money| money.balance),
+                    "day": day,
+                    "open": money.and_then(|money| money.unrealized),
+                })),
+                "pos": held.as_ref().map(|held| json!({"net": held.net, "avg": p(held.avg), "open": held.open_pnl})),
+                "ord": working.iter().map(|order| json!([order.basket_id, side_letter(order.side), order.qty, kind_word(order.kind), p(order.price)])).collect::<Vec<_>>(),
+                "lv": read.levels.json(places),
+                "bars": shown.iter().map(|bar| reading::bar_json(bar, places)).collect::<Vec<_>>(),
+                "ev": happened,
+            });
+            if !trades && let Some(said) = said.as_object_mut() {
+                for key in ["acct", "pos", "ord"] {
+                    said.remove(key);
+                }
+            }
+            return format!("{said}\n");
         }
         let mut out = String::new();
         let price_or_dash = |price: Option<f64>| price.map_or("-".to_string(), n);
@@ -709,6 +810,7 @@ impl Window {
             price_or_dash(last)
         ));
         match (&key, money) {
+            _ if !trades => {}
             (Some(key), money) => {
                 let mut line = format!("acct {}", events::number(key));
                 if let Some(balance) = money.and_then(|money| money.balance) {
@@ -725,6 +827,7 @@ impl Window {
             (None, _) => out.push_str("acct - (the chart trades no account)\n"),
         }
         match &held {
+            _ if !trades => {}
             Some(held) => out.push_str(&format!(
                 "pos {}{} @{} open {}\n",
                 if held.net > 0 { "+" } else { "" },
@@ -735,6 +838,7 @@ impl Window {
             None => out.push_str("pos flat\n"),
         }
         match working.is_empty() {
+            _ if !trades => {}
             true => out.push_str("ord none\n"),
             false => {
                 let orders: Vec<String> = working
@@ -1051,13 +1155,13 @@ mod tests {
         }
     }
 
-    /// A wait with nothing to wake it answers at its timeout.
+    /// A wait with nothing to wake it answers at its timeout; a wait on a
+    /// price needs no trading, so trading's flag is left off.
     #[test]
     fn a_wait_times_out() {
         crate::ui::on_gtk(|| {
             let (window, pane, _session, _) = long_es(trading::Linking::AfterTheFact);
             assert!(settle(&window, || pane.view.last_price().is_some()));
-            agents_on();
             let waiting = Rc::new(Terminal::default());
             let (code, _) = command_from(&window, "trading wait --timeout 1 --cross 1", &Typed(waiting.clone()));
             assert_eq!(code, 0);
@@ -1071,15 +1175,15 @@ mod tests {
         });
     }
 
-    /// The chart in numbers: bars, indicator values, and a quote.
+    /// The chart in numbers: bars, indicator values, a quote and a
+    /// snapshot, with trading's flag off, as they read only the chart. The
+    /// snapshot keeps the account, the position and the orders for the flag,
+    /// and the stream and the alerts are trading's alone.
     #[test]
     fn a_chart_is_read_in_numbers() {
         crate::ui::on_gtk(|| {
             let (window, pane, _session, _) = long_es(trading::Linking::AfterTheFact);
             assert!(settle(&window, || pane.view.bar_count() > 5));
-            let (code, why) = command(&window, "chart bars --last 3 --json");
-            assert_eq!(code, crate::cli::EXIT_USAGE, "off, there is no such command: {why}");
-            agents_on();
             let (code, out) = command(&window, "chart bars --last 3 --json");
             assert_eq!(code, 0, "{out}");
             let bars: Value = serde_json::from_str(&out).expect("JSON");
@@ -1097,6 +1201,170 @@ mod tests {
             assert_eq!(quote["source"], "chart", "{quote}");
             assert_eq!(quote["last"].as_f64(), close, "{quote}");
             assert!(quote["bid"].is_null());
+
+            let (code, out) = command(&window, "trading snapshot --json");
+            assert_eq!(code, 0, "{out}");
+            let read: Value = serde_json::from_str(&out).expect("JSON");
+            assert!(read["bars"].is_array() && read["last"].is_number(), "{read}");
+            for key in ["acct", "pos", "ord"] {
+                assert!(read.get(key).is_none(), "off, the snapshot says nothing of trading: {read}");
+            }
+            let (code, out) = command(&window, "trading snapshot");
+            assert_eq!(code, 0, "{out}");
+            assert!(!out.contains("\nacct ") && !out.contains("\npos "), "{out}");
+            for verb in ["trading watch", "trading alert 9000"] {
+                let (code, why) = command(&window, verb);
+                assert_eq!(code, crate::cli::EXIT_USAGE, "off, {verb} is refused: {why}");
+            }
+
+            agents_on();
+            let (code, out) = command(&window, "trading snapshot --json");
+            assert_eq!(code, 0, "{out}");
+            let read: Value = serde_json::from_str(&out).expect("JSON");
+            assert!(read["acct"].is_object() && read["pos"].is_object(), "on, the account and the position: {read}");
+        });
+    }
+
+    /// `chart values` reads every bar of a range in the library's field
+    /// names, the newest the latest it gives with no range; refuses an
+    /// indicator the chart has not got, and names the kinds there are.
+    #[test]
+    fn a_charts_indicators_are_read_bar_by_bar() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, _session, _) = long_es(trading::Linking::AfterTheFact);
+            assert!(settle(&window, || pane.view.bar_count() > 40));
+            for add in ["chart indicator add sma --period 3", "chart indicator add macd"] {
+                let (code, out) = command(&window, add);
+                assert_eq!(code, 0, "{out}");
+            }
+            let read = |line: &str| {
+                let (code, out) = command(&window, line);
+                assert_eq!(code, 0, "{line}: {out}");
+                serde_json::from_str::<Value>(&out).expect("JSON")
+            };
+            let latest = read("chart values --indicator sma --json");
+            let ranged = read("chart values --indicator sma --last 4 --json");
+            assert_eq!(ranged["indicators"].as_array().map(Vec::len), Some(1), "{ranged}");
+            let bars = ranged["indicators"][0]["bars"].as_array().cloned().unwrap_or_default();
+            assert_eq!(bars.len(), 4, "{ranged}");
+            assert!(bars.windows(2).all(|two| two[0]["time"].as_i64() < two[1]["time"].as_i64()), "{ranged}");
+            assert_eq!(bars[3]["value"], latest["indicators"][0]["value"], "the newest is the latest");
+            assert!(ranged.get("levels").is_none(), "{ranged}");
+
+            let macd = read("chart values --indicator macd --last 2 --json");
+            let bar = &macd["indicators"][0]["bars"][1];
+            for field in ["time", "line", "signal", "histogram"] {
+                assert!(bar.get(field).is_some(), "{field}: {macd}");
+            }
+            let both = read("chart values --indicator sma --indicator macd --visible --json");
+            assert_eq!(both["indicators"].as_array().map(Vec::len), Some(2), "{both}");
+
+            let footprint = read("chart values --footprint --json");
+            assert_eq!(footprint["indicators"][0]["kind"], "footprint", "{footprint}");
+
+            let (code, _) = command(&window, "chart values --id 999");
+            assert_eq!(code, crate::cli::EXIT_NOT_FOUND);
+            let (code, _) = command(&window, "chart values --indicator rsi");
+            assert_eq!(code, crate::cli::EXIT_NOT_FOUND);
+            let (code, why) = command(&window, "chart values --indicator nope");
+            assert_eq!(code, crate::cli::EXIT_USAGE);
+            assert!(why.contains("large_orders"), "{why}");
+            let (code, _) = command(&window, "chart values --last 3 --visible");
+            assert_eq!(code, crate::cli::EXIT_USAGE);
+        });
+    }
+
+    /// `pane`'s newest bar is `bar` (a new one when it begins later), its
+    /// indicators worked out again and the chart told, as a tick does.
+    fn ticked(window: &Rc<Window>, pane: &Rc<ChartPane>, bar: omacharts_engine::Bar) {
+        pane.view.apply_tail(&[bar]);
+        let instrument = pane.instrument.borrow().clone().expect("an instrument");
+        let drawn = pane.view.with_bars(|bars| window.drawn_indicators(pane, &instrument, pane.timeframe.get(), bars));
+        pane.view.set_indicators(drawn);
+        window.chart_moved(pane);
+    }
+
+    fn lines_of(terminal: &Terminal) -> Vec<Value> {
+        terminal.said.borrow().lines().map(|line| serde_json::from_str(line).expect("a JSON line")).collect()
+    }
+
+    /// `chart stream` says a snapshot, then an update for each change of
+    /// the newest bar and a close as each bar ends, in the readings
+    /// `chart values` gives; nothing when the chart moves without its bars
+    /// changing; and stops after --count or --for, or when the window goes.
+    /// Off the `agent-trading` flag: it trades nothing.
+    #[test]
+    fn a_stream_says_each_change_of_a_charts_readings() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, _session, _) = long_es(trading::Linking::AfterTheFact);
+            assert!(settle(&window, || pane.view.bar_count() > 40));
+            crate::features::force(crate::features::Feature::AgentTrading, false);
+            let (code, out) = command(&window, "chart indicator add sma --period 3");
+            assert_eq!(code, 0, "{out}");
+            let newest = || pane.view.with_bars(|bars| *bars.last().unwrap());
+
+            let streaming = Rc::new(Terminal::default());
+            let (code, out) =
+                command_from(&window, "chart stream --indicator sma --every 0 --count 3", &Typed(streaming.clone()));
+            assert_eq!((code, out.as_str()), (0, ""), "it answers on the terminal");
+            let lines = lines_of(&streaming);
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert_eq!(lines[0]["ev"], "snapshot");
+            assert_eq!(lines[0]["symbol"], "ES");
+            assert_eq!(lines[0]["indicators"][0]["kind"], "sma", "{lines:?}");
+            assert_eq!(lines[0]["bar"][0], newest().ts, "{lines:?}");
+
+            // Moved, the bars as they were: nothing to say.
+            window.chart_moved(&pane);
+            assert_eq!(lines_of(&streaming).len(), 1, "{}", streaming.said.borrow());
+
+            let bar = newest();
+            ticked(&window, &pane, omacharts_engine::Bar { close: bar.close + 1.0, high: bar.high.max(bar.close + 1.0), volume: bar.volume + 5.0, ..bar });
+            let lines = lines_of(&streaming);
+            assert_eq!(lines.len(), 2, "{lines:?}");
+            assert_eq!(lines[1]["ev"], "update");
+            let near = |said: &Value, price: f64| said.as_f64().is_some_and(|said| (said - price).abs() <= 0.005 + 1e-9);
+            assert!(near(&lines[1]["bar"][4], bar.close + 1.0), "{lines:?}");
+            let (_, read) = command(&window, "chart values --indicator sma --last 1 --json");
+            let read: Value = serde_json::from_str(&read).expect("JSON");
+            assert_eq!(lines[1]["indicators"][0]["value"], read["indicators"][0]["bars"][0]["value"], "as chart values reads it");
+
+            let closing = newest();
+            let next = omacharts_engine::Bar { ts: closing.ts + pane.timeframe.get().seconds(), open: closing.close, high: closing.close, low: closing.close, close: closing.close, volume: 1.0 };
+            ticked(&window, &pane, next);
+            let lines = lines_of(&streaming);
+            assert_eq!(lines.len(), 4, "{lines:?}");
+            assert_eq!((&lines[2]["ev"], &lines[2]["bar"][0]), (&json!("close"), &json!(closing.ts)), "{lines:?}");
+            assert_eq!((&lines[3]["ev"], &lines[3]["bar"][0]), (&json!("update"), &json!(next.ts)), "{lines:?}");
+            assert!(streaming.ended.get(), "three events, and --count 3");
+
+            // Held back to one update every --every, the last change in it.
+            let held = Rc::new(Terminal::default());
+            let (code, _) = command_from(&window, "chart stream --id 1 --every 300", &Typed(held.clone()));
+            assert_eq!(code, 0);
+            for step in 1..=3 {
+                let bar = newest();
+                ticked(&window, &pane, omacharts_engine::Bar { close: bar.close + 0.25, high: bar.high.max(bar.close + 0.25), volume: bar.volume + step as f64, ..bar });
+            }
+            assert_eq!(lines_of(&held).len(), 1, "within --every of the snapshot: {}", held.said.borrow());
+            assert!(settle(&window, || lines_of(&held).len() == 2), "never said: {}", held.said.borrow());
+            let lines = lines_of(&held);
+            assert!(near(&lines[1]["bar"][4], newest().close), "the last of them: {lines:?}");
+            assert_eq!(lines[1]["indicators"].as_array().map(Vec::len), Some(1), "only --id 1: {lines:?}");
+
+            let timed = Rc::new(Terminal::default());
+            let (code, _) = command_from(&window, "chart stream --for 1", &Typed(timed.clone()));
+            assert_eq!(code, 0);
+            assert!(settle(&window, || timed.ended.get()), "--for 1 never ended it");
+
+            let (code, why) = command_from(&window, "chart stream --id 999", &Typed(Rc::new(Terminal::default())));
+            assert_eq!(code, crate::cli::EXIT_NOT_FOUND, "{why}");
+            let (code, _) = command_from(&window, "chart stream --every soon", &Typed(Rc::new(Terminal::default())));
+            assert_eq!(code, crate::cli::EXIT_USAGE);
+
+            window.agent_closing();
+            assert!(held.ended.get(), "still held after the window went");
+            assert_eq!(lines_of(&held).last().map(|line| line["ev"].clone()), Some(json!("closed")));
         });
     }
 

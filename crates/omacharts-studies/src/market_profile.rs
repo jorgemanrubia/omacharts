@@ -58,6 +58,23 @@ pub fn tpo_of(ts: i64, start: i64, minutes: u32) -> i64 {
     (ts - start).div_euclid(i64::from(minutes.max(1)) * 60)
 }
 
+/// Put TPO period `tpo`'s TPO in each of rows `rows` (indices into
+/// `counts` and `marks`) that it has not put one in yet: a row gets one TPO
+/// a TPO period however many of its bars touch it. `marks` holds the TPO
+/// period that last marked each row. Answers how many TPOs went in.
+#[inline]
+pub fn mark(counts: &mut [u32], marks: &mut [i64], rows: std::ops::RangeInclusive<usize>, tpo: i64) -> u32 {
+    let mut added = 0;
+    for at in rows {
+        if marks[at] != tpo {
+            marks[at] = tpo;
+            counts[at] += 1;
+            added += 1;
+        }
+    }
+    added
+}
+
 /// The letter of TPO period `tpo`, as an index into [`LETTERS`].
 #[inline]
 pub fn letter_of(tpo: i64) -> u8 {
@@ -90,29 +107,7 @@ pub fn point_of_control(len: usize, count: impl Fn(usize) -> u32) -> Option<usiz
 /// `fraction` of `total`. The rule a volume profile grows its value area
 /// by, on TPOs.
 pub fn value_area(len: usize, count: impl Fn(usize) -> u32, poc: usize, total: u64, fraction: f64) -> (usize, usize) {
-    let target = total as f64 * fraction.clamp(0.0, 1.0);
-    let (mut lower, mut upper) = (poc, poc);
-    let mut covered = u64::from(count(poc));
-    while (covered as f64) < target && (lower > 0 || upper + 1 < len) {
-        let below = (lower > 0).then(|| count(lower - 1));
-        let above = (upper + 1 < len).then(|| count(upper + 1));
-        match (below, above) {
-            (Some(b), Some(a)) if b > a => {
-                lower -= 1;
-                covered += u64::from(b);
-            }
-            (Some(_), Some(a)) | (None, Some(a)) => {
-                upper += 1;
-                covered += u64::from(a);
-            }
-            (Some(b), None) => {
-                lower -= 1;
-                covered += u64::from(b);
-            }
-            (None, None) => break,
-        }
-    }
-    (lower, upper)
+    crate::volume_profile::value_area(len, |row| f64::from(count(row)), poc, total as f64, fraction)
 }
 
 /// The prices a row holds: its lowest tick and its highest.
@@ -270,14 +265,8 @@ impl Study for DevelopingMarketProfile {
             self.counts.resize(len, 0);
             self.marks.resize(len, UNMARKED);
         }
-        for row in from..=to {
-            let at = (row - self.low) as usize;
-            if self.marks[at] != tpo {
-                self.marks[at] = tpo;
-                self.counts[at] += 1;
-                self.total += 1;
-            }
-        }
+        let rows = (from - self.low) as usize..=(to - self.low) as usize;
+        self.total += u64::from(mark(&mut self.counts, &mut self.marks, rows, tpo));
         let counts = &self.counts;
         reading(self.low, counts.len(), |row| counts[row], self.total, self.tick_size, self.row_ticks, self.value_area)
     }

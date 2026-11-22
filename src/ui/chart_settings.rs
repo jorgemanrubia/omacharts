@@ -17,11 +17,13 @@ use omacharts_engine::indicators::{
 };
 use omacharts_engine::indicators::cvd::Style;
 use omacharts_engine::indicators::market;
+use omacharts_engine::indicators::flow;
 use omacharts_engine::indicators::profile::{Align, Style as ProfileStyle};
 use omacharts_engine::theme::ColorChoice;
 use omacharts_engine::{BarColouring, BarStyle, Indicator, Session};
 
 use crate::ui::colors;
+use crate::ui::colouring_rows;
 use crate::ui::controls;
 use crate::ui::dialogs;
 use crate::ui::drop_line;
@@ -1252,7 +1254,14 @@ enum Panel {
     /// template the chart was on before the indicator went onto it, to go
     /// back onto if it is never added.
     Add(Option<u32>),
+    /// A dialog of its own over one already on the chart, closed by its
+    /// close button: the picker asked for another of a kind a chart holds
+    /// one of, and this is the one it holds.
+    Alone,
 }
+
+/// Retitles an indicator's open panel.
+type Titler = Box<dyn Fn(&str)>;
 
 /// One indicator's settings.
 ///
@@ -1267,6 +1276,22 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
         return;
     };
     let colour = drawn_colour(owner, &indicators, id);
+
+    // The panel's title is the indicator's label, which its settings write
+    // — "Large orders > 50 · 20" — so it follows every change made here, as
+    // the legend does, rather than saying what was set when it opened.
+    let titled: Rc<RefCell<Option<Titler>>> = Rc::default();
+    let refresh = &{
+        let outer = refresh.clone();
+        let owner = owner.clone();
+        let titled = titled.clone();
+        Refresh(Rc::new(move || {
+            outer.run();
+            if let (Some(title), Some(now)) = (titled.borrow().as_ref(), owner.indicators().iter().find(|i| i.id == id)) {
+                title(&now.label());
+            }
+        }))
+    };
 
     let page = adw::PreferencesPage::new();
     // Said before anything can be changed, however the panel was reached —
@@ -1316,12 +1341,24 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
         // Done beside it would be the same action offered twice.
         Panel::Subpage(dialog) => {
             let subpage = adw::NavigationPage::new(&toolbar, &indicator.label());
+            let titling = subpage.downgrade();
+            *titled.borrow_mut() = Some(Box::new(move |title| {
+                if let Some(subpage) = titling.upgrade() {
+                    subpage.set_title(title);
+                }
+            }));
             dialog.push_subpage(&subpage);
             focus_first_parameter(&page);
         }
         Panel::Add(was_on) => {
             let modal = adw::Dialog::new();
             modal.set_title(&indicator.label());
+            let titling = modal.downgrade();
+            *titled.borrow_mut() = Some(Box::new(move |title| {
+                if let Some(modal) = titling.upgrade() {
+                    modal.set_title(title);
+                }
+            }));
             modal.set_content_width(DIALOG_WIDTH);
             modal.set_content_height((owner.window.height() * 85 / 100).max(620));
             modal.set_child(Some(&toolbar));
@@ -1383,6 +1420,21 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
             modal.present(Some(&owner.window));
             focus_first_parameter(&page);
         }
+        Panel::Alone => {
+            let modal = adw::Dialog::new();
+            modal.set_title(&indicator.label());
+            modal.set_content_width(DIALOG_WIDTH);
+            modal.set_content_height((owner.window.height() * 85 / 100).max(620));
+            modal.set_child(Some(&toolbar));
+            let titling = modal.downgrade();
+            *titled.borrow_mut() = Some(Box::new(move |title| {
+                if let Some(modal) = titling.upgrade() {
+                    modal.set_title(title);
+                }
+            }));
+            modal.present(Some(&owner.window));
+            focus_first_parameter(&page);
+        }
     }
 }
 
@@ -1437,6 +1489,7 @@ fn appearance_groups(
     match indicator.kind {
         Kind::VolumeProfile => profile_style(owner, refresh, colour, indicator),
         Kind::MarketProfile => market_style(owner, refresh, colour, indicator),
+        Kind::VolumeDelta | Kind::Footprint | Kind::LargeOrders => vec![flow_colours(owner, refresh, indicator)],
         _ => appearance_group(owner, refresh, colour, indicator).into_iter().collect(),
     }
 }
@@ -1856,7 +1909,7 @@ fn parameters_group(
         Params::Volume { height, .. } => {
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
-        Params::Cvd { reset, style, height, colouring } => {
+        Params::Cvd { reset, style, height, .. } => {
             // Said once, here, rather than on the chart: the legend's ≈ is
             // the mark there.
             if owner.estimates_delta() {
@@ -1880,8 +1933,92 @@ fn parameters_group(
             let app = owner.app.clone();
             style_row.connect_selected_notify(move |_| app.chart_changed_elsewhere());
             group.add(&style_row);
-            group.add(&colouring_row(owner, refresh, id, *colouring));
+            study_colours(owner, refresh, indicator).add_to(&group);
             group.add(&pane_height_row(owner, refresh, id, *height));
+        }
+        Params::VolumeDelta { height, .. } => {
+            if owner.estimates_delta() {
+                group.set_description(Some(CVD_ESTIMATED));
+            }
+            group.add(&pane_height_row(owner, refresh, id, *height));
+        }
+        Params::Footprint { intensity, numbers, row_ticks, profile, .. } => {
+            // Automatic, or so many ticks a row, as a market profile's:
+            // greyed while automatic, showing the ticks being drawn.
+            let granularity = {
+                let owner = owner.clone();
+                let refresh = refresh.clone();
+                let drawn: Rc<dyn Fn() -> Option<usize>> = {
+                    let owner = owner.clone();
+                    Rc::new(move || owner.profile_rows(id))
+                };
+                profile_rows::granularity(row_ticks.map(|t| t as usize), drawn, move |ticks| {
+                    update(&owner, id, move |indicator| {
+                        if let Params::Footprint { row_ticks, .. } = &mut indicator.params {
+                            *row_ticks = ticks.map(|t| t as u32);
+                        }
+                    });
+                    refresh.run();
+                })
+            };
+            granularity.rows.set_title(MARKET_ROW_TICKS_LABEL);
+            granularity.automatic.set_title(profile_rows::AUTOMATIC);
+            granularity.rows.set_range(1.0, f64::from(omacharts_engine::studies::footprint::MAX_ROW_TICKS));
+            (granularity.show)(row_ticks.map(|t| t as usize));
+            group.add(&granularity.automatic);
+            group.add(&granularity.rows);
+            group.add(&flow_switch(owner, refresh, id, FOOTPRINT_INTENSITY_LABEL, *intensity, |params, on| {
+                if let Params::Footprint { intensity, .. } = params {
+                    *intensity = on;
+                }
+            }));
+            group.add(&flow_switch(owner, refresh, id, FOOTPRINT_NUMBERS_LABEL, *numbers, |params, on| {
+                if let Params::Footprint { numbers, .. } = params {
+                    *numbers = on;
+                }
+            }));
+            for row in footprint_profile_rows(owner, refresh, id, profile) {
+                group.add(&row);
+            }
+        }
+        Params::LargeOrders { regular, extended, compare, combine, .. } => {
+            for (title, value, regular_hours) in
+                [(LARGE_RTH_LABEL, *regular, true), (LARGE_ETH_LABEL, *extended, false)]
+            {
+                group.add(&spin_row(
+                    owner,
+                    refresh,
+                    id,
+                    title,
+                    value as f64,
+                    0.0,
+                    LARGE_MAX_THRESHOLD as f64,
+                    1.0,
+                    move |indicator, value| {
+                        if let Params::LargeOrders { regular, extended, .. } = &mut indicator.params {
+                            *(if regular_hours { regular } else { extended }) = value.max(0.0) as u64;
+                        }
+                    },
+                ));
+            }
+            group.add(&choice_row(
+                owner,
+                refresh,
+                id,
+                LARGE_COMPARE_LABEL,
+                &flow::Compare::ALL.map(flow::Compare::label),
+                flow::Compare::ALL.iter().position(|c| c == compare),
+                |indicator, at| {
+                    if let Params::LargeOrders { compare, .. } = &mut indicator.params {
+                        *compare = flow::Compare::ALL.get(at).copied().unwrap_or_default();
+                    }
+                },
+            ));
+            group.add(&flow_switch(owner, refresh, id, LARGE_COMBINE_LABEL, *combine, |params, on| {
+                if let Params::LargeOrders { combine, .. } = params {
+                    *combine = on;
+                }
+            }));
         }
         Params::Rsi { period, height, overbought, oversold } => {
             group.add(&spin_row(
@@ -1970,7 +2107,7 @@ fn parameters_group(
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
         Params::VolumeProfile {
-            reset, rows, value_area, method, colouring, last_only, ..
+            reset, rows, value_area, method, last_only, ..
         } => {
             let reset_row = reset_row(owner, refresh, id, *reset);
             // The newest period alone, on either method and either edge.
@@ -1987,18 +2124,8 @@ fn parameters_group(
                     refresh.run();
                 })
             };
-            let (colouring_row, _) = {
-                let owner = owner.clone();
-                let refresh = refresh.clone();
-                profile_rows::colouring_row(*colouring, move |chosen| {
-                    update(&owner, id, |indicator| {
-                        if let Params::VolumeProfile { colouring, .. } = &mut indicator.params {
-                            *colouring = chosen;
-                        }
-                    });
-                    refresh.run();
-                })
-            };
+            let colours = study_colours(owner, refresh, indicator);
+            let colouring_row = colours.colouring();
             let granularity = {
                 let owner = owner.clone();
                 let refresh = refresh.clone();
@@ -2039,7 +2166,7 @@ fn parameters_group(
                 &group,
                 &profile_rows::ParameterRows {
                     leading: vec![reset_row.upcast(), last_row.upcast()],
-                    own: vec![method_row.upcast(), colouring_row.upcast()],
+                    own: std::iter::once(method_row.upcast()).chain(colours.widgets.iter().cloned()).collect(),
                     granularity,
                     value_area: area_row.upcast(),
                 },
@@ -2595,86 +2722,175 @@ fn volume_colours(
 /// The volume pane's palette, its opacity and its two colours, as it is
 /// painted now.
 fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> Vec<gtk::Widget> {
-    let id = indicator.id;
-    let (up, down) =
-        crate::ui::chart::volume_colours(indicator, &owner.theme(), &owner.bar_scheme());
-    let Params::Volume { colouring, up_color, down_color, .. } = &indicator.params else {
-        return Vec::new();
-    };
-    let (up_alpha, down_alpha) = crate::ui::chart::volume_alphas(indicator);
-    let up_strength = indicator_strength(owner, refresh, id, up_alpha, |indicator, alpha| {
-        if let Params::Volume { up_alpha, .. } = &mut indicator.params {
-            *up_alpha = Some(alpha);
-        }
-    });
-    let down_strength = indicator_strength(owner, refresh, id, down_alpha, |indicator, alpha| {
-        if let Params::Volume { down_alpha, .. } = &mut indicator.params {
-            *down_alpha = Some(alpha);
-        }
-    });
-    // The one a delta profile offers. Its Default is what volume always
-    // followed, the chart's own colouring, and Monochrome, which a delta is
-    // not offered, stays on offer to a volume pane already painted in it.
-    let choice = colouring_row(owner, refresh, id, *colouring);
-    // Bars have no line to repaint as a sample.
-    let unused = Ink::new(String::new);
-    let up_row = colour_row_with(
-        owner,
-        refresh,
-        &unused,
-        VOLUME_UP,
-        &up,
-        up_color.clone(),
-        move |indicator, choice| {
-            if let Params::Volume { up_color, .. } = &mut indicator.params {
-                *up_color = choice;
-            }
-        },
-        id,
-        Some(up_strength),
-    );
-    let down_row = colour_row_with(
-        owner,
-        refresh,
-        &unused,
-        VOLUME_DOWN,
-        &down,
-        down_color.clone(),
-        move |indicator, choice| {
-            if let Params::Volume { down_color, .. } = &mut indicator.params {
-                *down_color = choice;
-            }
-        },
-        id,
-        Some(down_strength),
-    );
-    vec![choice.upcast(), up_row.upcast(), down_row.upcast()]
+    study_colours(owner, refresh, indicator).widgets
 }
 
 /// The volume pane's colour rows, each with how solid its bars are.
 pub const VOLUME_UP: &str = "Up";
 pub const VOLUME_DOWN: &str = "Down";
 
-/// The colouring row a volume pane, a delta volume profile and a
-/// cumulative delta share: **Default** first, then the colourings that tell
-/// a rise from a fall, [`DELTA_COLOURINGS`]. Default is the colouring
-/// chosen in Preferences for a delta, and the chart's own for volume, which
-/// is what it always followed. A colouring outside those three that an
-/// indicator already has — a volume pane painted Monochrome before — is
-/// offered last, so the row shows what is drawn.
-fn colouring_row(owner: &Rc<Owner>, refresh: &Refresh, id: u32, current: Option<BarColouring>) -> adw::ComboRow {
+/// The colour each role of `indicator` is drawn in now: a volume pane's
+/// Default is the chart's own bars, as every study's is.
+fn study_drawn(owner: &Owner, indicator: &Indicator) -> Vec<String> {
+    let theme = owner.theme();
+    if indicator.kind == Kind::Volume {
+        let (up, down) = crate::ui::chart::volume_colours(indicator, &theme, &owner.bar_scheme(), owner.app.chart_look().1);
+        return vec![up, down];
+    }
+    let Some((colouring, own)) = indicator.params.colours() else { return Vec::new() };
+    let (house, swapped) = owner.app.chart_look();
+    let base = crate::ui::chart::delta_colours(omacharts_engine::colouring::base(colouring), &theme, house, swapped);
+    colouring_rows::drawn_roles(colouring, own, base, &theme)
+}
+
+/// How solid a study's roles are drawn unless told.
+fn designed_alpha(indicator: &Indicator) -> f64 {
+    match indicator.kind {
+        Kind::Volume => crate::ui::chart::volume_alphas(indicator).0,
+        Kind::Footprint => flow::FOOTPRINT_ALPHA,
+        Kind::LargeOrders => flow::LARGE_ORDERS_ALPHA,
+        _ => flow::VOLUME_DELTA_ALPHA,
+    }
+}
+
+/// The Colouring rows every study painted in one shows, from
+/// [`colouring_rows`]: a volume pane, a volume profile, the cumulative
+/// delta, the volume delta, the footprint and large orders.
+fn study_colours(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> colouring_rows::Rows {
+    let id = indicator.id;
+    let read = {
+        let owner = owner.clone();
+        // What the dialog opened on, for one built before it is on a chart.
+        let opened = indicator.clone();
+        move || {
+            let indicators = owner.indicators();
+            let indicator = indicators.iter().find(|i| i.id == id).unwrap_or(&opened);
+            let drawn = study_drawn(&owner, indicator);
+            let designed = designed_alpha(indicator);
+            let mut params = indicator.params.clone();
+            match params.colours_mut() {
+                Some(colours) => colouring_rows::Shown::of(&colours, drawn, designed),
+                None => colouring_rows::Shown::empty(),
+            }
+        }
+    };
+    let edit = {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        move |change: &dyn Fn(&mut omacharts_engine::colouring::ColoursMut, &[String])| {
+            let indicators = owner.indicators();
+            let Some(drawn) = indicators.iter().find(|i| i.id == id).map(|i| study_drawn(&owner, i)) else { return };
+            update(&owner, id, |indicator| {
+                if let Some(mut colours) = indicator.params.colours_mut() {
+                    change(&mut colours, &drawn);
+                }
+            });
+            refresh.run();
+        }
+    };
+    colouring_rows::rows(colouring_rows::Host { theme: owner.theme(), read: Box::new(read), edit: Box::new(edit) })
+}
+
+/// The rows of the order flow indicators' own.
+pub const FOOTPRINT_INTENSITY_LABEL: &str = "Shade by delta";
+pub const FOOTPRINT_NUMBERS_LABEL: &str = "Numbers";
+pub const FOOTPRINT_PROFILE_LABEL: &str = "Volume profile";
+pub const FOOTPRINT_PROFILE_COLOUR_LABEL: &str = "Profile colour";
+pub const FOOTPRINT_PROFILE_NUMBERS_LABEL: &str = "Profile numbers";
+pub const LARGE_RTH_LABEL: &str = "RTH threshold";
+pub const LARGE_ETH_LABEL: &str = "ETH threshold";
+pub const LARGE_COMPARE_LABEL: &str = "Size against";
+pub const LARGE_COMBINE_LABEL: &str = "Combine same-time prints";
+pub const FLOW_BUY_LABEL: &str = "Buying";
+pub const FLOW_SELL_LABEL: &str = "Selling";
+/// The biggest threshold the box takes: past any single order's size.
+pub const LARGE_MAX_THRESHOLD: u64 = 1_000_000;
+
+/// A switch of an order flow indicator's.
+fn flow_switch(
+    owner: &Rc<Owner>,
+    refresh: &Refresh,
+    id: u32,
+    title: &str,
+    on: bool,
+    write: impl Fn(&mut Params, bool) + 'static,
+) -> adw::SwitchRow {
     let owner = owner.clone();
     let refresh = refresh.clone();
-    profile_rows::colouring_row(current, move |chosen| {
-        update(&owner, id, |indicator| match &mut indicator.params {
-            Params::Volume { colouring, .. }
-            | Params::VolumeProfile { colouring, .. }
-            | Params::Cvd { colouring, .. } => *colouring = chosen,
-            _ => {}
-        });
+    property_rows::switch_row(title, on, move |on| {
+        update(&owner, id, |indicator| write(&mut indicator.params, on));
         refresh.run();
     })
     .0
+}
+
+/// A footprint's volume profile: its switch, and under it while it is on,
+/// its colour beside how solid it is, and whether its totals are written.
+fn footprint_profile_rows(owner: &Rc<Owner>, refresh: &Refresh, id: u32, profile: &flow::BarProfile) -> Vec<gtk::Widget> {
+    let edit = {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        Rc::new(move |change: &dyn Fn(&mut flow::BarProfile)| {
+            update(&owner, id, |indicator| {
+                if let Params::Footprint { profile, .. } = &mut indicator.params {
+                    change(profile);
+                }
+            });
+            refresh.run();
+        })
+    };
+    let theme = owner.theme();
+    let drawn = profile.chosen().resolve(&theme);
+    let button = {
+        let picked = {
+            let edit = edit.clone();
+            move |choice: ColorChoice| edit(&|profile| profile.colour = Some(choice.clone()))
+        };
+        let default: Rc<dyn Fn() -> String> = {
+            let edit = edit.clone();
+            let theme = theme.clone();
+            Rc::new(move || {
+                edit(&|profile| profile.colour = None);
+                flow::BarProfile::default().chosen().resolve(&theme)
+            })
+        };
+        crate::ui::palette::picker(&theme, profile.colour.clone(), &drawn, picked, Some(default))
+    };
+    let (transparency, _) = {
+        let edit = edit.clone();
+        property_rows::Transparency::new(1.0 - profile.drawn_alpha(), move |share| {
+            edit(&|profile| profile.alpha = Some(1.0 - share))
+        })
+    };
+    let colour = property_rows::colour_row(FOOTPRINT_PROFILE_COLOUR_LABEL, &button, Some(transparency));
+    let numbers = {
+        let edit = edit.clone();
+        property_rows::switch_row(FOOTPRINT_PROFILE_NUMBERS_LABEL, profile.numbers, move |on| edit(&|profile| profile.numbers = on)).0
+    };
+    let shown = |on: bool| {
+        colour.set_visible(on);
+        numbers.set_visible(on);
+    };
+    shown(profile.on);
+    let switch = {
+        let (colour, numbers) = (colour.clone(), numbers.clone());
+        property_rows::switch_row(FOOTPRINT_PROFILE_LABEL, profile.on, move |on| {
+            edit(&|profile| profile.on = on);
+            colour.set_visible(on);
+            numbers.set_visible(on);
+        })
+        .0
+    };
+    vec![switch.upcast(), colour.upcast(), numbers.upcast()]
+}
+
+/// How an order flow indicator paints buying and selling: its colouring,
+/// and each side's colour beside how solid it is, as a volume pane's are.
+fn flow_colours(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Colours");
+    study_colours(owner, refresh, indicator).add_to(&group);
+    group
 }
 
 /// The cumulative delta row that picks candles or a line.
@@ -3458,6 +3674,9 @@ fn reset_row_of(
             Params::MovingAverage { .. }
             | Params::Bollinger { .. }
             | Params::Volume { .. }
+            | Params::VolumeDelta { .. }
+            | Params::Footprint { .. }
+            | Params::LargeOrders { .. }
             | Params::Rsi { .. }
             | Params::Macd { .. }
             | Params::Atr { .. }
@@ -3954,6 +4173,13 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
     rows.connect_row_activated(move |_, row| {
         let at = row.index().max(0) as usize;
         let Some(picked) = shown.borrow().get(at).cloned() else { return };
+        // A kind a chart holds one of, asked for again: the one there is
+        // opened, rather than a second put down that would never be drawn.
+        if let Some(there) = there_already(&owner_for_pick.indicators(), picked.kind) {
+            dialog_for_pick.close();
+            open_indicator_panel_for(&owner_for_pick, &refresh_for_pick, there, Panel::Alone);
+            return;
+        }
         let id = owner_for_pick.next_indicator_id();
         // On a template it goes onto the template, like every other change
         // made here, so there is no template to go back onto if it is not
@@ -3993,6 +4219,12 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
 }
 
 use gtk::glib;
+
+/// The one indicator of `kind` among `indicators`, for a kind a chart holds
+/// at most one of.
+pub(crate) fn there_already(indicators: &[Indicator], kind: Kind) -> Option<u32> {
+    kind.one_per_chart().then(|| indicators.iter().find(|i| i.kind == kind).map(|i| i.id)).flatten()
+}
 
 /// A volume or market profile study's settings, as the rows of each group
 /// by title in the order they are laid out: what the drawing's are held to.
@@ -4035,7 +4267,7 @@ mod tests {
     #[test]
     fn a_delta_profile_offers_the_two_toned_colourings_after_the_default() {
         let names: Vec<&str> = DELTA_COLOURINGS.iter().map(|c| c.label()).collect();
-        assert_eq!(names, ["Vivid", "Soft", "Quiet"]);
+        assert_eq!(names, ["Vivid", "Soft", "Quiet", "Monochrome"]);
         assert!(names.iter().all(|name| BarColouring::ALL.iter().any(|c| c.label() == *name)));
         assert_eq!(profile_rows::FOLLOWS_DEFAULTS, "Default");
         assert!(profile_rows::has_colouring(Method::Delta));
@@ -4069,5 +4301,17 @@ mod tests {
             let shown = as_percent(end);
             assert_eq!(shown, shown.round(), "{end} is not a whole percentage");
         }
+    }
+
+    /// The kinds a chart draws one of are found to be changed rather than
+    /// added again; anything else is added beside what is there.
+    #[test]
+    fn only_one_footprint_or_session_times_is_there_already() {
+        use omacharts_engine::indicators::Kind;
+        let held = [Indicator::new(3, Kind::Sma), Indicator::new(4, Kind::Footprint), Indicator::new(5, Kind::SessionTimes)];
+        assert_eq!(super::there_already(&held, Kind::Footprint), Some(4));
+        assert_eq!(super::there_already(&held, Kind::SessionTimes), Some(5));
+        assert_eq!(super::there_already(&held, Kind::Sma), None, "as many as wanted");
+        assert_eq!(super::there_already(&held[..1], Kind::Footprint), None);
     }
 }

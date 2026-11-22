@@ -20,8 +20,12 @@
 //! drag at the frame rate.
 
 pub mod bench;
+pub mod flow_bench;
 mod compare;
+mod bubbles;
 mod executions;
+mod footprint;
+pub use footprint::{BarPick, FootprintBar, FootprintRead, FootprintRow};
 mod market;
 mod pulse;
 mod selection;
@@ -117,6 +121,9 @@ pub fn clamp_thickness(thickness: u8) -> u8 {
 /// what a frame draws is bounded by the width of the plot however far out the
 /// view is zoomed.
 const MIN_VISIBLE: usize = 12;
+/// The fewest with a footprint on: a footprint with its volume profile
+/// and both sides' figures wants a bar some 130 pixels wide.
+const FOOTPRINT_MIN_VISIBLE: usize = 4;
 const MAX_VISIBLE: usize = 3000;
 /// The fewest and the most bars a chart spreads across its width, for
 /// whoever has to choose a resolution a stretch of time fits.
@@ -179,6 +186,12 @@ struct ProfileKey {
 /// a chart of a feed without ladders has none.
 pub type VolumeAtPrice = Rc<dyn Fn(i64, &mut dyn FnMut(Option<&omacharts_engine::ladders::Held>, bool))>;
 
+/// A chart's large orders: handed a large orders indicator's thresholds,
+/// regular and extended, and whether it combines same-time prints, the book
+/// of them built so far and the tick its prices are in. The window lends it;
+/// it answers nothing until the book has come.
+pub type LargeOrderBooks = Rc<dyn Fn(u64, u64, bool) -> Option<(std::sync::Arc<omacharts_engine::studies::orders::Book>, f64)>>;
+
 /// A chart's ladders, as far as a profile worked out from them can tell
 /// whether it has to be worked out again: none, on their way, or held as of
 /// some change — days and pieces read, a minute forming.
@@ -222,9 +235,9 @@ struct State {
     echo: Option<Echo>,
     theme: Theme,
     scheme: BarScheme,
-    /// The colouring chosen in Preferences, and whether it is worn the
-    /// other way round: what a delta profile with no colouring of its own
-    /// is painted in, rather than this chart's.
+    /// The chart's colouring, and whether it is worn the other way round:
+    /// what a study with no colouring of its own is painted in, and how
+    /// every preset is worn — the house colouring.
     house: (BarColouring, bool),
     /// A delta profile's bought and sold colours, for the house colouring
     /// and then each of [`DELTA_COLOURINGS`] in turn, worked out when the
@@ -252,6 +265,13 @@ struct State {
     /// Where the volume profile drawings read what traded at each price,
     /// as the study's periods do. `None` on a chart of a feed without it.
     volume_at_price: Option<VolumeAtPrice>,
+    large_orders: Option<LargeOrderBooks>,
+    /// What a footprint has read of each bar's ladder.
+    footprint: RefCell<footprint::Cache>,
+    /// Whether the footprint was shown last asked: the width it goes at is
+    /// a few pixels less than the width it comes at, so a zoom resting on
+    /// the edge does not flicker between the two.
+    footprint_on: std::cell::Cell<bool>,
     /// The lines the anchored VWAP drawings show, kept for the same reason:
     /// asked on every motion, changed only by the anchor or the bars.
     vwap_cache: RefCell<Vec<(VwapKey, Rc<Vec<omacharts_engine::indicators::vwap::Anchored>>)>>,
@@ -834,6 +854,11 @@ struct Columns<'a> {
     /// pixel the first column is, counted from the series' own first pixel.
     groups: std::ops::RangeInclusive<usize>,
     pixel: i64,
+    /// The width a bar is drawn at, and how far its middle sits from its
+    /// column's: the column's own width and nothing, but for the narrow bar a
+    /// footprint draws at each column's left ([`Columns::narrowed`]).
+    face: f64,
+    nudge: f64,
 }
 
 /// The fewest whole bars that make a group at least half a pixel wide,
@@ -865,6 +890,8 @@ impl<'a> Columns<'a> {
             per,
             groups: 0..=0,
             pixel: 0,
+            face: bar_px,
+            nudge: 0.0,
         };
         if bar_px >= 1.0 || bars.len() < visible {
             return columns;
@@ -880,6 +907,7 @@ impl<'a> Columns<'a> {
         columns.pixel = from;
         columns.left = origin + from as f64;
         columns.bar_w = 1.0;
+        columns.face = 1.0;
         columns.start = origin + first as f64 * bar_px;
         let count = (to - from + 1) as usize;
         let mut aggregated = Vec::with_capacity(count);
@@ -960,7 +988,34 @@ impl<'a> Columns<'a> {
 
     /// The middle of a column, which is where a candle is centred.
     fn x(&self, at: usize) -> f64 {
-        self.left + (at as f64 + 0.5) * self.bar_w
+        self.left + (at as f64 + 0.5) * self.bar_w + self.nudge
+    }
+
+    /// The same columns, their bars drawn `face` pixels wide with their
+    /// middles `nudge` pixels off the columns': what a footprint hands the
+    /// chart's own bar drawing to draw a narrow bar at each column's left.
+    /// Borrowed, so nothing is allocated, at a bar a column, where a
+    /// footprint is drawn.
+    fn narrowed(&self, face: f64, nudge: f64) -> Columns<'_> {
+        Columns {
+            bars: Cow::Borrowed(&self.bars),
+            first: self.first,
+            visible: self.visible,
+            plot_x: self.plot_x,
+            left: self.left,
+            bar_w: self.bar_w,
+            bar_px: self.bar_px,
+            start: self.start,
+            end: self.end,
+            live: self.live,
+            margin_end: self.margin_end,
+            slice: self.slice,
+            per: self.per,
+            groups: self.groups.clone(),
+            pixel: self.pixel,
+            face,
+            nudge: self.nudge + nudge,
+        }
     }
 
     /// How many bars a column stands for, on average: one at a bar a
@@ -989,8 +1044,8 @@ impl<'a> Columns<'a> {
     /// four pixels no odd body fits, which is why a candle that narrow is
     /// drawn as its wick alone.
     fn body(&self, at: usize) -> (f64, f64) {
-        let wanted = (self.bar_w * 0.68).clamp(1.0, 24.0);
-        let room = (self.bar_w.floor() - 1.0).max(1.0);
+        let wanted = (self.face * 0.68).clamp(1.0, 24.0);
+        let room = (self.face.floor() - 1.0).max(1.0);
         let odd = ((wanted - 1.0) / 2.0).round() * 2.0 + 1.0;
         let width = if odd <= room { odd } else { wanted.round().min(room) };
         (self.x(at).round() - ((width - 1.0) / 2.0).floor(), width)
@@ -1487,6 +1542,9 @@ impl State {
             instrument: None,
             profile_cache: RefCell::new(Vec::new()),
             volume_at_price: None,
+            large_orders: None,
+            footprint: RefCell::default(),
+            footprint_on: std::cell::Cell::new(false),
             vwap_cache: RefCell::new(Vec::new()),
             timeframe: Timeframe::days(1),
             first: 0,
@@ -1559,6 +1617,16 @@ impl State {
     }
 
     /// The indicators on screen: the ones shown, while the chart shows any.
+    /// The fewest bars the chart spreads across its width: fewer with a
+    /// footprint on, whose rows, and its profile's beside them, want a wide
+    /// bar to be read.
+    fn fewest(&self) -> usize {
+        match self.indicators.iter().any(|drawn| matches!(drawn.indicator.params, omacharts_engine::Params::Footprint { .. })) {
+            true => FOOTPRINT_MIN_VISIBLE,
+            false => MIN_VISIBLE,
+        }
+    }
+
     fn shown_indicators(&self) -> impl DoubleEndedIterator<Item = &Drawn> {
         self.indicators.iter().filter(|drawn| self.show_indicators && drawn.indicator.visible)
     }
@@ -2693,7 +2761,7 @@ impl State {
         if self.bars.is_empty() {
             return 0;
         }
-        self.visible.clamp(MIN_VISIBLE, MAX_VISIBLE).min(self.span())
+        self.visible.clamp(self.fewest(), MAX_VISIBLE).min(self.span())
     }
 
     /// The most columns the view spreads across: the series and the resting
@@ -2710,8 +2778,8 @@ impl State {
     fn zoom_time(&mut self, factor: f64, anchor: f64, plot_w: f64) {
         let columns = self.columns();
         let next = ((columns as f64 * factor).round() as usize)
-            .clamp(MIN_VISIBLE, MAX_VISIBLE)
-            .min(self.span().max(MIN_VISIBLE));
+            .clamp(self.fewest(), MAX_VISIBLE)
+            .min(self.span().max(self.fewest()));
         // Anchored to the right edge, zooming reveals history and the last bar
         // stays put — which is what you want when looking at the live edge.
         if !self.anchored {
@@ -2762,13 +2830,33 @@ impl State {
     /// The bought and sold colours a delta profile or a cumulative delta is
     /// painted in: its own colouring's, or the house colouring's when it has
     /// none, or one that is not offered to a delta.
-    fn delta_ink(&self, drawn: &Drawn) -> (&str, &str) {
-        let chosen = match &drawn.indicator.params {
-            omacharts_engine::Params::VolumeProfile { colouring, .. }
-            | omacharts_engine::Params::Cvd { colouring, .. } => *colouring,
-            _ => None,
+    fn delta_ink<'a>(&'a self, drawn: &'a Drawn) -> (Cow<'a, str>, Cow<'a, str>) {
+        match drawn.indicator.params.colours() {
+            Some((colouring, own)) => self.study_pair(colouring, own),
+            None => {
+                let (up, down) = self.delta_pair(None);
+                (Cow::Borrowed(up), Cow::Borrowed(down))
+            }
+        }
+    }
+
+    /// The two colours a study painted in a colouring is drawn in: its
+    /// preset's, or the house colouring's, or, while it is Custom, each
+    /// role's own. See [`omacharts_engine::colouring`]. Borrowed, so a
+    /// frame allocates nothing for them.
+    pub(crate) fn study_pair<'a>(
+        &'a self,
+        colouring: Option<omacharts_engine::colouring::Colouring>,
+        own: [Option<&'a omacharts_engine::theme::ColorChoice>; 2],
+    ) -> (Cow<'a, str>, Cow<'a, str>) {
+        use omacharts_engine::colouring;
+        let (up, down) = self.delta_pair(colouring::base(colouring));
+        let custom = colouring::is_custom(colouring, &own);
+        let pick = |own: Option<&'a omacharts_engine::theme::ColorChoice>, base: &'a str| match own.filter(|_| custom) {
+            Some(choice) => footprint::chosen(choice, self),
+            None => Cow::Borrowed(base),
         };
-        self.delta_pair(chosen)
+        (pick(own[0], up), pick(own[1], down))
     }
 
     /// The bought and sold colours of a delta painted in `chosen`, or in
@@ -2958,7 +3046,7 @@ impl State {
         // Too wide for the view: wide enough for it, with room either side.
         let wanted = (last - first) + (last - first) / 2 + 2;
         if wanted > self.columns() || zoom_in {
-            self.visible = wanted.clamp(MIN_VISIBLE, MAX_VISIBLE);
+            self.visible = wanted.clamp(self.fewest(), MAX_VISIBLE);
         }
         let visible = self.columns().max(1);
         let middle = (first + last) / 2;
@@ -3006,7 +3094,7 @@ impl State {
                 self.timeframe.seconds(),
             );
             self.lead = 0;
-            self.visible = columns.clamp(MIN_VISIBLE, MAX_VISIBLE);
+            self.visible = columns.clamp(self.fewest(), MAX_VISIBLE);
             self.anchored = room > 0;
             self.overhang = room;
             self.overhang_by_hand = true;
@@ -3029,7 +3117,7 @@ impl State {
             // the live session, still leaves the range's first bar on screen.
             let share = selection::margin_share(self).min(MARGIN_MAX_SHARE_OF_VIEW);
             let wanted = ((len - first + RIGHT_MARGIN) as f64 / (1.0 - share)).ceil() as usize;
-            self.visible = wanted.clamp(MIN_VISIBLE, MAX_VISIBLE);
+            self.visible = wanted.clamp(self.fewest(), MAX_VISIBLE);
             self.anchored = true;
             self.overhang = RIGHT_MARGIN;
             self.overhang_by_hand = false;
@@ -3037,7 +3125,7 @@ impl State {
         }
         // Over before the last bar: its own bars edge to edge, from the
         // first of them, and new bars arriving move nothing.
-        self.visible = end.saturating_sub(first).clamp(MIN_VISIBLE, MAX_VISIBLE);
+        self.visible = end.saturating_sub(first).clamp(self.fewest(), MAX_VISIBLE);
         self.anchored = false;
         self.overhang = 0;
         self.overhang_by_hand = true;
@@ -5636,10 +5724,15 @@ impl ChartView {
         });
     }
 
-    pub fn restyle(&self, theme: Theme, scheme: BarScheme) {
+    /// Paint in `theme`, the bars in `scheme`, worn from `look`: the
+    /// chart's colouring and whether it is swapped, which every study's
+    /// Default and presets follow, so a study and the bars it sits on say
+    /// a rise in the same colour.
+    pub fn restyle(&self, theme: Theme, scheme: BarScheme, look: (BarColouring, bool)) {
         {
             let mut state = self.state.borrow_mut();
             state.last_ink = LastInk::of(&theme);
+            state.house = look;
             state.delta_inks = delta_inks(&theme, state.house);
             state.tpo_ends = (theme.tpo_open(), theme.tpo_close());
             state.theme = theme;
@@ -5649,8 +5742,8 @@ impl ChartView {
         self.redraw();
     }
 
-    /// The colouring chosen in Preferences and whether it is worn swapped,
-    /// which a delta profile with no colouring of its own is painted in.
+    /// The chart's colouring and whether it is worn swapped, which a study
+    /// with no colouring of its own is painted in, and its presets swapped.
     pub fn set_house_look(&self, colouring: BarColouring, swapped: bool) {
         {
             let mut state = self.state.borrow_mut();
@@ -5674,6 +5767,45 @@ impl ChartView {
         self.redraw();
     }
 
+    /// Where this chart's large orders indicators read their books: see
+    /// [`LargeOrderBooks`]. Only this chart is drawn again.
+    pub fn set_large_orders(&self, books: Option<LargeOrderBooks>) {
+        self.state.borrow_mut().large_orders = books;
+        self.redraw();
+    }
+
+    /// A book this chart's large orders read has been swapped for a newer
+    /// one: drawn again, and nothing worked out.
+    pub fn large_orders_changed(&self) {
+        self.redraw();
+    }
+
+    /// The footprint of `pick`'s bars in numbers, each row as it is drawn,
+    /// in rows of `row_ticks` or the step the footprint draws: see
+    /// `footprint::read_out`. None where the chart has no volume at price.
+    pub fn read_footprint(&self, pick: BarPick, row_ticks: Option<u32>) -> Option<FootprintRead> {
+        footprint::read_out(&self.state.borrow(), pick, row_ticks)
+    }
+
+    /// The indexes of `pick`'s bars in the series [`Self::with_bars`] reads.
+    pub fn bar_range(&self, pick: BarPick) -> std::ops::Range<usize> {
+        footprint::pick_range(&self.state.borrow(), pick)
+    }
+
+    /// The large orders indicator `id` would bubble over the bars `range`
+    /// indexes, oldest first, from the same book and by the same
+    /// [`Book::within`](omacharts_engine::studies::orders::Book::within) its
+    /// drawing finds them by, with the tick their prices are in. None until
+    /// the window has lent a book and it has come, or with no such
+    /// indicator.
+    pub fn read_large_orders(
+        &self,
+        id: u32,
+        range: std::ops::Range<usize>,
+    ) -> Option<(Vec<omacharts_engine::studies::orders::Placed>, f64)> {
+        bubbles::read(&self.state.borrow(), id, range)
+    }
+
     /// Whether any drawing on this chart is a volume profile, which reads
     /// what traded at each price as the study does.
     pub fn has_profile_drawing(&self) -> bool {
@@ -5685,7 +5817,8 @@ impl ChartView {
     }
 
     /// How many rows the volume profile with this id is actually drawing,
-    /// or for a market profile how many ticks tall its rows are.
+    /// or for a market profile or a footprint how many ticks tall its rows
+    /// are.
     ///
     /// The settings panel shows this when the count is automatic, so the
     /// number on screen is the number being drawn rather than a placeholder.
@@ -5695,6 +5828,10 @@ impl ChartView {
             match &drawn.output {
                 Output::Profiles(profiles) => profiles.first().map(|p| p.rows.len()),
                 Output::MarketProfiles(profiles) => profiles.first().map(|p| p.row_ticks as usize),
+                Output::Footprint => match drawn.indicator.params {
+                    omacharts_engine::Params::Footprint { row_ticks: Some(ticks), .. } => Some(ticks as usize),
+                    _ => state.footprint.borrow().auto_step().map(|ticks| ticks as usize),
+                },
                 _ => None,
             }
         })
@@ -6774,7 +6911,7 @@ impl ChartView {
                     // Dragging left compresses: more time on screen.
                     let factor = 2f64.powf(-offset_x / DRAG_PER_DOUBLING);
                     let next = ((visible as f64 * factor).round() as usize)
-                        .clamp(MIN_VISIBLE, MAX_VISIBLE);
+                        .clamp(s.fewest(), MAX_VISIBLE);
                     s.visible = next;
                     s.range = None;
                     s.keep_room_on_screen();
@@ -7259,6 +7396,12 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     draw_drawings(cr, state, &plan, &scale, true);
     // A line of the chart's own goes over the compared ones, so it is drawn
     // with them instead.
+    // Under a footprint the bubbles go beneath its rows, so they never hide
+    // a row's figure; over candles they go on top, as there is no figure.
+    let under_footprint = footprint::shown(state, &columns).is_some();
+    if under_footprint {
+        bubbles::draw_all(cr, state, &columns, &to_y);
+    }
     if !(state.drawn_as_line() && compared.is_some()) {
         draw_candles(cr, state, &columns, &to_y);
     }
@@ -7781,6 +7924,15 @@ fn axis_time(bars: &[Bar], timeframe: Timeframe, per: f64, at: i64) -> Option<i6
 /// Up and down candles in two passes, each building one path for wicks and one
 /// for bodies.
 fn draw_candles(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
+    // Zoomed in far enough, a footprint takes the bars' place, a narrow bar
+    // of the chart's own style at each column's left, or none where the
+    // chart draws none: a line, or its bars hidden. A comparison drawing
+    // every market as a line keeps its lines.
+    let lines_only = state.compare.as_ref().is_some_and(|overlay| overlay.spec.lines_only);
+    if !lines_only && let Some(drawn) = footprint::shown(state, columns) {
+        footprint::draw(cr, state, drawn, columns, to_y);
+        return;
+    }
     if state.bars_hidden {
         return;
     }
@@ -7809,7 +7961,7 @@ fn candles(
         ohlc(cr, scheme, columns, to_y, ohlc_thickness);
         return;
     }
-    let (bars, bar_w) = (&columns.bars, columns.bar_w);
+    let (bars, bar_w) = (&columns.bars, columns.face);
     // Below four pixels a candle is a line. The only body that leaves a
     // pixel to its neighbour there is two pixels wide, with no middle for
     // the wick, so the wick sat off to one side of every body; and outlining
@@ -7917,15 +8069,17 @@ fn stroke_wicks(cr: &cairo::Context, columns: &Columns) {
 
 /// Open and close as ticks either side of a high-low line.
 fn ohlc(cr: &cairo::Context, scheme: &BarScheme, columns: &Columns, to_y: &impl Fn(f64) -> f64, thickness: u8) {
-    let tick = (columns.bar_w * 0.32).clamp(1.0, 10.0);
+    // At the bar's own width: a column's, or a footprint's narrow bar.
+    let face = if columns.sub_pixel() { columns.bar_px } else { columns.face };
+    let tick = (columns.face * 0.32).clamp(1.0, 10.0);
     let ticked = tick > 1.0;
-    let width = ohlc_width(thickness, columns.bar_px, ticked);
+    let width = ohlc_width(thickness, face, ticked);
     // On a pixel's edge for an even width and through its middle for an
     // odd one, so the line covers whole pixels and stays crisp.
     let centre = if width as i64 % 2 == 1 { 0.5 } else { 0.0 };
     // Showing as much past the line as a thin line's did, a pixel at the
     // least, and ending on a pixel's edge; short of the next bar's tick.
-    let reach = (width / 2.0 + (tick - 0.5).max(1.0)).min(((columns.bar_px - 1.0) / 2.0).max(1.0));
+    let reach = (width / 2.0 + (tick - 0.5).max(1.0)).min(((face - 1.0) / 2.0).max(1.0));
     let reach = (reach - centre).round() + centre;
     cr.set_line_width(width);
     for rising in [false, true] {
@@ -7984,7 +8138,7 @@ fn draw_volume(
     let inner_h = height * 0.9;
     let to_y = |volume: f64| inner_top + inner_h * (high - volume) / (high - low).max(f64::EPSILON);
     let base = to_y(0.0);
-    let (up, down) = volume_colours(indicator, &state.theme, &state.scheme);
+    let (up, down) = volume_colours(indicator, &state.theme, &state.scheme, state.house.1);
     let (up_alpha, down_alpha) = volume_alphas(indicator);
     let lit = state.picked == Some(indicator.id);
     // Lit, the glow goes down first, under every bar, and the bars over it
@@ -8380,17 +8534,29 @@ fn draw_pane(
             drawn.indicator.params,
             omacharts_engine::Params::Cvd { style: omacharts_engine::indicators::cvd::Style::Line, .. }
         );
-        let (up, down) = state.delta_ink(drawn);
+        // A volume delta is painted as the other order flow indicators
+        // are, in its own colours and opacities if it has them.
+        let per_bar = matches!(drawn.indicator.params, omacharts_engine::Params::VolumeDelta { .. });
+        let (up, down, alphas) = match drawn.indicator.params.inks() {
+            Some(inks) => {
+                let (buy, sell) = footprint::inks(state, inks);
+                (buy, sell, inks.alphas(indicators::flow::VOLUME_DELTA_ALPHA))
+            }
+            None => {
+                let (up, down) = state.delta_ink(drawn);
+                (up, down, (1.0, 1.0))
+            }
+        };
         let chip = match line {
             true => {
                 draw_delta_line(cr, state, drawn, shown, columns, &strip, lit);
                 drawn.color.as_str()
             }
             false => {
-                draw_delta_candles(cr, state, shown, columns, &strip, (up, down), lit);
+                draw_delta_candles(cr, state, shown, columns, &strip, (&up, &down), alphas, per_bar, lit);
                 match delta.last() {
-                    Some(last) if last.close < last.open => down,
-                    _ => up,
+                    Some(last) if last.close < last.open => &*down,
+                    _ => &*up,
                 }
             }
         };
@@ -8466,16 +8632,14 @@ fn draw_pane(
     draw_axis_chips(cr, state, chips, plot_x + plot_w, top + height, width);
 }
 
-/// The bars of a cumulative delta a column stands for, as one: from the
-/// first one's open to the last one's close, as far as any went either way.
-fn delta_column(bars: &[indicators::cvd::DeltaBar]) -> Option<indicators::cvd::DeltaBar> {
-    let (first, last) = (bars.first()?, bars.last()?);
-    let mut column = indicators::cvd::DeltaBar { close: last.close, starts: bars.iter().any(|b| b.starts), ..*first };
-    for bar in bars {
-        column.high = column.high.max(bar.high);
-        column.low = column.low.min(bar.low);
+/// The bars of a delta a column stands for, as one: see
+/// [`indicators::cvd::DeltaBar::spanning`] and
+/// [`indicators::cvd::DeltaBar::summed`].
+fn delta_column(bars: &[indicators::cvd::DeltaBar], per_bar: bool) -> Option<indicators::cvd::DeltaBar> {
+    match per_bar {
+        true => indicators::cvd::DeltaBar::summed(bars),
+        false => indicators::cvd::DeltaBar::spanning(bars),
     }
-    Some(column)
 }
 
 /// A cumulative delta's candles: rising ones in the up colour, falling ones
@@ -8489,6 +8653,8 @@ fn draw_delta_candles(
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
     (up, down): (&str, &str),
+    (up_alpha, down_alpha): (f64, f64),
+    per_bar: bool,
     lit: bool,
 ) {
     cr.save().ok();
@@ -8498,7 +8664,7 @@ fn draw_delta_candles(
         for rising in [false, true] {
             let mut any = false;
             for at in 0..columns.len() {
-                let Some(bar) = bars.get(columns.span(at)).and_then(delta_column) else { continue };
+                let Some(bar) = bars.get(columns.span(at)).and_then(|run| delta_column(run, per_bar)) else { continue };
                 if (bar.close >= bar.open) != rising || !bar.close.is_finite() {
                     continue;
                 }
@@ -8522,7 +8688,11 @@ fn draw_delta_candles(
                 }
             }
             if any {
-                let alpha = if glow { selection::glow_alpha(&state.theme) } else { 1.0 };
+                let alpha = match glow {
+                    true => selection::glow_alpha(&state.theme),
+                    false if rising => up_alpha,
+                    false => down_alpha,
+                };
                 colors::set_source_alpha(cr, if rising { up } else { down }, alpha);
                 let _ = cr.fill();
             }
@@ -8548,7 +8718,7 @@ fn draw_delta_line(
         return;
     }
     let point = |at: usize| {
-        let bar = bars.get(columns.span(at)).and_then(delta_column)?;
+        let bar = bars.get(columns.span(at)).and_then(|run| delta_column(run, false))?;
         Some((columns.x(at), to_y(bar.close), bar.starts))
     };
     if lit {
@@ -10731,7 +10901,13 @@ fn draw_indicator_fills(
             // These draw in a strip of their own, where the price scale does
             // not reach, so there is nothing to do over the candles; and time
             // has its own ground beneath everything.
-            Output::Volume { .. } | Output::Pane(_) | Output::Line(_) | Output::Time(_) | Output::Unmet(_) => {}
+            Output::Volume { .. }
+            | Output::Pane(_)
+            | Output::Line(_)
+            | Output::Time(_)
+            | Output::Unmet(_)
+            | Output::Footprint
+            | Output::LargeOrders => {}
         }
     }
 }
@@ -10832,7 +11008,12 @@ fn draw_indicator_lines(
             | Output::Volume { .. }
             | Output::Pane(_)
             | Output::Time(_)
-            | Output::Unmet(_) => {}
+            | Output::Unmet(_)
+            | Output::Footprint => {}
+            Output::LargeOrders if footprint::shown(state, columns).is_none() => {
+                bubbles::draw(cr, state, drawn, columns, to_y)
+            }
+            Output::LargeOrders => {}
         }
     }
 }
@@ -10912,28 +11093,35 @@ fn time_at_column(state: &State, index: i64) -> Option<i64> {
 
 /// The colours a volume pane paints a rising and a falling bar: the
 /// indicator's own when somebody chose them, otherwise the candles' own —
-/// the chart's candles, or the colouring the indicator chose for itself.
+/// the chart's candles, or the colouring the indicator chose for itself,
+/// worn swapped when the chart's are, as every study's preset is.
 pub fn volume_colours(
     indicator: &Indicator,
     theme: &omacharts_engine::Theme,
     scheme: &BarScheme,
+    swapped: bool,
 ) -> (String, String) {
+    use omacharts_engine::colouring;
     let omacharts_engine::Params::Volume { colouring, up_color, down_color, .. } = &indicator.params
     else {
         return (scheme.up.clone(), scheme.down.clone());
     };
+    // Its own preset paints a rise and a fall as a delta does, Monochrome
+    // in its one ink for both; Default echoes the chart's candles, which in
+    // Monochrome are that one ink too. Custom is its own two, each.
     let own;
-    let scheme = match colouring {
-        Some(colouring) => {
-            own = colouring.scheme(theme);
-            &own
+    let (up, down) = match colouring::base(*colouring) {
+        Some(preset) => {
+            own = preset.signed(theme, swapped);
+            (own.0.as_str(), own.1.as_str())
         }
-        None => scheme,
+        None => (scheme.up.as_str(), scheme.down.as_str()),
     };
-    let pick = |choice: &Option<omacharts_engine::theme::ColorChoice>, fallback: &str| {
-        choice.as_ref().map_or_else(|| fallback.to_string(), |c| c.resolve(theme))
-    };
-    (pick(up_color, &scheme.up), pick(down_color, &scheme.down))
+    let custom = colouring::is_custom(*colouring, &[up_color.as_ref(), down_color.as_ref()]);
+    (
+        colouring::drawn(custom, up_color.as_ref(), up, theme).into_owned(),
+        colouring::drawn(custom, down_color.as_ref(), down, theme).into_owned(),
+    )
 }
 
 /// How solid a volume pane's bars are drawn, kept within what the row offers
@@ -10997,13 +11185,13 @@ fn profile_inks(
         Method::Total => vec![ink(selection::Side::All, &drawn.color)],
         Method::Delta => {
             let (up, down) = state.delta_ink(drawn);
-            vec![ink(selection::Side::Up, up), ink(selection::Side::Down, down)]
+            vec![ink(selection::Side::Up, &up), ink(selection::Side::Down, &down)]
         }
     }
 }
 
-/// What a chart is told the house colouring is until it is told otherwise:
-/// the one Preferences opens with.
+/// What a chart is told the house colouring is until it is told its own:
+/// the one a new chart opens with.
 const HOUSE_LOOK: (BarColouring, bool) = (BarColouring::Vivid, false);
 
 /// A delta profile's bought and sold colours, for the house colouring and
@@ -11012,10 +11200,7 @@ const HOUSE_LOOK: (BarColouring, bool) = (BarColouring::Vivid, false);
 /// swapped when the house colouring is: red for a rise is said once, in
 /// Preferences, and a delta reads the way the candles do.
 fn delta_inks(theme: &Theme, (house, swapped): (BarColouring, bool)) -> [(String, String); 1 + DELTA_COLOURINGS.len()] {
-    let pair = |colouring: BarColouring| {
-        let scheme = colouring.scheme(theme).worn(swapped, false);
-        (scheme.up, scheme.down)
-    };
+    let pair = |colouring: BarColouring| colouring.signed(theme, swapped);
     let mut inks: [(String, String); 1 + DELTA_COLOURINGS.len()] = Default::default();
     inks[0] = pair(house);
     for (at, colouring) in DELTA_COLOURINGS.into_iter().enumerate() {
@@ -11296,9 +11481,9 @@ fn draw_profile_drawing(
     let inks = match look.method {
         Method::Total => vec![ProfileInk { side: selection::Side::All, fill, edge: colour.to_string() }],
         Method::Delta => {
-            let (up, down) = state.delta_pair(look.colouring);
+            let (up, down) = state.study_pair(look.colouring, [look.buy_color.as_ref(), look.sell_color.as_ref()]);
             let ink = |side, hex: &str| ProfileInk { side, fill: hex.to_string(), edge: hex.to_string() };
-            vec![ink(selection::Side::Up, up), ink(selection::Side::Down, down)]
+            vec![ink(selection::Side::Up, &up), ink(selection::Side::Down, &down)]
         }
     };
     // The value area in a colour of its own, when it is set apart and has
@@ -13261,21 +13446,91 @@ mod tests {
 
     /// A volume pane on Default, which every volume pane before its
     /// Colouring was a delta's is, paints as the chart's candles do; one of
-    /// the three palettes, or a Monochrome kept from before, paints as that
-    /// palette does, as it always did.
+    /// the palettes paints its rises and falls as a delta does, Monochrome in
+    /// one ink for both.
     #[test]
     fn a_volume_pane_on_default_is_painted_as_the_chart_s_candles() {
         let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
         let scheme = BarColouring::Quiet.scheme(&theme);
         let mut indicator = Indicator::new(1, indicators::Kind::Volume);
-        assert_eq!(volume_colours(&indicator, &theme, &scheme), (scheme.up.clone(), scheme.down.clone()));
+        assert_eq!(volume_colours(&indicator, &theme, &scheme, false), (scheme.up.clone(), scheme.down.clone()));
         for own in [BarColouring::Vivid, BarColouring::Soft, BarColouring::Quiet, BarColouring::Monochrome] {
             if let omacharts_engine::Params::Volume { colouring, .. } = &mut indicator.params {
-                *colouring = Some(own);
+                *colouring = Some(own.into());
             }
-            let painted = own.scheme(&theme);
-            assert_eq!(volume_colours(&indicator, &theme, &scheme), (painted.up, painted.down), "{own:?}");
+            assert_eq!(volume_colours(&indicator, &theme, &scheme, false), own.signed(&theme, false), "{own:?}");
         }
+        // Monochrome is one colour at one strength, as its candles are, and
+        // so is a chart in Monochrome left on Default.
+        let mono = BarColouring::Monochrome.scheme(&theme);
+        assert_eq!(BarColouring::Monochrome.signed(&theme, false), (mono.mono.clone(), mono.mono.clone()));
+        assert_eq!(BarColouring::Monochrome.signed(&theme, true), (mono.mono.clone(), mono.mono.clone()));
+        if let omacharts_engine::Params::Volume { colouring, .. } = &mut indicator.params {
+            *colouring = None;
+        }
+        assert_eq!(volume_colours(&indicator, &theme, &mono, false), (mono.mono.clone(), mono.mono.clone()));
+    }
+
+    /// Every study painted in a colouring offers one list, from one table,
+    /// and resolves each choice through one function: on Default, each
+    /// paints a rise and a fall as the chart's bars under it do; on a
+    /// preset, as the chart's bars would in that preset, swapped when the
+    /// chart's are. A study left out of this loop is a study whose colours
+    /// can drift.
+    #[test]
+    fn every_study_in_a_colouring_paints_each_choice_as_the_chart_s_bars_do() {
+        use omacharts_engine::colouring::Colouring;
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
+        let painted: Vec<indicators::Kind> = indicators::Kind::ALL
+            .into_iter()
+            .filter(|kind| Indicator::new(1, *kind).params.colours().is_some())
+            .collect();
+        assert_eq!(
+            painted.iter().map(|kind| kind.key()).collect::<Vec<_>>(),
+            ["volume", "volume_profile", "cvd", "volume_delta", "footprint", "large_orders"],
+            "the studies painted in a colouring"
+        );
+        for chart in DELTA_COLOURINGS {
+            for swapped in [false, true] {
+                let mut state = State::blank(theme.clone(), chart.scheme(&theme).worn(swapped, false));
+                state.house = (chart, swapped);
+                state.delta_inks = delta_inks(&theme, state.house);
+                for kind in &painted {
+                    for choice in std::iter::once(None).chain(DELTA_COLOURINGS.into_iter().map(Some)) {
+                        let mut indicator = Indicator::new(1, *kind);
+                        if let Some(mut colours) = indicator.params.colours_mut() {
+                            colours.pick(choice.map(Colouring::Scheme), &[]);
+                        }
+                        let drawn = match kind {
+                            indicators::Kind::Volume => volume_colours(&indicator, &theme, &state.scheme, swapped),
+                            _ => {
+                                let (colouring, own) = indicator.params.colours().unwrap();
+                                let (up, down) = state.study_pair(colouring, own);
+                                (up.into_owned(), down.into_owned())
+                            }
+                        };
+                        let bars = choice.unwrap_or(chart).signed(&theme, swapped);
+                        assert_eq!(drawn, bars, "{} on {choice:?}, the chart in {chart:?} swapped {swapped}", kind.key());
+                    }
+                }
+                // A profile drawing's delta, too.
+                for choice in std::iter::once(None).chain(DELTA_COLOURINGS.into_iter().map(Some)) {
+                    let mut look = omacharts_engine::drawings::ProfileLook::default();
+                    look.colours_mut().pick(choice.map(Colouring::Scheme), &[]);
+                    let (up, down) = state.study_pair(look.colouring, [look.buy_color.as_ref(), look.sell_color.as_ref()]);
+                    assert_eq!((up.into_owned(), down.into_owned()), choice.unwrap_or(chart).signed(&theme, swapped), "a profile drawing on {choice:?}");
+                }
+            }
+        }
+        // And a chart restyled in a look takes it as its studies' house.
+        crate::on_gtk(move || {
+            let view = ChartView::new(theme.clone(), BarColouring::Vivid.scheme(&theme));
+            view.restyle(theme.clone(), BarColouring::Quiet.scheme(&theme).worn(true, false), (BarColouring::Quiet, true));
+            let state = view.state.borrow();
+            assert_eq!(state.house, (BarColouring::Quiet, true));
+            let (up, down) = state.study_pair(None, [None, None]);
+            assert_eq!((up.into_owned(), down.into_owned()), BarColouring::Quiet.signed(&theme, true));
+        });
     }
 
     /// A chart of the regular session out of hours: the last price is the

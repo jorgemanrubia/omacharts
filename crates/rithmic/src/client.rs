@@ -20,7 +20,7 @@ use rithmic_rs::rti::{FrontMonthContractUpdate, LastTrade, OrderPriceLimits, Res
 use rithmic_rs::{
     ConnectStrategy, RithmicConfig, RithmicEnv, RithmicError, RithmicHistoryPlant,
     RithmicHistoryPlantHandle, RithmicResponse, RithmicTickerPlant, RithmicTickerPlantHandle,
-    TimeBarType, VolumeProfileMinuteBarsRequest,
+    TickBarReplayRequest, TimeBarType, VolumeProfileMinuteBarsRequest,
 };
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -478,6 +478,41 @@ impl Client {
         })?;
         let minutes = ladders_of(&responses)?;
         Ok(minutes.into_iter().filter(|m| (from..to).contains(&m.start)).collect())
+    }
+
+    /// Every trade of `contract` in `from..to`, unix seconds, oldest first:
+    /// the history plant's tick bars of one trade each.
+    ///
+    /// The plant is asked for the whole window, its 10,000 record cap lifted;
+    /// a replay that stops short of the window anyway — some servers end one
+    /// at half a million trades — is asked again from the last second it
+    /// reached, that second's trades read afresh so none is counted twice or
+    /// lost. Each request is held to the same time a bar replay is.
+    pub fn trades(&self, contract: &str, exchange: &str, from: i64, to: i64) -> Result<Vec<Trade>, Error> {
+        let handles = self.up()?;
+        let mut trades: Vec<Trade> = Vec::new();
+        let mut since = from;
+        loop {
+            let request = TickBarReplayRequest::new()
+                .symbol(contract)
+                .exchange(exchange)
+                .bar_length(1)
+                .start_time_sec(wire_seconds(since))
+                .end_time_sec(wire_seconds(to))
+                .resume_bars(true);
+            let replay = handles.history.load_tick_bar_replay(request);
+            let responses = self.inner.handle.block_on(async {
+                match tokio::time::timeout(REPLAY, replay).await {
+                    Ok(result) => result.map_err(error_of),
+                    Err(_) => Err(Error::Timeout),
+                }
+            })?;
+            let more = trades_of(&responses)?;
+            match continue_from(&mut trades, more, since, to) {
+                Some(next) => since = next,
+                None => return Ok(trades),
+            }
+        }
     }
 
     /// Cut the connection the way a dropped network does, from underneath:
@@ -1384,6 +1419,56 @@ fn bars_of(responses: &[RithmicResponse], period: Period) -> Result<Vec<Bar>, Er
     Ok(bars)
 }
 
+/// One trade of a tick replay of a trade a bar, if it says its price.
+fn replayed_trade(bar: &rithmic_rs::rti::ResponseTickBarReplay) -> Option<Trade> {
+    let price = bar.close_price?;
+    let seconds = i64::from(*bar.data_bar_ssboe.first()?);
+    let micros = i64::from(bar.data_bar_usecs.first().copied().unwrap_or(0));
+    let size = bar.volume.unwrap_or(0);
+    // Named by the aggressor, as the minute ladders are: bid volume is
+    // buyers lifting the offer.
+    let aggressor = match (bar.bid_volume.unwrap_or(0), bar.ask_volume.unwrap_or(0)) {
+        (bought, 0) if bought > 0 => Some(Side::Buy),
+        (0, sold) if sold > 0 => Some(Side::Sell),
+        _ => None,
+    };
+    Some(Trade { price, size, aggressor, at_nanos: seconds * 1_000_000_000 + micros * 1_000 })
+}
+
+/// The trades of a tick replay, oldest first.
+fn trades_of(responses: &[RithmicResponse]) -> Result<Vec<Trade>, Error> {
+    let trades: Vec<Trade> = responses
+        .iter()
+        .filter_map(|response| match &response.message {
+            RithmicMessage::ResponseTickBarReplay(bar) => replayed_trade(bar),
+            _ => None,
+        })
+        .collect();
+    if trades.is_empty()
+        && let Some(error) = responses.last().and_then(|end| end.error.as_ref())
+    {
+        return Err(rejected(error));
+    }
+    Ok(trades)
+}
+
+/// Put `more`, a replay from `since`, after `trades`. Where the replay
+/// stopped short of `to` and got further than `since`, the second it
+/// reached is dropped from what is held, to be read whole by the next
+/// request, from that second; answered. `None` once the window is done.
+fn continue_from(trades: &mut Vec<Trade>, more: Vec<Trade>, since: i64, to: i64) -> Option<i64> {
+    let last = more.last().map(|trade| trade.at_nanos.div_euclid(1_000_000_000));
+    trades.extend(more);
+    let last = last?;
+    // Within the last second of the window, it is done.
+    if last + 1 >= to || last <= since {
+        return None;
+    }
+    let cut = trades.partition_point(|trade| trade.at_nanos < last * 1_000_000_000);
+    trades.truncate(cut);
+    Some(last)
+}
+
 /// One minute of a volume-profile replay, if it says its prices.
 fn ladder_minute(bar: &rithmic_rs::rti::ResponseVolumeProfileMinuteBars) -> Option<LadderMinute> {
     let (Some(marker), Some(open), Some(high), Some(low), Some(close)) =
@@ -1577,6 +1662,46 @@ pub(crate) mod tests {
         let minute = ladder_minute(&bar).expect("a minute");
         assert_eq!((minute.ask.as_slice(), minute.ask_trades.as_slice()), (&[7][..], &[4][..]), "buyers");
         assert_eq!((minute.bid.as_slice(), minute.bid_trades.as_slice()), (&[3][..], &[2][..]), "sellers");
+    }
+
+    /// A tick bar of one trade is that trade: its bid volume a buyer, its
+    /// ask volume a seller, timed to the microsecond.
+    #[test]
+    fn a_tick_bar_of_one_trade_is_the_trade() {
+        let mut bar = rithmic_rs::rti::ResponseTickBarReplay::default();
+        bar.close_price = Some(6_000.25);
+        bar.volume = Some(12);
+        bar.bid_volume = Some(12);
+        bar.ask_volume = Some(0);
+        bar.data_bar_ssboe = vec![1_700_000_000];
+        bar.data_bar_usecs = vec![250];
+        let trade = replayed_trade(&bar).expect("a trade");
+        assert_eq!(trade, Trade { price: 6_000.25, size: 12, aggressor: Some(Side::Buy), at_nanos: 1_700_000_000_000_250_000 });
+        bar.bid_volume = Some(0);
+        bar.ask_volume = Some(12);
+        assert_eq!(replayed_trade(&bar).unwrap().aggressor, Some(Side::Sell));
+        bar.bid_volume = None;
+        bar.ask_volume = None;
+        assert_eq!(replayed_trade(&bar).unwrap().aggressor, None);
+        bar.data_bar_ssboe.clear();
+        assert_eq!(replayed_trade(&bar), None, "no time, no trade");
+    }
+
+    /// A replay that stops short is asked again from the last second it
+    /// reached, and that second is read once, whole.
+    #[test]
+    fn a_replay_cut_short_goes_on_from_its_last_second() {
+        let at = |seconds: i64, nanos: i64| Trade { price: 1.0, size: 1, aggressor: None, at_nanos: seconds * 1_000_000_000 + nanos };
+        let mut held = Vec::new();
+        let next = continue_from(&mut held, vec![at(100, 0), at(150, 0), at(150, 5)], 100, 1_000);
+        assert_eq!(next, Some(150));
+        assert_eq!(held, vec![at(100, 0)], "the second it reached is read again");
+        let next = continue_from(&mut held, vec![at(150, 0), at(150, 5), at(999, 0)], 150, 1_000);
+        assert_eq!(next, None, "it reached the end");
+        assert_eq!(held.len(), 4);
+        assert_eq!(continue_from(&mut held, Vec::new(), 10, 1_000), None, "nothing more");
+        let mut stuck = Vec::new();
+        assert_eq!(continue_from(&mut stuck, vec![at(10, 0)], 10, 1_000), None, "no progress, no loop");
     }
 
     #[test]

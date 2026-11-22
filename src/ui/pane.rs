@@ -25,9 +25,54 @@ use crate::ui::shortcuts;
 #[derive(Clone)]
 pub struct LadderSource {
     pub at_price: Rc<crate::at_price::AtPrice>,
+    /// Its large orders, for a feed with single trades.
+    pub large_orders: Option<Rc<crate::large_orders::LargeOrders>>,
     /// The cache key, `provider:symbol`.
     pub key: String,
     pub symbol: String,
+}
+
+impl LadderSource {
+    /// Ask the feed for what chart `pane` draws from it over `bars`: its
+    /// ladders when `ladders`, and the trades of its large orders
+    /// indicators among `all`.
+    pub fn want(&self, pane: u32, instrument: &Instrument, bars: &[omacharts_engine::Bar], all: &[Indicator], ladders: bool) {
+        match (ladders, bars.first()) {
+            (false, _) => self.at_price.unwatch(pane),
+            (true, Some(first)) => self.at_price.want(pane, &self.key, &self.symbol, instrument, first.ts),
+            (true, None) => {}
+        }
+        // After the ladders: a chart loaded again over ladders already held
+        // waits for none, and nothing works it out again to ask.
+        self.want_large_orders(pane, instrument, bars, all);
+    }
+
+    /// Chart `pane`'s large orders indicators, asked of the feed: only once
+    /// its bars are drawn and its ladders have come, so the trades are never
+    /// in their way. The chart is worked out again when the ladders come,
+    /// and asks then. Asked too when only their settings change, which the
+    /// chart takes as paint: their thresholds pick which book is drawn.
+    pub fn want_large_orders(&self, pane: u32, instrument: &Instrument, bars: &[omacharts_engine::Bar], all: &[Indicator]) {
+        let Some(large) = &self.large_orders else { return };
+        // Hidden ones too, as their ladders are kept: showing an indicator
+        // again only redraws the chart, and asks nothing.
+        let settings: Vec<crate::large_orders::Settings> = all
+            .iter()
+            .filter_map(|indicator| match indicator.params {
+                omacharts_engine::Params::LargeOrders { regular, extended, combine, .. } => {
+                    Some(crate::large_orders::Settings { regular, extended, combine })
+                }
+                _ => None,
+            })
+            .collect();
+        let (Some(settings), Some(first)) = (settings.first(), bars.first()) else {
+            large.unwatch(pane);
+            return;
+        };
+        let waiting = self.at_price.loading(&self.key) || !self.at_price.watches(pane);
+        let stored = self.at_price.stored_for(&self.key, &self.symbol);
+        large.want(pane, &self.key, &stored, &self.symbol, instrument, first.ts, *settings, waiting);
+    }
 }
 
 /// One chart filling the window, and the way back.

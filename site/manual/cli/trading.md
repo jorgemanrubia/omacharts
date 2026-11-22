@@ -32,6 +32,8 @@ chart trades with are [`chart set`](/manual/cli/charts/#chart-set) flags: `--acc
 | `trading quantities [list]`, `set NAME QUANTITIES`, `remove NAME` | The quantities a chart's Qty offers; `set` takes `--applies-to stocks` or `futures` and `--symbols` |
 | `trading templates [list]`, `set NAME`, `remove NAME`, `move NAME POSITION` | The order templates (Beta). `set` takes `--target EXIT` and `--stop EXIT`, once per exit or `none`, and `--rename NAME`; `move` puts one at a position, which is its <kbd>Ctrl</kbd> + <kbd>Shift</kbd> digit |
 | `trading bracket ORDER --template T` | Gives a working entry an order template's exits, or `none` takes them off: it is cancelled and placed again as one bracket (Beta) |
+| `trading snapshot [--bars N] [--since TOKEN]` | The chart in a few lines: the last price, the levels read off it and the last bars, with a token; given the token, only what changed since. Needs no flag; with `agent-trading` on, the chart's account, position and working orders too |
+| `trading wait [--cross PRICE] [--bar-close] [--timeout S]` | Waits for the price to cross, or the bar to close, up to the timeout, then says what woke it and the snapshot. Needs no flag; with `agent-trading` on, a fill, an order or position changing, or an alert wakes it too |
 
 An exit is how far, then optionally how much after an `@`. How far is `8t`
 (ticks), `$250` (what the whole order makes or loses there), or a

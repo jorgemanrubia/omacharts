@@ -200,37 +200,11 @@ impl DevelopingProfile {
         if total == 0 {
             return None;
         }
-        // The busiest row; the last of equals, as a chart's `max_by` takes.
-        let mut poc = 0;
-        for (row, volume) in volumes.iter().enumerate() {
-            if *volume >= volumes[poc] {
-                poc = row;
-            }
-        }
-        // Outward from it, in the chart's arithmetic: volumes as f64, the
-        // target the fraction of the total.
-        let target = total as f64 * self.value_area.clamp(0.0, 1.0);
-        let (mut lower, mut upper) = (poc, poc);
-        let mut covered = volumes[poc] as f64;
-        while covered < target && (lower > 0 || upper + 1 < volumes.len()) {
-            let below = (lower > 0).then(|| volumes[lower - 1] as f64);
-            let above = (upper + 1 < volumes.len()).then(|| volumes[upper + 1] as f64);
-            match (below, above) {
-                (Some(b), Some(a)) if b > a => {
-                    lower -= 1;
-                    covered += b;
-                }
-                (Some(_), Some(a)) | (None, Some(a)) => {
-                    upper += 1;
-                    covered += a;
-                }
-                (Some(b), None) => {
-                    lower -= 1;
-                    covered += b;
-                }
-                (None, None) => break,
-            }
-        }
+        // The chart's rule, on volumes as f64: the busiest row, the last of
+        // equals, and the value area grown out from it.
+        let poc = volumes.iter().enumerate().fold(0, |poc, (row, volume)| if *volume >= volumes[poc] { row } else { poc });
+        let (lower, upper) =
+            crate::volume_profile::value_area(volumes.len(), |row| volumes[row] as f64, poc, total as f64, self.value_area);
         let price = |row: usize| (i64::from(low) + row as i64) as f64 * self.tick_size;
         Some(ProfileReading { poc: price(poc), vah: price(upper), val: price(lower) })
     }

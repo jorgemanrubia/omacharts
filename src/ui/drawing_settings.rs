@@ -33,6 +33,7 @@ use crate::ui::colors;
 use crate::ui::dialogs;
 use crate::ui::palette;
 use crate::ui::pane::ChartPane;
+use crate::ui::colouring_rows;
 use crate::ui::profile_rows;
 use crate::ui::property_rows;
 use crate::ui::window::Window;
@@ -73,7 +74,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     }
     let Some(drawing) = view.selected_drawing() else { return };
     let theme = window.theme();
-    HOUSE_LOOK.set(window.house_look());
+    HOUSE_LOOK.set((pane.colouring.get(), pane.swapped.get()));
     let kind = drawing.kind;
     let configs_now = window.drawing_configurations();
 
@@ -390,7 +391,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
 /// and a way back to the defaults.
 pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind) {
     let theme = window.theme();
-    HOUSE_LOOK.set(window.house_look());
+    HOUSE_LOOK.set(window.chart_look());
     let dialog = adw::Dialog::new();
     dialog.set_title(&format!("{} configurations", kind.label()));
     // It opens on the properties' own rows, so at their width.
@@ -889,16 +890,35 @@ fn style_editor(
                         emit();
                     }
                 });
-            let (colouring_row, show) =
-                profile_rows::colouring_row(style.borrow().profile.colouring, {
+            // A delta's Colouring rows, the ones every study painted in one
+            // shows.
+            let colours = colouring_rows::rows(colouring_rows::Host {
+                theme: theme.clone(),
+                read: Box::new({
                     let style = style.clone();
+                    let theme = theme.clone();
+                    move || {
+                        let mut look = style.borrow().profile.clone();
+                        let drawn = profile_drawn(&look, &theme);
+                        colouring_rows::Shown::of(&look.colours_mut(), drawn, 1.0)
+                    }
+                }),
+                edit: Box::new({
+                    let style = style.clone();
+                    let theme = theme.clone();
                     let emit = emit.clone();
-                    move |colouring| {
-                        style.borrow_mut().profile.colouring = colouring;
+                    move |change| {
+                        let drawn = profile_drawn(&style.borrow().profile, &theme);
+                        change(&mut style.borrow_mut().profile.colours_mut(), &drawn);
                         emit();
                     }
-                });
-            shows.push(Rc::new(move |s: &Style| show(s.profile.colouring)));
+                }),
+            });
+            let colouring_row = colours.colouring();
+            {
+                let reshow = colours.reshow.clone();
+                shows.push(Rc::new(move |_: &Style| reshow()));
+            }
             let granularity =
                 profile_rows::granularity(style.borrow().profile.rows, drawn_rows.clone(), {
                     let style = style.clone();
@@ -1029,7 +1049,7 @@ fn style_editor(
                 &group,
                 &profile_rows::ParameterRows {
                     leading: Vec::new(),
-                    own: vec![method_row.clone().upcast(), colouring_row.clone().upcast()],
+                    own: std::iter::once(method_row.clone().upcast()).chain(colours.widgets.iter().cloned()).collect(),
                     granularity,
                     value_area: area.clone().upcast(),
                 },
@@ -2016,11 +2036,19 @@ fn size_row(current: f64, on_pick: impl Fn(f64) + 'static) -> (adw::ActionRow, R
 }
 
 thread_local! {
-    /// The colouring chosen in Preferences, and whether it is swapped, as
-    /// the window that opened the dialog last had it: what a delta's
-    /// Default colouring paints its sample in.
+    /// The chart's colouring, and whether it is swapped, as the chart the
+    /// dialog was opened from has it: what a delta's Default colouring
+    /// paints its sample in.
     static HOUSE_LOOK: Cell<(omacharts_engine::BarColouring, bool)> =
         const { Cell::new((omacharts_engine::BarColouring::Vivid, false)) };
+}
+
+/// The colours a profile drawing's delta is drawn in: buying's, then
+/// selling's.
+fn profile_drawn(look: &omacharts_engine::drawings::ProfileLook, theme: &omacharts_engine::theme::Theme) -> Vec<String> {
+    let (house, swapped) = HOUSE_LOOK.get();
+    let base = crate::ui::chart::delta_colours(omacharts_engine::colouring::base(look.colouring), theme, house, swapped);
+    colouring_rows::drawn_roles(look.colouring, [look.buy_color.as_ref(), look.sell_color.as_ref()], base, theme)
 }
 
 /// A row that picks a width, in pixels, by number.
@@ -2114,8 +2142,8 @@ fn delta_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, (x, y, w
     use omacharts_engine::indicators::profile::line_alpha;
     let rows: [f64; 7] = [0.25, -0.4, 0.6, 1.0, -0.7, -0.35, 0.2];
     let row_h = h / rows.len() as f64;
-    let (house, swapped) = HOUSE_LOOK.get();
-    let (up, down) = crate::ui::chart::delta_colours(style.profile.colouring, theme, house, swapped);
+    let drawn = profile_drawn(&style.profile, theme);
+    let (up, down) = (drawn[0].clone(), drawn[1].clone());
     let alpha = style.profile_alpha();
     let strengths = style.profile_strengths();
     let strength = strengths.rows;
@@ -3386,13 +3414,13 @@ mod tests {
             };
             assert_eq!(
                 drawing,
-                volume(&[r::METHOD, r::COLOURING, r::AUTOMATIC, r::ROWS, r::VALUE_AREA]),
+                volume(&[r::METHOD, r::COLOURING, chart_settings::FLOW_BUY_LABEL, chart_settings::FLOW_SELL_LABEL, r::AUTOMATIC, r::ROWS, r::VALUE_AREA]),
                 "a drawing has no period"
             );
             let study = chart_settings::profile_titles(&window, omacharts_engine::indicators::Kind::VolumeProfile);
             assert_eq!(
                 study,
-                volume(&["Reset every", r::LAST_ONLY, r::METHOD, r::COLOURING, r::AUTOMATIC, r::ROWS, r::VALUE_AREA])
+                volume(&["Reset every", r::LAST_ONLY, r::METHOD, r::COLOURING, chart_settings::FLOW_BUY_LABEL, chart_settings::FLOW_SELL_LABEL, r::AUTOMATIC, r::ROWS, r::VALUE_AREA])
             );
             let market = chart_settings::profile_titles(&window, omacharts_engine::indicators::Kind::MarketProfile);
             assert_eq!(

@@ -12,6 +12,7 @@
 pub mod bands;
 pub mod bollinger;
 pub mod cvd;
+pub mod flow;
 pub mod market;
 pub mod oscillators;
 mod paint;
@@ -27,7 +28,8 @@ use chrono_tz::Tz;
 use crate::bars::{Bar, Timeframe};
 use crate::ladders::{Days, Held, Ladder};
 use crate::symbols::Instrument;
-use crate::theme::{BarColouring, ColorChoice, Theme, SWATCH_SEQUENCE};
+use crate::colouring::{ColoursMut, Colouring};
+use crate::theme::{ColorChoice, Theme, SWATCH_SEQUENCE};
 
 pub use bands::{Band, BandSeries, Bands, FILL_ALPHA, MAX_FILL_ALPHA, MIN_FILL_ALPHA};
 pub use periods::Reset;
@@ -128,6 +130,9 @@ pub enum Kind {
     MarketProfile,
     Volume,
     Cvd,
+    VolumeDelta,
+    Footprint,
+    LargeOrders,
     Rsi,
     Macd,
     Atr,
@@ -164,18 +169,20 @@ pub fn unmet(needs: Needs, context: &Context) -> Option<Output> {
 pub enum Category {
     Averages,
     Volume,
+    OrderFlow,
     Momentum,
     Time,
 }
 
 impl Category {
-    pub const ALL: [Category; 4] =
-        [Category::Averages, Category::Volume, Category::Momentum, Category::Time];
+    pub const ALL: [Category; 5] =
+        [Category::Averages, Category::Volume, Category::OrderFlow, Category::Momentum, Category::Time];
 
     pub fn label(self) -> &'static str {
         match self {
             Category::Averages => "Averages and bands",
             Category::Volume => "Volume",
+            Category::OrderFlow => "Order flow",
             Category::Momentum => "Momentum and volatility",
             Category::Time => "Sessions and time",
         }
@@ -186,6 +193,7 @@ impl Category {
         match self {
             Category::Averages => &["average", "averages", "bands", "trend", "overlay"],
             Category::Volume => &["volume"],
+            Category::OrderFlow => &["order flow", "orderflow", "delta", "aggressor", "bid ask", "tape"],
             Category::Momentum => &["momentum", "volatility", "oscillator", "oscillators"],
             Category::Time => &["session", "sessions", "time", "hours", "rth", "eth"],
         }
@@ -198,7 +206,7 @@ impl Category {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 13] = [
+    pub const ALL: [Kind; 16] = [
         Kind::Volume,
         Kind::Sma,
         Kind::Ema,
@@ -210,7 +218,13 @@ impl Kind {
         // Beside the volume profile: the same picture of a period, by time
         // rather than volume, and the two are drawn side by side.
         Kind::MarketProfile,
+        // Order flow, from the whole session down to the single trade: the
+        // running delta, each bar's delta, each price's inside the bar, and
+        // the orders big enough to stand out on their own.
         Kind::Cvd,
+        Kind::VolumeDelta,
+        Kind::Footprint,
+        Kind::LargeOrders,
         Kind::Rsi,
         Kind::Macd,
         Kind::Atr,
@@ -221,18 +235,22 @@ impl Kind {
     pub fn category(self) -> Category {
         match self {
             Kind::Sma | Kind::Ema | Kind::Vwap | Kind::Bollinger => Category::Averages,
-            Kind::Volume | Kind::VolumeProfile | Kind::MarketProfile | Kind::Cvd => Category::Volume,
+            Kind::Volume | Kind::VolumeProfile | Kind::MarketProfile => Category::Volume,
+            Kind::Cvd | Kind::VolumeDelta | Kind::Footprint | Kind::LargeOrders => Category::OrderFlow,
             Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic => Category::Momentum,
             Kind::SessionTimes => Category::Time,
         }
     }
 
-    /// What it cannot be computed without. Every indicator there is needs
-    /// bars and nothing more; one that needs volume at price — a footprint,
-    /// delta — is shown on a chart whose source has none as one line saying
-    /// so, never as an estimate.
+    /// What it cannot be computed without. Most need bars and nothing more;
+    /// one that needs volume at price — the footprint, the large orders — is
+    /// shown on a chart whose source has none as one line saying so, never
+    /// as an estimate.
     pub fn needs(self) -> Needs {
-        Needs::Bars
+        match self {
+            Kind::Footprint | Kind::LargeOrders => Needs::VolumeAtPrice,
+            _ => Needs::Bars,
+        }
     }
 
     /// Whether it draws more exactly from volume at price when the chart's
@@ -242,7 +260,7 @@ impl Kind {
     /// ladders only while one of its indicators says yes here or needs them
     /// outright.
     pub fn uses_volume_at_price(self) -> bool {
-        matches!(self, Kind::VolumeProfile | Kind::Cvd) || self.needs() == Needs::VolumeAtPrice
+        matches!(self, Kind::VolumeProfile | Kind::Cvd | Kind::VolumeDelta) || self.needs() == Needs::VolumeAtPrice
     }
 
     /// Whether a new one is named in the chart's legend. Session shading is
@@ -259,6 +277,15 @@ impl Kind {
     /// carry a colour of their own instead.
     pub fn takes_palette_colour(self) -> bool {
         !matches!(self, Kind::SessionTimes)
+    }
+
+    /// Whether a chart holds at most one. Session Times holds every range,
+    /// and a second would shade the same hours twice; a chart draws one
+    /// footprint, the first shown, in place of its bars, so a second is
+    /// never seen and its settings change nothing. Asking for another opens
+    /// the one there, and pasting one sets the one there.
+    pub fn one_per_chart(self) -> bool {
+        matches!(self, Kind::SessionTimes | Kind::Footprint)
     }
 
     /// Whether a click on the chart can select it. Session shading is the
@@ -281,6 +308,9 @@ impl Kind {
             Kind::MarketProfile => "Market Profile",
             Kind::Volume => "Volume",
             Kind::Cvd => "Cumulative Delta",
+            Kind::VolumeDelta => "Volume Delta",
+            Kind::Footprint => "Footprint",
+            Kind::LargeOrders => "Large Orders",
             Kind::Rsi => "Relative Strength Index",
             Kind::Atr => "Average True Range",
             Kind::Stochastic => "Stochastic",
@@ -302,6 +332,9 @@ impl Kind {
             Kind::MarketProfile => "TPO",
             Kind::Volume => "Vol",
             Kind::Cvd => "CVD",
+            Kind::VolumeDelta => "VD",
+            Kind::Footprint => "Footprint",
+            Kind::LargeOrders => "Large orders",
             Kind::Rsi => "RSI",
             Kind::Atr => "ATR",
             Kind::Stochastic => "Stoch",
@@ -332,6 +365,16 @@ impl Kind {
                 "cumulative delta", "cvd", "delta", "order flow", "cumulative volume delta", "volume delta",
                 "aggressor", "bid ask",
             ],
+            Kind::VolumeDelta => &[
+                "volume delta", "vd", "delta", "bar delta", "order flow", "aggressor", "bid ask",
+            ],
+            Kind::Footprint => &[
+                "footprint", "fp", "delta", "order flow", "bid ask", "numbers bars", "cluster", "volume at price",
+            ],
+            Kind::LargeOrders => &[
+                "large orders", "large trades", "big trades", "bubbles", "block trades", "whales", "tape",
+                "order flow", "large volume",
+            ],
             Kind::Rsi => &["rsi", "relative strength", "oscillator", "momentum", "overbought"],
             Kind::Atr => &["atr", "average true range", "volatility", "range", "stop"],
             Kind::Stochastic => &["stochastic", "stoch", "kd", "%k", "oscillator", "momentum", "overbought"],
@@ -354,6 +397,9 @@ impl Kind {
             Kind::MarketProfile => "market_profile",
             Kind::Volume => "volume",
             Kind::Cvd => "cvd",
+            Kind::VolumeDelta => "volume_delta",
+            Kind::Footprint => "footprint",
+            Kind::LargeOrders => "large_orders",
             Kind::Rsi => "rsi",
             Kind::Atr => "atr",
             Kind::Stochastic => "stochastic",
@@ -367,7 +413,7 @@ impl Kind {
     /// the order of the strips is edited where nothing has been computed: the
     /// settings list, and the command line.
     pub fn in_own_pane(self) -> bool {
-        matches!(self, Kind::Volume | Kind::Cvd | Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic)
+        matches!(self, Kind::Volume | Kind::Cvd | Kind::VolumeDelta | Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic)
     }
 
     pub fn default_params(self) -> Params {
@@ -407,6 +453,8 @@ impl Kind {
                 width: profile::DEFAULT_WIDTH,
                 method: profile::Method::Total,
                 colouring: None,
+                buy_color: None,
+                sell_color: None,
                 merged: Vec::new(),
             },
             // Half-hour TPO periods and a 70% value area: what Steidlmayer
@@ -458,6 +506,25 @@ impl Kind {
                 style: cvd::Style::Candles,
                 height: 0.16,
                 colouring: None,
+                up_color: None,
+                down_color: None,
+            },
+            Kind::VolumeDelta => {
+                Params::VolumeDelta { height: flow::volume_delta_height(), inks: flow::Inks::default() }
+            }
+            Kind::Footprint => Params::Footprint {
+                intensity: true,
+                numbers: true,
+                row_ticks: None,
+                inks: flow::Inks::default(),
+                profile: flow::BarProfile::default(),
+            },
+            Kind::LargeOrders => Params::LargeOrders {
+                regular: flow::REGULAR_THRESHOLD,
+                extended: flow::EXTENDED_THRESHOLD,
+                compare: flow::Compare::default(),
+                combine: true,
+                inks: flow::Inks::default(),
             },
             // Fourteen bars, overbought at seventy, oversold at thirty: the
             // numbers Wilder published and the ones every other chart shows,
@@ -643,11 +710,17 @@ pub enum Params {
         method: profile::Method,
         /// The colouring a delta's bought and sold rows are painted in, as
         /// a chart's rising and falling bars are: unset, the colouring
-        /// chosen in Preferences, and following it as it changes; set, one
-        /// of [`profile::DELTA_COLOURINGS`] of its own. A total is in the
-        /// profile's colour and pays this no mind.
+        /// the chart's bars wear, and following it as it changes; set, one
+        /// of [`profile::DELTA_COLOURINGS`] of its own, or Custom: see
+        /// [`crate::colouring`]. A total is in the profile's colour and pays
+        /// this no mind.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        colouring: Option<BarColouring>,
+        colouring: Option<Colouring>,
+        /// A delta's bought and sold rows' own colours, while Custom.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        buy_color: Option<ColorChoice>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sell_color: Option<ColorChoice>,
         /// Where each period starts that was merged into the one before it,
         /// as the start of its reset period. Several in a row make one
         /// composite of them all.
@@ -784,9 +857,10 @@ pub enum Params {
         /// How its bars are painted: unset, the way the chart paints its
         /// candles, so volume follows the chart; set, a colouring of its
         /// own, so a quiet volume can sit under loud candles, or the other
-        /// way round.
+        /// way round; or Custom, its own two colours: see
+        /// [`crate::colouring`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        colouring: Option<BarColouring>,
+        colouring: Option<Colouring>,
         /// The bars of a rising and a falling session. Unset is the candles'
         /// own colour, so volume reads as belonging to the bar above it.
         #[serde(default)]
@@ -818,10 +892,61 @@ pub enum Params {
         height: f64,
         /// The colouring its rising and falling bars are painted in, as a
         /// delta profile's bought and sold rows are: unset, the colouring
-        /// chosen in Preferences, and following it as it changes; set, one
-        /// of [`profile::DELTA_COLOURINGS`] of its own.
+        /// the chart's bars wear, and following it as it changes; set, one
+        /// of [`profile::DELTA_COLOURINGS`] of its own, or Custom: see
+        /// [`crate::colouring`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        colouring: Option<BarColouring>,
+        colouring: Option<Colouring>,
+        /// Its rising and falling bars' own colours, while Custom.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up_color: Option<ColorChoice>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        down_color: Option<ColorChoice>,
+    },
+    /// Each bar's own delta in a strip of its own, as a candle from nought.
+    VolumeDelta {
+        #[serde(default = "flow::volume_delta_height")]
+        height: f64,
+        #[serde(default)]
+        inks: flow::Inks,
+    },
+    /// Each bar's delta at each price beside a narrow bar, once a bar is
+    /// wide enough to show them. A `zoom` stored by an earlier version, the
+    /// width it was drawn from, is read and let go: the width is worked out
+    /// from what a column has to hold.
+    Footprint {
+        /// Whether a row is filled more strongly the bigger its delta, or
+        /// every row alike.
+        #[serde(default = "flow::yes")]
+        intensity: bool,
+        /// Whether each row's delta is written in it, or the rows are drawn
+        /// alone.
+        #[serde(default = "flow::yes")]
+        numbers: bool,
+        /// How many ticks a row holds, or `None` for a compact line's worth
+        /// at the chart's price scale, as a market profile's row height.
+        #[serde(default)]
+        row_ticks: Option<u32>,
+        #[serde(default)]
+        inks: flow::Inks,
+        /// Each bar's volume profile beside it: off unless turned on.
+        #[serde(default, skip_serializing_if = "flow::BarProfile::is_default")]
+        profile: flow::BarProfile,
+    },
+    /// A bubble at each order bigger than the threshold of the hours it
+    /// traded in.
+    LargeOrders {
+        #[serde(default = "flow::regular_threshold")]
+        regular: u64,
+        #[serde(default = "flow::extended_threshold")]
+        extended: u64,
+        #[serde(default)]
+        compare: flow::Compare,
+        /// Whether prints of one moment and one side are one order.
+        #[serde(default = "flow::yes")]
+        combine: bool,
+        #[serde(default)]
+        inks: flow::Inks,
     },
     Rsi {
         period: usize,
@@ -885,6 +1010,11 @@ pub enum Params {
     },
 }
 
+/// The roles of a study painted by rise and fall, and of one painted by
+/// buying and selling: what each colour row of a Custom one is titled.
+pub const VOLUME_ROLES: [&str; 2] = ["Up", "Down"];
+pub const FLOW_ROLES: [&str; 2] = ["Buying", "Selling"];
+
 impl Params {
     /// How solid a volume pane's rising and falling bars are drawn: each
     /// its own strength, or the pane's opacity. `None` for any other kind.
@@ -925,6 +1055,7 @@ impl Params {
         match self {
             Params::Volume { height, .. }
             | Params::Cvd { height, .. }
+            | Params::VolumeDelta { height, .. }
             | Params::Rsi { height, .. }
             | Params::Atr { height, .. }
             | Params::Macd { height, .. }
@@ -934,7 +1065,84 @@ impl Params {
             | Params::Bollinger { .. }
             | Params::VolumeProfile { .. }
             | Params::MarketProfile { .. }
+            | Params::Footprint { .. }
+            | Params::LargeOrders { .. }
             | Params::SessionTimes { .. } => None,
+        }
+    }
+
+    /// The colours of a study painted in a colouring, to be read and
+    /// changed the one way every study's are: see [`crate::colouring`].
+    /// Every kind is named, so a new one has to say whether it has them.
+    pub fn colours_mut(&mut self) -> Option<ColoursMut<'_>> {
+        match self {
+            Params::Volume { colouring, up_color, down_color, opacity, up_alpha, down_alpha, .. } => Some(ColoursMut {
+                colouring,
+                labels: &VOLUME_ROLES,
+                colours: vec![up_color, down_color],
+                alphas: vec![up_alpha, down_alpha],
+                opacity: Some(opacity),
+            }),
+            Params::Cvd { colouring, up_color, down_color, .. } => Some(ColoursMut {
+                colouring,
+                labels: &VOLUME_ROLES,
+                colours: vec![up_color, down_color],
+                alphas: Vec::new(),
+                opacity: None,
+            }),
+            // A delta's rows; how solid they are is the profile's own rows'.
+            Params::VolumeProfile { colouring, buy_color, sell_color, .. } => Some(ColoursMut {
+                colouring,
+                labels: &FLOW_ROLES,
+                colours: vec![buy_color, sell_color],
+                alphas: Vec::new(),
+                opacity: None,
+            }),
+            Params::VolumeDelta { inks, .. } | Params::Footprint { inks, .. } | Params::LargeOrders { inks, .. } => {
+                Some(inks.colours_mut())
+            }
+            Params::MovingAverage { .. }
+            | Params::Vwap { .. }
+            | Params::Bollinger { .. }
+            | Params::MarketProfile { .. }
+            | Params::Rsi { .. }
+            | Params::Atr { .. }
+            | Params::Macd { .. }
+            | Params::Stochastic { .. }
+            | Params::SessionTimes { .. } => None,
+        }
+    }
+
+    /// The colouring a study is painted in, and the colours it picked for
+    /// its roles, for drawing: `None` for a study without one.
+    pub fn colours(&self) -> Option<(Option<Colouring>, [Option<&ColorChoice>; 2])> {
+        match self {
+            Params::Volume { colouring, up_color, down_color, .. } | Params::Cvd { colouring, up_color, down_color, .. } => {
+                Some((*colouring, [up_color.as_ref(), down_color.as_ref()]))
+            }
+            Params::VolumeProfile { colouring, buy_color, sell_color, .. } => {
+                Some((*colouring, [buy_color.as_ref(), sell_color.as_ref()]))
+            }
+            params => params.inks().map(|inks| (inks.colouring, [inks.buy.as_ref(), inks.sell.as_ref()])),
+        }
+    }
+
+    /// How an order flow indicator paints buying and selling.
+    pub fn inks(&self) -> Option<&flow::Inks> {
+        match self {
+            Params::VolumeDelta { inks, .. } | Params::Footprint { inks, .. } | Params::LargeOrders { inks, .. } => {
+                Some(inks)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn inks_mut(&mut self) -> Option<&mut flow::Inks> {
+        match self {
+            Params::VolumeDelta { inks, .. } | Params::Footprint { inks, .. } | Params::LargeOrders { inks, .. } => {
+                Some(inks)
+            }
+            _ => None,
         }
     }
 
@@ -950,6 +1158,9 @@ impl Params {
             | Params::Bollinger { .. }
             | Params::Volume { .. }
             | Params::Cvd { .. }
+            | Params::VolumeDelta { .. }
+            | Params::Footprint { .. }
+            | Params::LargeOrders { .. }
             | Params::Rsi { .. }
             | Params::Atr { .. }
             | Params::Macd { .. }
@@ -1224,9 +1435,10 @@ impl Indicator {
     /// after its name, "CVD ≈ · Session". See [`Output::is_estimated`].
     pub fn legend_for(&self, timeframe: Timeframe, estimated: bool) -> String {
         let label = self.label_for(timeframe);
-        match estimated && self.kind == Kind::Cvd {
-            true => label.replacen("CVD", "CVD ≈", 1),
-            false => label,
+        match (estimated, self.kind) {
+            (true, Kind::Cvd) => label.replacen("CVD", "CVD ≈", 1),
+            (true, Kind::VolumeDelta) => label.replacen("VD", "VD ≈", 1),
+            _ => label,
         }
     }
 
@@ -1260,6 +1472,13 @@ impl Indicator {
             Params::Cvd { reset, .. } => match reset {
                 Some(reset) => format!("CVD · {}", effective(*reset).label()),
                 None => "CVD".to_string(),
+            },
+            Params::VolumeDelta { .. } => "VD".to_string(),
+            Params::Footprint { .. } => "Footprint".to_string(),
+            // The thresholds are what tell two of these apart.
+            Params::LargeOrders { regular, extended, .. } => match regular == extended {
+                true => format!("Large orders > {regular}"),
+                false => format!("Large orders > {regular} · {extended}"),
             },
             Params::Rsi { period, .. } | Params::Atr { period, .. } => {
                 format!("{} {period}", self.kind.short_name())
@@ -1355,6 +1574,11 @@ pub enum Output {
     Pane(Pane),
     /// Stretches of time shaded behind the bars.
     Time(Time),
+    /// A footprint in place of the candles, from the bar width its settings
+    /// say, read from the chart's ladders as it is drawn.
+    Footprint,
+    /// A bubble at each large order, from the chart's prints.
+    LargeOrders,
     /// Nothing to draw, and the one line that says why: what it needs, this
     /// chart's source does not have. See [`unmet`].
     Unmet(&'static str),
@@ -1892,6 +2116,32 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 delta: Some(delta),
             })
         }
+        (Kind::VolumeDelta, Params::VolumeDelta { height, .. }) => {
+            let days = context.ladders.and(context.instrument).map(Days::new);
+            let source = match (context.ladders, &days) {
+                (Some(held), Some(days)) => Some(cvd::Source { held, days }),
+                _ => None,
+            };
+            let work = |memo: Option<&mut cvd::Memo>| cvd::per_bar(bars, session_origin, timeframe, source.as_ref(), memo);
+            let delta = match context.memos {
+                Some(memos) => memos.cvd.with(indicator.id, |memo| work(Some(memo))),
+                None => work(None),
+            };
+            Output::Pane(Pane {
+                values: delta.iter().map(|bar| Some(bar.close)).collect(),
+                signal: None,
+                histogram: None,
+                height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
+                bounds: None,
+                guides: vec![0.0],
+                band: None,
+                delta: Some(delta),
+            })
+        }
+        // Drawn from the chart's ladders and its prints as they stand when
+        // it is drawn, which is no series to compute here.
+        (Kind::Footprint, Params::Footprint { .. }) => Output::Footprint,
+        (Kind::LargeOrders, Params::LargeOrders { .. }) => Output::LargeOrders,
         (Kind::Volume, Params::Volume { height, .. }) => Output::Volume {
             values: bars.iter().map(|bar| bar.volume).collect(),
             height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
@@ -2072,6 +2322,31 @@ mod tests {
 
     use super::*;
 
+    /// A cumulative delta saved before it moved into Order flow reads back
+    /// as the same indicator and writes back the same bytes: only its family
+    /// changed, never its name in a workspace.
+    #[test]
+    fn a_cumulative_delta_saved_under_volume_loads_unchanged() {
+        let saved = serde_json::json!({
+            "id": 4,
+            "kind": "cvd",
+            "params": { "kind": "cvd", "reset": "week", "style": "line", "height": 0.25, "colouring": "theme-quiet" },
+            "color": { "kind": "swatch", "name": "Teal" },
+            "stroke": { "width": 1.5, "style": "solid" },
+            "visible": true,
+            "above_price": false,
+            "in_legend": true
+        });
+        let read: Indicator = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(read.kind, Kind::Cvd);
+        assert_eq!(read.kind.category(), Category::OrderFlow);
+        let Params::Cvd { reset, style, height, colouring, .. } = read.params else { panic!("{:?}", read.params) };
+        assert_eq!((reset, style, height), (Some(Reset::Week), cvd::Style::Line, 0.25));
+        assert_eq!(colouring, Some(crate::colouring::Colouring::Scheme(crate::theme::BarColouring::Quiet)));
+        assert_eq!(serde_json::to_value(&read).unwrap(), saved, "written back as it was read");
+        assert_eq!(Kind::Cvd.key(), "cvd");
+    }
+
     /// Every indicator and band stored before its colours carried an
     /// opacity reads back with none set, drawn as it always was; one nobody
     /// changed writes none, and one set comes back as set.
@@ -2117,6 +2392,35 @@ mod tests {
         }
         let read: Indicator = serde_json::from_str(&serde_json::to_string(&volume).unwrap()).unwrap();
         assert_eq!(read.params.volume_alphas(), Some((0.2, 0.9)));
+    }
+
+    /// A footprint stored before its figures could be turned off or its rows
+    /// set reads with them on and its rows automatic, and one with the bar
+    /// width it was drawn from reads with it dropped; one turned off reads
+    /// back off.
+    #[test]
+    fn a_stored_footprint_keeps_its_numbers() {
+        let mut stored = serde_json::to_value(Indicator::new(1, Kind::Footprint)).unwrap();
+        let params = stored["params"].as_object_mut().unwrap();
+        params.remove("numbers");
+        params.remove("row_ticks");
+        let read: Indicator = serde_json::from_value(stored).unwrap();
+        assert!(matches!(read.params, Params::Footprint { numbers: true, row_ticks: None, .. }), "{read:?}");
+
+        // The bar width it was once drawn from is read and let go: it is
+        // worked out now, and never written again.
+        let mut zoomed = serde_json::to_value(Indicator::new(1, Kind::Footprint)).unwrap();
+        zoomed["params"]["zoom"] = serde_json::json!(120.0);
+        let read: Indicator = serde_json::from_value(zoomed).expect("a footprint with a zoom");
+        assert!(matches!(read.params, Params::Footprint { numbers: true, .. }), "{read:?}");
+        assert!(serde_json::to_value(&read).unwrap()["params"].get("zoom").is_none(), "the zoom written back");
+
+        let mut off = Indicator::new(1, Kind::Footprint);
+        if let Params::Footprint { numbers, .. } = &mut off.params {
+            *numbers = false;
+        }
+        let read: Indicator = serde_json::from_value(serde_json::to_value(&off).unwrap()).unwrap();
+        assert!(matches!(read.params, Params::Footprint { numbers: false, .. }), "{read:?}");
     }
 
     /// A volume profile stored before its strength, highlight and value
@@ -2752,7 +3056,7 @@ mod tests {
 
         let mut picked = older.clone();
         if let Params::VolumeProfile { colouring, .. } = &mut picked.params {
-            *colouring = Some(BarColouring::Quiet);
+            *colouring = Some(crate::colouring::Colouring::Scheme(crate::theme::BarColouring::Quiet));
         }
         let json = serde_json::to_string(&picked).unwrap();
         assert!(json.contains(r#""colouring":"theme-quiet""#), "{json}");
@@ -3368,17 +3672,23 @@ mod tests {
             let bare = Context::of(&instrument, Timeframe::minutes(1), chrono_tz::UTC);
             let rich = bare.with_ladders(Some(&held));
 
-            // What a footprint would declare.
-            let footprint = Needs::VolumeAtPrice;
+            // What a footprint declares.
+            let footprint = Kind::Footprint.needs();
+            assert_eq!(footprint, Needs::VolumeAtPrice);
             assert_eq!(unmet(footprint, &bare), Some(Output::Unmet("Needs a data feed with volume at price")));
             assert_eq!(unmet(footprint, &rich), None);
 
+            // Only the two that read single trades or prices need them;
+            // everything else, the deltas included, falls back to bars.
             for kind in Kind::ALL {
-                assert_eq!(kind.needs(), Needs::Bars, "{kind:?}");
-                assert_eq!(unmet(kind.needs(), &bare), None);
+                let wants = matches!(kind, Kind::Footprint | Kind::LargeOrders);
+                assert_eq!(kind.needs() == Needs::VolumeAtPrice, wants, "{kind:?}");
+                if !wants {
+                    assert_eq!(unmet(kind.needs(), &bare), None);
+                }
             }
             let users: Vec<Kind> = Kind::ALL.into_iter().filter(|k| k.uses_volume_at_price()).collect();
-            assert_eq!(users, vec![Kind::VolumeProfile, Kind::Cvd]);
+            assert_eq!(users, vec![Kind::VolumeProfile, Kind::Cvd, Kind::VolumeDelta, Kind::Footprint, Kind::LargeOrders]);
         }
 
         /// A volume profile drawn over a span that is one of the study's
@@ -3426,5 +3736,61 @@ mod tests {
             let waiting = bare.awaiting_ladders(true);
             assert_eq!(span_profile(span, 0, None, 0.70, profile::Method::Total, &waiting), Ok(None));
         }
+    }
+
+    /// Every study painted in a colouring offers Custom, from one model: a
+    /// colour saved on one before Custom was a choice, over a preset or
+    /// not, loads as Custom with that colour, and is drawn in it as before.
+    #[test]
+    fn every_study_with_a_colouring_reads_a_saved_colour_as_custom() {
+        use crate::colouring::{self, Colouring};
+        let hex = "#123456";
+        let cases: [(Kind, serde_json::Value); 6] = [
+            (Kind::Volume, serde_json::json!({"colouring": "theme-soft", "up_color": {"kind": "fixed", "hex": hex}})),
+            (Kind::Cvd, serde_json::json!({"up_color": {"kind": "fixed", "hex": hex}})),
+            (Kind::VolumeProfile, serde_json::json!({"buy_color": {"kind": "fixed", "hex": hex}})),
+            (Kind::VolumeDelta, serde_json::json!({"inks": {"colouring": "theme", "buy": {"kind": "fixed", "hex": hex}}})),
+            (Kind::Footprint, serde_json::json!({"inks": {"buy": {"kind": "fixed", "hex": hex}}})),
+            (Kind::LargeOrders, serde_json::json!({"inks": {"buy": {"kind": "fixed", "hex": hex}}})),
+        ];
+        let theme = crate::theme::builtin_themes().remove(0);
+        for (kind, saved) in cases {
+            let mut stored = serde_json::to_value(Indicator::new(1, kind)).unwrap();
+            for (key, value) in saved.as_object().unwrap() {
+                match (stored["params"].get_mut(key), value) {
+                    (Some(serde_json::Value::Object(held)), serde_json::Value::Object(given)) => {
+                        held.extend(given.clone());
+                    }
+                    _ => stored["params"][key] = value.clone(),
+                }
+            }
+            let mut read: Indicator = serde_json::from_value(stored).unwrap();
+            let (chosen, own) = read.params.colours().unwrap_or_else(|| panic!("{kind:?} has a colouring"));
+            assert!(colouring::is_custom(chosen, &own), "{kind:?}");
+            assert_eq!(colouring::drawn(true, own[0], "#ffffff", &theme), hex, "{kind:?} draws its colour");
+            let mut colours = read.params.colours_mut().unwrap();
+            assert_eq!(colours.shown(), Some(Colouring::Custom), "{kind:?} shows Custom");
+            // Choosing a preset again lets the colour go, and is written so.
+            colours.pick(Some(Colouring::Scheme(crate::theme::BarColouring::Quiet)), &[]);
+            let written = serde_json::to_value(&read).unwrap();
+            assert!(!written.to_string().contains(hex), "{kind:?}: {written}");
+            let back: Indicator = serde_json::from_value(written).unwrap();
+            let (chosen, own) = back.params.colours().unwrap();
+            assert!(!colouring::is_custom(chosen, &own), "{kind:?}");
+            assert_eq!(chosen, Some(Colouring::Scheme(crate::theme::BarColouring::Quiet)), "{kind:?}");
+        }
+    }
+
+    /// Custom is written as `custom`, and read back as it was.
+    #[test]
+    fn custom_is_written_by_name_and_read_back() {
+        use crate::colouring::Colouring;
+        let mut volume = Indicator::new(1, Kind::Volume);
+        volume.params.colours_mut().unwrap().pick(Some(Colouring::Custom), &["#010203".into(), "#040506".into()]);
+        let written = serde_json::to_value(&volume).unwrap();
+        assert_eq!(written["params"]["colouring"], "custom");
+        assert_eq!(written["params"]["up_color"]["hex"], "#010203");
+        let back: Indicator = serde_json::from_value(written).unwrap();
+        assert_eq!(back.params.colours().unwrap().0, Some(Colouring::Custom));
     }
 }

@@ -3,7 +3,7 @@ title: "Momentum and volatility"
 description: "The flags of the RSI, MACD, ATR and stochastic."
 section: agents
 parent: cli/indicators
-nav_order: 3
+nav_order: 4
 ---
 
 The flags `chart indicator add` and `set` take for [momentum and volatility](/manual/indicators/momentum-and-volatility/): `rsi`, `macd`, `atr` and `stochastic`, beside the ones [every indicator takes](/manual/cli/indicators/#flags).
@@ -20,7 +20,7 @@ The flags `chart indicator add` and `set` take for [momentum and volatility](/ma
 | `--d-transparency F` | 0 to 1, or `default` to follow `--transparency` | Stochastic: how much of the chart shows through its %D line |
 | `--d-style S` | `solid`, `dashed`, `dotted`; %K's when not given | Stochastic |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |
-| `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, cumulative delta, RSI, MACD, ATR, stochastic |
+| `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, cumulative delta, volume delta, RSI, MACD, ATR, stochastic |
 
 ```sh
 omacharts chart indicator set rsi --period 21 --overbought 80

@@ -30,37 +30,45 @@ crop: 0,812,1592,380 (then -quality 88 to site/assets/manual/indicators/volume.j
 | Setting | Default | Allowed |
 |---|---|---|
 | **Pane height %** | 18% | 5 to 95% |
-| **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet**, so the volume can be painted in a colouring the price is not ([Colouring](/manual/charts/#colouring)) |
-| **Up** | The colouring's up colour, at 85% opacity | A palette name, or a custom colour. Its **Opacity** is how solid rising bars are drawn, 0 to 100%. At 100% they hide what is behind them |
-| **Down** | The colouring's down colour, at 85% opacity | The same for falling bars |
+| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet** or **Monochrome**, so the volume can be painted in a colouring the price is not ([Colouring](/manual/charts/#colouring)), or **Custom** for colours of your own |
+| **Opacity** | 85% | How solid rising and falling bars are both drawn, 0 to 100%. At 100% they hide what is behind them. Shown for every colouring but **Custom** |
+| **Up** | The colour rising bars were drawn in before **Custom** was chosen | A palette name, or a custom colour, with its own **Opacity**. Shown only for **Custom** |
+| **Down** | The same for falling bars | The same |
 
-A selected strip is drawn solid whatever its opacity. The command line's `--opacity` sets both bars' at once, and `--up-transparency` and `--down-transparency` each on its own.
+A selected strip is drawn solid whatever its opacity. The CLI's `--opacity` sets both bars' at once, and `--up-transparency` and `--down-transparency` each on its own.
 
 ## Colouring
 
 **Default** is the chart's own colouring, and follows it whatever it is changed to, and its **Swap up and down colours** with it. **Hollow up bars** does not reach the volume: a volume bar is a solid bar with no body to leave open.
 
-Choosing a colouring keeps the volume in it while the price changes: vivid candles over a soft volume, or the other way round. A colouring of its own is painted its own way round, whether or not the chart's up and down are swapped. **Up** and **Down** then take that colouring's colours, and a colour set by hand wins over both.
+Choosing a colouring keeps the volume in it while the price changes: vivid candles over a soft volume, or the other way round. A colouring of its own is painted its own way round, whether or not the chart's up and down are swapped.
 
-Monochrome is not offered, because it paints rising and falling bars alike. A strip already painted Monochrome keeps it, and it is listed last.
+**Custom** shows an **Up** and a **Down** row in place of **Opacity**, each a swatch and how solid its bars are. They start at the colours and the opacity the strip had a moment before, so nothing moves until you pick one. Choosing another colouring draws that colouring as it is; the custom colours come back if you choose **Custom** again before closing the dialog.
+
+Chosen here, **Monochrome** paints every bar in one colour, the ink of the chart's Monochrome candles, rising and falling alike; a strip on **Default** under Monochrome candles is that same colour. **Quiet** is not the same: it keeps two muted colours, one for rising and one for falling.
 
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
-  (one NVDA 1D chart on the Default template, sidebar hidden)
-  key ctrl+shift+s; click 700 72 (Indicators); click 600 282 (Volume); click 800 383 (the Colouring row)
+  (one ES 1m chart on the synthetic feed, window 1400x900 @2, a Volume indicator and nothing else)
+  key ctrl+shift+s; click 700 90 (Indicators); click 600 355 (Volume); click 900 323 (the Colouring row)
 capture: bin/headless-window shot /tmp/volume-colouring.png
-crop: the dialog, 16px round it and the open list
-retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
+crop: 1258x1588+808+104, the dialog, 16px round it and the open list
 -->
-{% include figure.html src="/assets/manual/indicators/volume-colouring.png" alt="The Volume indicator's settings with its Colouring list open on Default, Vivid, Soft and Quiet, over the Up and Down rows with their Opacity" caption="A volume strip's own Colouring." %}
+{% include figure.html src="/assets/manual/indicators/volume-colouring.png" alt="The Volume indicator's settings with its Colouring list open on Default, Vivid, Soft, Quiet, Monochrome and Custom" caption="A volume strip's own Colouring." %}
 
 <!-- regenerate:
-as above, with the Colouring row closed
+as above, with the Colouring row closed on Default
+crop: the Colours group, from its title to the Opacity row
+-->
+{% include figure.html src="/assets/manual/indicators/volume-opacity.png" alt="The Volume indicator's Colours group: Colouring on Default, then one Opacity slider at 85%" caption="A colouring, with one opacity for both." %}
+
+<!-- regenerate:
+as above, then choose Custom in the Colouring row
 crop: the Colours group, from its title to the Down row
 -->
-{% include figure.html src="/assets/manual/indicators/volume-opacity.png" alt="The Volume indicator's Colours group: Colouring, then Up and Down, each with its Opacity slider at 85%" caption="Up and Down, each with its opacity, under the strip's Colouring." %}
+{% include figure.html src="/assets/manual/indicators/volume-custom.png" alt="The Volume indicator's Colours group on Custom: Up and Down, each a swatch and its Opacity slider" caption="Custom, a colour and an opacity for each." %}
 
 ## See also
 

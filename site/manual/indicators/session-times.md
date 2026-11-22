@@ -3,7 +3,7 @@ title: "Session times"
 description: "Session Times shades stretches of each day behind the bars: the extended hours, the regular session, and hours of your own. With the trading day each exchange keeps."
 section: charting
 parent: indicators
-nav_order: 4
+nav_order: 5
 family: "Sessions and time"
 ---
 

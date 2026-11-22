@@ -6,6 +6,7 @@ pub use omacharts_chart as chart;
 pub use omacharts_chart::{colors, text};
 pub mod book_templates;
 pub mod chart_settings;
+pub mod colouring_rows;
 pub mod controls;
 pub mod dialogs;
 pub mod drop_line;

@@ -89,6 +89,7 @@ fn every_study_keeps_its_promises() {
         holds(|| Vwap::new(source));
     }
     holds(CvdEstimate::new);
+    holds(BarDeltaEstimate::new);
     holds(Volume::new);
     for (row_ticks, minutes) in [(1, 30), (5, 30), (2, 1), (3, 60)] {
         holds(|| DevelopingMarketProfile::new(0.01, row_ticks, minutes));
@@ -119,6 +120,7 @@ fn every_stepped_indicator_in_the_catalog_has_a_study_by_its_key() {
         Macd::new(1, 2, 3).key(),
         Volume::new().key(),
         CvdEstimate::new().key(),
+        BarDeltaEstimate::new().key(),
         Rsi::new(1).key(),
         Atr::new(1).key(),
         Stochastic::new(1, 1, 1).key(),

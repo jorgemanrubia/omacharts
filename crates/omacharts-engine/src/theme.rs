@@ -1551,6 +1551,20 @@ impl BarColouring {
         }
     }
 
+    /// The two colours of something with a sign, as an indicator paints
+    /// it: a rise, a buy or a positive delta first, then its opposite,
+    /// swapped when red is a rise. Each palette's rise and fall;
+    /// Monochrome, as its candles do, one ink for both, the monochrome bars'
+    /// own: the sign is left to where a thing sits and what it says.
+    pub fn signed(self, theme: &Theme, swapped: bool) -> (String, String) {
+        let scheme = self.scheme(theme);
+        let (first, second) = match self {
+            BarColouring::Monochrome => (scheme.mono.clone(), scheme.mono),
+            _ => (scheme.up, scheme.down),
+        };
+        if swapped { (second, first) } else { (first, second) }
+    }
+
     pub fn scheme(self, theme: &Theme) -> BarScheme {
         match self {
             BarColouring::Vivid => theme_bars(theme),

@@ -25,10 +25,17 @@ The flags of each family, and of the volume profile and the market profile, are 
 | `add KIND` | Adds one, at its defaults plus whatever flags are given |
 | `remove KIND` | Removes every indicator of that kind, or with `--id`, that one |
 | `set KIND` | Changes the one of that kind. With two of a kind, `--id N` says which |
+| `kinds` | Every kind there is: its name, category, whether it needs a feed with volume at price, and the flags that set it. With `--json`, `{"kinds": [...]}`, each with `kind`, `name`, `category`, `needs` (`bars` or `volume at price`), `ownPane`, `flags` and `defaults`, its settings as `list --json` writes them. It needs no window |
 
 ## Flags
 
-These work on every indicator. Each family's own are on its page.
+These work on every indicator. Each family's own are on its page. A flag given to an indicator it does not set is refused with exit `2`, naming the kinds it is for:
+
+```
+$ omacharts chart indicator add volume --book Macro --period 5
+omacharts: Vol has no period; --period is for sma, ema, bollinger, rsi, atr, stochastic
+  [exit 2]
+```
 
 | Flag | Takes | For |
 |---|---|---|

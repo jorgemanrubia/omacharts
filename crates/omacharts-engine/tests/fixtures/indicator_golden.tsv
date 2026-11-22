@@ -85,7 +85,9 @@ awkward	ema:5	0	None	bf2725a502729931
 awkward	ema:50	0	None	e87ff8687249ee6c
 awkward	ema:9	0	None	b67c8f3b6bd22752
 awkward	ema:default	0	None	065e091c78235f0c
+awkward	footprint:default	0	None	198d6448b641baeb
 awkward	free functions	01489596455c064f
+awkward	large_orders:default	0	None	198d6448b641baeb
 awkward	macd:0-26-9	0	None	a72d852bc35ff2c2
 awkward	macd:1-1-1	0	None	a51e35577908c718
 awkward	macd:12-26-9	0	None	7f38a929327a75e9
@@ -195,6 +197,7 @@ awkward	stochastic:21-5-7	0	None	c510c68f83df87dc
 awkward	stochastic:5-3-3	0	None	7411aa64ef02a829
 awkward	stochastic:default	0	None	5dbfa0724b7b7054
 awkward	volume:default	0	None	3de917bc3532de1f
+awkward	volume_delta:default	0	None	f9af5c5d2badede5
 awkward	volume_profile:default	-21600	None	844ef27d1fdf8cb0
 awkward	volume_profile:default	-21600	Some(Equity)	844ef27d1fdf8cb0
 awkward	volume_profile:default	-21600	Some(FutureRoot)	844ef27d1fdf8cb0
@@ -345,7 +348,9 @@ d1	ema:5	0	None	85d596a1880177d9
 d1	ema:50	0	None	f78c69dac40d3278
 d1	ema:9	0	None	5d954a80ad962383
 d1	ema:default	0	None	9c1c50bbc0e35fb7
+d1	footprint:default	0	None	198d6448b641baeb
 d1	free functions	d04b789e2ef9f2fd
+d1	large_orders:default	0	None	198d6448b641baeb
 d1	macd:0-26-9	0	None	e7c8ef7b568d2232
 d1	macd:1-1-1	0	None	bca1e69c228669c6
 d1	macd:12-26-9	0	None	371e77a554c872d1
@@ -455,6 +460,7 @@ d1	stochastic:21-5-7	0	None	d9d5828c1ad5bfef
 d1	stochastic:5-3-3	0	None	3e7bf4ee518ba28c
 d1	stochastic:default	0	None	e94fa255f4dca790
 d1	volume:default	0	None	453e58d0376f1b4f
+d1	volume_delta:default	0	None	c73b3218980c7ce0
 d1	volume_profile:default	-21600	None	9c0283c08e89a76d
 d1	volume_profile:default	-21600	Some(Equity)	9c0283c08e89a76d
 d1	volume_profile:default	-21600	Some(FutureRoot)	9c0283c08e89a76d
@@ -605,7 +611,9 @@ empty	ema:5	0	None	5917b72644b3013c
 empty	ema:50	0	None	5917b72644b3013c
 empty	ema:9	0	None	5917b72644b3013c
 empty	ema:default	0	None	5917b72644b3013c
+empty	footprint:default	0	None	198d6448b641baeb
 empty	free functions	b88d56d216aeaf25
+empty	large_orders:default	0	None	198d6448b641baeb
 empty	macd:0-26-9	0	None	89309eb089ce4f96
 empty	macd:1-1-1	0	None	89309eb089ce4f96
 empty	macd:12-26-9	0	None	89309eb089ce4f96
@@ -715,6 +723,7 @@ empty	stochastic:21-5-7	0	None	8cafeec071947605
 empty	stochastic:5-3-3	0	None	8cafeec071947605
 empty	stochastic:default	0	None	e42403838dbba264
 empty	volume:default	0	None	9f55867f2d59b4eb
+empty	volume_delta:default	0	None	4083b69b83826b36
 empty	volume_profile:default	-21600	None	3fb86072fa02db9c
 empty	volume_profile:default	-21600	Some(Equity)	3fb86072fa02db9c
 empty	volume_profile:default	-21600	Some(FutureRoot)	3fb86072fa02db9c
@@ -865,7 +874,9 @@ h1_ragged	ema:5	0	None	547d7fe6b1bd97ea
 h1_ragged	ema:50	0	None	755b3bcaa59f4554
 h1_ragged	ema:9	0	None	6c4f44457a6591f5
 h1_ragged	ema:default	0	None	90b6629f913dd93e
+h1_ragged	footprint:default	0	None	198d6448b641baeb
 h1_ragged	free functions	7e30ad1885d7d2a5
+h1_ragged	large_orders:default	0	None	198d6448b641baeb
 h1_ragged	macd:0-26-9	0	None	3e06b79d597dfdc2
 h1_ragged	macd:1-1-1	0	None	cb7f218fd8cbc672
 h1_ragged	macd:12-26-9	0	None	a568390c36619696
@@ -975,6 +986,7 @@ h1_ragged	stochastic:21-5-7	0	None	a744356c5a65bf3b
 h1_ragged	stochastic:5-3-3	0	None	dfcab26a0bbff2bf
 h1_ragged	stochastic:default	0	None	d4b581a5d454f7e5
 h1_ragged	volume:default	0	None	934e3d590632d223
+h1_ragged	volume_delta:default	0	None	59e1d59b6eb66d88
 h1_ragged	volume_profile:default	-21600	None	6a67a11266940c31
 h1_ragged	volume_profile:default	-21600	Some(Equity)	6a67a11266940c31
 h1_ragged	volume_profile:default	-21600	Some(FutureRoot)	6a67a11266940c31
@@ -1083,6 +1095,8 @@ live	ema:5	f2ed69c42a2e6b85
 live	ema:50	f1b6b9fa220af65b
 live	ema:9	ae2816773ba43d7d
 live	ema:default	6a0e1577955ad35d
+live	footprint:default	e37de6f55d398eed
+live	large_orders:default	e37de6f55d398eed
 live	macd:0-26-9	4d54d4662290600d
 live	macd:1-1-1	00599b809f259edf
 live	macd:12-26-9	396da308a6806898
@@ -1128,6 +1142,8 @@ live	stochastic:21-5-7	4e299cd070c3203f
 live	stochastic:5-3-3	280d25aa967c85a3
 live	stochastic:default	b9ed844e387ab649
 live	volume:default	524cef0ae591bb79
+live	volume_delta:default	cf0dc01c3c463ad8
+live	volume_delta:default:memo	69d536727e45de6b
 live	volume_profile:default	62bb86a63a19c6ba
 live	vwap:default	24262c9213fc23a7
 live	vwap:month	43aa2283e79bafdf
@@ -1222,7 +1238,9 @@ m15_ragged	ema:5	0	None	911d19faf8615212
 m15_ragged	ema:50	0	None	069c89f8c6be0dfb
 m15_ragged	ema:9	0	None	42d0d2873c60c298
 m15_ragged	ema:default	0	None	d0feb41cfe100002
+m15_ragged	footprint:default	0	None	198d6448b641baeb
 m15_ragged	free functions	c871b5724653edb6
+m15_ragged	large_orders:default	0	None	198d6448b641baeb
 m15_ragged	macd:0-26-9	0	None	2f3925d0f14fc3a2
 m15_ragged	macd:1-1-1	0	None	ecff3833e476661a
 m15_ragged	macd:12-26-9	0	None	26c94365e2610118
@@ -1332,6 +1350,7 @@ m15_ragged	stochastic:21-5-7	0	None	42009ee447178358
 m15_ragged	stochastic:5-3-3	0	None	c2c93197fa2c32ff
 m15_ragged	stochastic:default	0	None	d81d8c1e627ce9ba
 m15_ragged	volume:default	0	None	df5b3867f094cf80
+m15_ragged	volume_delta:default	0	None	5b18170df2c50840
 m15_ragged	volume_profile:default	-21600	None	8e35e73eef1fbf23
 m15_ragged	volume_profile:default	-21600	Some(Equity)	8e35e73eef1fbf23
 m15_ragged	volume_profile:default	-21600	Some(FutureRoot)	8e35e73eef1fbf23
@@ -1482,7 +1501,9 @@ m1_dst	ema:5	0	None	e7896658b21d9cf6
 m1_dst	ema:50	0	None	0384cb9a88cebcda
 m1_dst	ema:9	0	None	dfc45d3d58a3fcaf
 m1_dst	ema:default	0	None	48d1057266c36195
+m1_dst	footprint:default	0	None	198d6448b641baeb
 m1_dst	free functions	d28459dbc38ea546
+m1_dst	large_orders:default	0	None	198d6448b641baeb
 m1_dst	macd:0-26-9	0	None	c04e3f4f6011ea62
 m1_dst	macd:1-1-1	0	None	7920f7f49f6c37ea
 m1_dst	macd:12-26-9	0	None	a0ee8bdfb36e8ff4
@@ -1592,6 +1613,7 @@ m1_dst	stochastic:21-5-7	0	None	ee0d3e5b96b8308e
 m1_dst	stochastic:5-3-3	0	None	04d1dc4954a2dda9
 m1_dst	stochastic:default	0	None	4e65f2a713f7c280
 m1_dst	volume:default	0	None	26e29b5824ae7789
+m1_dst	volume_delta:default	0	None	0c3b38aebc4039d4
 m1_dst	volume_profile:default	-21600	None	246af986d00db6f7
 m1_dst	volume_profile:default	-21600	Some(Equity)	246af986d00db6f7
 m1_dst	volume_profile:default	-21600	Some(FutureRoot)	246af986d00db6f7
@@ -1742,7 +1764,9 @@ m5_year_end	ema:5	0	None	cc71468205998553
 m5_year_end	ema:50	0	None	6244e28e38c9adc7
 m5_year_end	ema:9	0	None	089f52fc8796c4f1
 m5_year_end	ema:default	0	None	b6edb53f34647f23
+m5_year_end	footprint:default	0	None	198d6448b641baeb
 m5_year_end	free functions	d0ad5765fb3f3244
+m5_year_end	large_orders:default	0	None	198d6448b641baeb
 m5_year_end	macd:0-26-9	0	None	a0e966180d835212
 m5_year_end	macd:1-1-1	0	None	942693a9ed5dc8ce
 m5_year_end	macd:12-26-9	0	None	d76be4553d06da3b
@@ -1852,6 +1876,7 @@ m5_year_end	stochastic:21-5-7	0	None	029b3392d910af20
 m5_year_end	stochastic:5-3-3	0	None	bd342be5b613612b
 m5_year_end	stochastic:default	0	None	b8360cbfe445cacd
 m5_year_end	volume:default	0	None	ddaced22e34d43c3
+m5_year_end	volume_delta:default	0	None	1bf393f274ca5721
 m5_year_end	volume_profile:default	-21600	None	57c0663be96078a8
 m5_year_end	volume_profile:default	-21600	Some(Equity)	57c0663be96078a8
 m5_year_end	volume_profile:default	-21600	Some(FutureRoot)	57c0663be96078a8
@@ -2002,7 +2027,9 @@ one	ema:5	0	None	b13dd48d22a61e92
 one	ema:50	0	None	b13dd48d22a61e92
 one	ema:9	0	None	b13dd48d22a61e92
 one	ema:default	0	None	b13dd48d22a61e92
+one	footprint:default	0	None	198d6448b641baeb
 one	free functions	686e0e61c057b284
+one	large_orders:default	0	None	198d6448b641baeb
 one	macd:0-26-9	0	None	5d12289594f69490
 one	macd:1-1-1	0	None	a7e56af4af985277
 one	macd:12-26-9	0	None	5d12289594f69490
@@ -2112,6 +2139,7 @@ one	stochastic:21-5-7	0	None	637ac6cac8bb7211
 one	stochastic:5-3-3	0	None	637ac6cac8bb7211
 one	stochastic:default	0	None	f9b8f93cfa67f810
 one	volume:default	0	None	278c0f355a5dec6a
+one	volume_delta:default	0	None	6bf489ee970858f3
 one	volume_profile:default	-21600	None	12bdf99d27b55a00
 one	volume_profile:default	-21600	Some(Equity)	12bdf99d27b55a00
 one	volume_profile:default	-21600	Some(FutureRoot)	12bdf99d27b55a00
@@ -2262,7 +2290,9 @@ short	ema:5	0	None	a3fb21d9bc22268b
 short	ema:50	0	None	e2856cffdfefb182
 short	ema:9	0	None	a66bc98d65681ad3
 short	ema:default	0	None	e2856cffdfefb182
+short	footprint:default	0	None	198d6448b641baeb
 short	free functions	bff568da5449d48b
+short	large_orders:default	0	None	198d6448b641baeb
 short	macd:0-26-9	0	None	bdcacb41104cac00
 short	macd:1-1-1	0	None	5797ff7b31fd204b
 short	macd:12-26-9	0	None	bdcacb41104cac00
@@ -2372,6 +2402,7 @@ short	stochastic:21-5-7	0	None	3dd569298e888731
 short	stochastic:5-3-3	0	None	b91d6bfeed563f7e
 short	stochastic:default	0	None	acb25e8ba6e3a7b0
 short	volume:default	0	None	a77798a6c9d524d8
+short	volume_delta:default	0	None	87f615e40bf831c7
 short	volume_profile:default	-21600	None	8b914e0f80a732d5
 short	volume_profile:default	-21600	Some(Equity)	8b914e0f80a732d5
 short	volume_profile:default	-21600	Some(FutureRoot)	8b914e0f80a732d5
@@ -2522,7 +2553,9 @@ two	ema:5	0	None	cbd5ad652df7bee8
 two	ema:50	0	None	cbd5ad652df7bee8
 two	ema:9	0	None	cbd5ad652df7bee8
 two	ema:default	0	None	cbd5ad652df7bee8
+two	footprint:default	0	None	198d6448b641baeb
 two	free functions	899b70efd819e1fb
+two	large_orders:default	0	None	198d6448b641baeb
 two	macd:0-26-9	0	None	8f3c35a9cb21095a
 two	macd:1-1-1	0	None	397fab6d06aa1d94
 two	macd:12-26-9	0	None	8f3c35a9cb21095a
@@ -2632,6 +2665,7 @@ two	stochastic:21-5-7	0	None	9a6d10a4190fefc5
 two	stochastic:5-3-3	0	None	9a6d10a4190fefc5
 two	stochastic:default	0	None	ebefe95f3252dba4
 two	volume:default	0	None	b171e8d8fdd74f7e
+two	volume_delta:default	0	None	374603792a75d15e
 two	volume_profile:default	-21600	None	3c3dd31aa67aa763
 two	volume_profile:default	-21600	Some(Equity)	3c3dd31aa67aa763
 two	volume_profile:default	-21600	Some(FutureRoot)	3c3dd31aa67aa763
@@ -2782,7 +2816,9 @@ zeros	ema:5	0	None	7b84b82c4f43b688
 zeros	ema:50	0	None	0a003c7e269aa939
 zeros	ema:9	0	None	f2012786a3c6c964
 zeros	ema:default	0	None	61bf2df8e107c9b8
+zeros	footprint:default	0	None	198d6448b641baeb
 zeros	free functions	db1ec394df71a1db
+zeros	large_orders:default	0	None	198d6448b641baeb
 zeros	macd:0-26-9	0	None	0466e1a6bf634eb2
 zeros	macd:1-1-1	0	None	a8c90d0cfac38a26
 zeros	macd:12-26-9	0	None	7ef4f7087b40c817
@@ -2892,6 +2928,7 @@ zeros	stochastic:21-5-7	0	None	c84619b7a42cd9c5
 zeros	stochastic:5-3-3	0	None	c84619b7a42cd9c5
 zeros	stochastic:default	0	None	f0a45594947479a4
 zeros	volume:default	0	None	5b7c121947276f47
+zeros	volume_delta:default	0	None	314884c235b2ed9a
 zeros	volume_profile:default	-21600	None	1c753c8d109caf7b
 zeros	volume_profile:default	-21600	Some(Equity)	1c753c8d109caf7b
 zeros	volume_profile:default	-21600	Some(FutureRoot)	1c753c8d109caf7b

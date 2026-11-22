@@ -115,6 +115,18 @@ impl Transparency {
         row
     }
 
+    /// On a row of its own, titled `title`, with the colour row's bare
+    /// figure: the one strength of colours whose own rows are hidden for
+    /// now, as a study's Opacity under a preset, so that the slider and the
+    /// box are where they are on those rows and the thumb stays put when
+    /// they swap.
+    pub fn bare(self, title: &str) -> adw::ActionRow {
+        let (slider, entry) = (self.slider.clone(), self.entry.clone());
+        let row = self.alone(title, title);
+        bare_figure(&slider, &entry);
+        row
+    }
+
     /// What a screen reader calls the slider and the box, which on a colour
     /// row have no title of their own.
     fn name(&self, name: &str) {

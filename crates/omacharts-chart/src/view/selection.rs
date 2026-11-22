@@ -159,9 +159,13 @@ fn on_overlay_line(state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl 
             }
         }
         // A market profile has no line: its point of control is a row.
-        Output::MarketProfiles(_) | Output::Volume { .. } | Output::Pane(_) | Output::Time(_) | Output::Unmet(_) => {
-            false
-        }
+        Output::MarketProfiles(_)
+        | Output::Volume { .. }
+        | Output::Pane(_)
+        | Output::Time(_)
+        | Output::Unmet(_)
+        | Output::Footprint
+        | Output::LargeOrders => false,
     }
 }
 
@@ -1898,9 +1902,10 @@ mod tests {
     }
 
     /// Bought rows are drawn in the colour bars rise in and sold rows in the
-    /// colour they fall in: of the colouring chosen in Preferences, swapped
-    /// with it, whatever this chart's candles wear, until the profile picks
-    /// a colouring of its own; and as the house colouring changes.
+    /// colour they fall in: of the house colouring, the chart's own bars',
+    /// swapped with them, until the profile picks a colouring of its own,
+    /// which is worn swapped with the chart's too; and as the chart's
+    /// colouring changes.
     #[test]
     fn a_delta_profile_is_drawn_in_the_colours_bars_rise_and_fall_in() {
         use omacharts_engine::BarColouring;
@@ -1915,15 +1920,11 @@ mod tests {
                 .collect()
         };
         let pair = |state: &State, colouring: BarColouring, swapped: bool| {
-            let scheme = colouring.scheme(&state.theme).worn(swapped, false);
-            vec![(Side::Up, scheme.up), (Side::Down, scheme.down)]
+            let (up, down) = colouring.signed(&state.theme, swapped);
+            vec![(Side::Up, up), (Side::Down, down)]
         };
         assert_ne!(state.scheme.up, state.scheme.down);
         assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Vivid, false), "the house's Vivid to begin with");
-
-        // The chart's own candles are not what it follows.
-        state.scheme = BarColouring::Quiet.scheme(&state.theme).worn(true, false);
-        assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Vivid, false), "not the chart's");
 
         for theme in omacharts_engine::theme::builtin_themes() {
             state.theme = theme;
@@ -1942,12 +1943,14 @@ mod tests {
                 }
             }
         }
-        // A colouring a delta is not offered, from a hand-edited chart, is
-        // the house's.
+        // Monochrome is offered too, and paints bought and sold in its one
+        // ink alike.
         state.house = (BarColouring::Soft, false);
         state.delta_inks = super::super::delta_inks(&state.theme, state.house);
         drawn.indicator.params = with_colouring(&drawn.indicator.params, Some(BarColouring::Monochrome));
-        assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Soft, false));
+        let mono = fills(&state, &drawn);
+        let ink = BarColouring::Monochrome.scheme(&state.theme).mono;
+        assert!(mono.iter().all(|(_, colour)| *colour == ink), "one colour: {mono:?}");
     }
 
     fn with_colouring(
@@ -1956,7 +1959,7 @@ mod tests {
     ) -> omacharts_engine::Params {
         let mut params = params.clone();
         if let omacharts_engine::Params::VolumeProfile { colouring, .. } = &mut params {
-            *colouring = chosen;
+            *colouring = chosen.map(Into::into);
         }
         params
     }

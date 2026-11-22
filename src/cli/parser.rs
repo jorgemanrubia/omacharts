@@ -243,7 +243,9 @@ pub fn surface_json() -> String {
             out.push_str(&verb_json(noun, verb));
         }
     }
-    out.push_str("]}");
+    out.push_str("],\"indicators\":");
+    out.push_str(&serde_json::Value::Array(super::exec::indicator_kinds_json()).to_string());
+    out.push('}');
     out
 }
 
@@ -275,8 +277,17 @@ fn verb_json(noun: &spec::Noun, verb: &spec::Verb) -> String {
         .flags
         .iter()
         .map(|flag| {
+            // What each setting of an indicator applies to, worked out from
+            // what the command takes: see `exec::indicator_flag_kinds`.
+            let applies = match verb.name == "indicator" {
+                true => super::exec::indicator_flag_kinds()
+                    .iter()
+                    .find(|(long, _)| *long == flag.long)
+                    .map(|(_, kinds)| format!(",\"appliesTo\":{}", json_list(&kinds.iter().map(|kind| kind.key()).collect::<Vec<_>>()))),
+                false => None,
+            };
             format!(
-                "{{\"name\":{},\"description\":{},\"type\":{},\"value\":{},\"values\":{},\"repeats\":{}}}",
+                "{{\"name\":{},\"description\":{},\"type\":{},\"value\":{},\"values\":{},\"repeats\":{}{}}}",
                 json_str(flag.long),
                 json_str(flag.help),
                 json_str(if flag.value.is_some() { "value" } else { "switch" }),
@@ -286,6 +297,7 @@ fn verb_json(noun: &spec::Noun, verb: &spec::Verb) -> String {
                 },
                 json_list(flag.values),
                 flag.many,
+                applies.unwrap_or_default(),
             )
         })
         .collect();

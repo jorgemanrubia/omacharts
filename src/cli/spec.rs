@@ -231,9 +231,7 @@ pub const HIDDEN: &[Noun] = &[Noun {
 /// [`HIDDEN`] does for whole groups: for a verb only an experimental part
 /// of the app has a use for. `provider setup` sets up a feed that reads
 /// something on this machine, and the only one is Sierra Chart's, behind
-/// its feature flag; with the flag off it knows no such feed. `symbol
-/// quote`, `chart bars` and `chart values` read a chart in numbers for an
-/// agent that trades, behind the `agent-trading` flag.
+/// its feature flag; with the flag off it knows no such feed.
 pub const HIDDEN_VERBS: &[(&str, Verb)] = &[
     // Not experimental: the second half of `symbol refresh`, which downloads
     // in the process it was typed in and then hands this to an open window
@@ -252,65 +250,6 @@ pub const HIDDEN_VERBS: &[(&str, Verb)] = &[
         },
     ),
     (
-        "symbol",
-        Verb {
-            name: "quote",
-            about: "The last price of one instrument, from a chart of it on screen when there is one, else as last fetched; no feed here gives a bid or an ask, so they are null",
-            args: &[
-                Arg::req(
-                    "SYMBOL",
-                    "the ticker, or the ticker and its venue: SAP DE and SAP.DE are one",
-                ),
-                Arg::opt(
-                    "SUFFIX",
-                    "the venue suffix for a listing abroad, such as DE",
-                ),
-            ],
-            flags: &[],
-            example: "omacharts symbol quote ES",
-            json: true,
-            writes: false,
-            workspace: false,
-        },
-    ),
-    (
-        "chart",
-        Verb {
-            name: "bars",
-            about: "A chart's last bars as it holds them on screen, oldest first: time, open, high, low, close and volume",
-            args: &[],
-            flags: &[
-                Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
-                Flag::valued("chart", "CHART", CHART_SELECTOR),
-                Flag::valued(
-                    "last",
-                    "N",
-                    "how many bars, the newest of them (default 20)",
-                ),
-            ],
-            example: "omacharts chart bars --chart pos:0 --last 50 --json",
-            json: true,
-            writes: false,
-            workspace: true,
-        },
-    ),
-    (
-        "chart",
-        Verb {
-            name: "values",
-            about: "Each indicator on a chart with its latest values as drawn on screen: a line's value, a VWAP's and its bands', a volume profile's point of control and value area",
-            args: &[],
-            flags: &[
-                Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
-                Flag::valued("chart", "CHART", CHART_SELECTOR),
-            ],
-            example: "omacharts chart values --chart pos:0 --json",
-            json: true,
-            writes: false,
-            workspace: true,
-        },
-    ),
-    (
         "provider",
         Verb {
             name: "setup",
@@ -326,33 +265,9 @@ pub const HIDDEN_VERBS: &[(&str, Verb)] = &[
             workspace: false,
         },
     ),
-    // Trading for an agent, behind the `agent-trading` feature flag.
-    (
-        "trading",
-        Verb {
-            name: "snapshot",
-            about: "Everything an agent decides on, in a few lines: the chart's account, the position, the working orders, the last price, the key levels and the last bars",
-            args: &[],
-            flags: SNAPSHOT_FLAGS,
-            example: "omacharts trading snapshot --chart pos:0 --bars 12",
-            json: true,
-            writes: false,
-            workspace: true,
-        },
-    ),
-    (
-        "trading",
-        Verb {
-            name: "wait",
-            about: "Wait until something happens (a fill, an order or a position changing, an alert, a price crossed, a bar closed) or the time is up; then say what, and the snapshot",
-            args: &[],
-            flags: WAIT_FLAGS,
-            example: "omacharts trading wait --timeout 30 --cross 7620 --bar-close --since 12.1794866400",
-            json: true,
-            writes: false,
-            workspace: true,
-        },
-    ),
+    // Trading for an agent, behind the `agent-trading` feature flag: the
+    // stream of order, position and P&L changes, and the price alerts said
+    // in it.
     (
         "trading",
         Verb {
@@ -394,6 +309,14 @@ pub const HIDDEN_VERBS: &[(&str, Verb)] = &[
 /// noun and verb: as [`HIDDEN_VERBS`], for what is behind a feature flag.
 /// A bracket's exits on an order, behind `agent-trading`.
 pub const HIDDEN_FLAGS: &[(&str, &str, Flag)] = &[
+    // Who is reading a stream, by its name on the session bus: put on the
+    // line by the process it was typed in, so the window stops the moment
+    // that process goes rather than writing to nobody until --for.
+    (
+        "chart",
+        "stream",
+        Flag::valued("caller", "NAME", "the reading process's name on the session bus"),
+    ),
     (
         "trading",
         "buy",
@@ -501,8 +424,10 @@ const CONTINUOUS: &[&str] = &["back-adjusted", "as-traded"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
 const KINDS: &[&str] = &[
     "volume", "sma", "ema", "vwap", "bollinger", "volume_profile", "market_profile", "rsi", "macd", "atr",
-    "stochastic", "session_times", "cvd",
+    "stochastic", "session_times", "cvd", "volume_delta", "footprint", "large_orders",
 ];
+/// What a large order's bubble is sized against.
+const SIZE_AGAINST: &[&str] = &["visible", "session", "hours"];
 /// The ranges Session Times offers ready made, and `custom`.
 const RANGE_PRESETS: &[&str] = &["eth", "rth", "asia", "london", "new_york", "custom"];
 /// What VWAP, a volume profile and a cumulative delta reset on, and
@@ -523,10 +448,11 @@ const LINKS: &[&str] = &["focus", "follow", "pinned"];
 const COLOURING: &[&str] = &["vivid", "soft", "quiet", "monochrome", "coloured", "hollow", "red-up"];
 /// What a volume pane's bars may be painted from: the chart's own colouring
 /// (`default`, or `chart` as a released version spelled it), or one of the
-/// three palettes that tell a rise from a fall; and a delta volume profile's
-/// two sides and a cumulative delta's: the colouring chosen in Preferences,
-/// or one of the same three.
-const VOLUME_COLOURINGS: &[&str] = &["default", "chart", "theme", "theme-soft", "theme-quiet"];
+/// four colourings, Monochrome as one colour for both sides (`monochrome`
+/// is `theme-mono`); and a delta volume profile's two sides, a cumulative
+/// delta's and the order flow indicators': the colouring chosen in
+/// Preferences, or one of the same four; and `custom`, each colour its own.
+const VOLUME_COLOURINGS: &[&str] = &["default", "chart", "theme", "theme-soft", "theme-quiet", "theme-mono", "monochrome", "custom"];
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 /// The kinds a drawing comes in, plus the one alias.
 ///
@@ -596,7 +522,7 @@ pub const COLOUR: &str =
 /// first two: one list, so the two verbs cannot come to accept different
 /// flags for the same parameter. The chartbook and the chart come first so a
 /// template's verb can leave them off — it has no chart to name.
-const INDICATOR_FLAGS: &[Flag] = &[
+pub const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
     Flag::valued("chart", "CHART", CHART_SELECTOR),
     Flag::valued("id", "N", "which one, from `indicator list`: remove and set then need no KIND; `selected` for the one selected in the window"),
@@ -616,7 +542,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("cvd-style", "HOW", "a cumulative delta drawn as candles of its running sum, or as a line").of(CVD_STYLES),
     Flag::valued("rows", "N", "volume profile rows, or `auto` to follow the instrument's own increment"),
     Flag::valued("tpo-minutes", "N", "how long a market profile's TPO periods are, 1-1440 minutes (default 30)"),
-    Flag::valued("row-ticks", "N", "how many ticks tall a market profile's rows are, or `auto` for the smallest round height that keeps a typical period within 60 rows"),
+    Flag::valued("row-ticks", "N", "how many ticks tall a market profile's or a footprint's rows are, 1-10000, or `auto`: for a market profile the smallest round height that keeps a typical period within 60 rows, for a footprint a compact line's worth at the chart's price scale"),
     Flag::valued("tpo-style", "HOW", "a market profile's TPOs drawn as their periods' letters, or as blocks").of(TPO_STYLES),
     Flag::valued("open-close", "BOOL", "whether a market profile marks its open and its close: an arrow beside the TPO at its first bar's opening price and one beside the TPO at its last bar's closing price (on unless set off)").of(SWITCHES),
     Flag::valued("expand-last", "BOOL", "whether a market profile always draws its newest profile, the one forming, expanded: its TPOs laid out over time, a column for each TPO period at its bars (off unless set); `chart profile expand` expands any one").of(SWITCHES),
@@ -645,11 +571,11 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("poc-transparency", "F", "the same for a volume or market profile's point of control, or `default` for its own"),
     Flag::valued("highlight-value-area", "BOOL", "whether a volume or market profile sets its value area apart from its other rows (on unless set); off draws every row alike").of(SWITCHES),
     Flag::valued("value-area-color", "COLOUR", "a volume or market profile's value area, while it is set apart; none gives it back the rows' own colour"),
-    Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
-    Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
+    Flag::valued("up-color", "COLOUR", "volume bars of a rising session, or a cumulative delta's rises; given over a preset, it makes the colouring custom"),
+    Flag::valued("down-color", "COLOUR", "volume bars of a falling session, or a cumulative delta's falls; given over a preset, it makes the colouring custom"),
     Flag::valued("up-transparency", "F", "how much of the chart shows through volume bars of a rising session, 0-1, or `default` to follow --opacity"),
     Flag::valued("down-transparency", "F", "the same for volume bars of a falling session"),
-    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles (default, or chart), or in theme, theme-soft or theme-quiet; and a delta volume profile's bought and sold rows or a cumulative delta's rises and falls: in the colouring chosen in Preferences (default), or theme, theme-soft or theme-quiet").of(VOLUME_COLOURINGS),
+    Flag::valued("colouring", "COLOURING", "how a study painted in a colouring paints its two colours — volume bars, a cumulative delta's rises and falls, a delta volume profile's bought and sold rows, the buying and selling of a volume delta, a footprint or large orders: as the chart's bars (default, or chart), or in theme, theme-soft, theme-quiet or theme-mono (monochrome: one colour for both), worn swapped when the chart's bars are; custom paints each colour its own, starting from what was drawn, and a preset lets those colours go").of(VOLUME_COLOURINGS),
     Flag::valued("opacity", "F", "how solid volume bars are drawn, rising and falling alike, 0-1; 1 is fully opaque"),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
     Flag::valued("d-transparency", "F", "how much of the chart shows through the stochastic's %D line, 0-1, or `default` to follow --transparency"),
@@ -658,7 +584,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("width", "F", "line thickness; 0 draws no line at all"),
     Flag::valued("line-style", "STYLE", "how the line is drawn").of(LINE_STYLES),
     Flag::valued("style", "STYLE", "the older name of --line-style").of(LINE_STYLES),
-    Flag::valued("height", "F", "share of the chart a pane takes, 0.05-0.95: volume, cumulative delta, RSI, MACD, ATR, stochastic"),
+    Flag::valued("height", "F", "share of the chart a pane takes, 0.05-0.95: volume, cumulative delta, volume delta, RSI, MACD, ATR, stochastic"),
     Flag::valued("overbought", "F", "the RSI or stochastic level drawn across the top, 0-100"),
     Flag::valued("oversold", "F", "the RSI or stochastic level drawn across the bottom, 0-100 and below overbought"),
     Flag::valued("bands", "LIST", "which bands are drawn: 1,2,3 for a VWAP, 1 or none for a Bollinger"),
@@ -672,6 +598,20 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("to", "TIME", "where a range ends; before --from runs past midnight"),
     Flag::valued("zone", "ZONE", "the clock a range keeps: an IANA name, or `chart` for the chart's own"),
     Flag::valued("shade-alpha", "F", "how solid a range's shading is, 0-1; every range, unless one is named"),
+    Flag::valued("buy-color", "COLOUR", "buying in a delta volume profile, a volume delta, a footprint or large orders; given over a preset, it makes the colouring custom, selling kept as drawn; none lets it go"),
+    Flag::valued("sell-color", "COLOUR", "selling in a delta volume profile, a volume delta, a footprint or large orders; given over a preset, it makes the colouring custom, buying kept as drawn; none lets it go"),
+    Flag::valued("buy-transparency", "F", "how much of the chart shows through buying in a volume delta, a footprint or large orders, 0-1, or `default` for its own (0 for a volume delta, 0.15 for a footprint's strongest row, 0.65 for bubbles)"),
+    Flag::valued("sell-transparency", "F", "the same for selling"),
+    Flag::valued("intensity", "BOOL", "whether a footprint's rows are filled more solidly the bigger their delta against the biggest on screen (on unless set off); off fills every row alike").of(SWITCHES),
+    Flag::valued("numbers", "BOOL", "whether a footprint writes each row's delta in it (on unless set off); off draws the rows alone").of(SWITCHES),
+    Flag::valued("profile", "BOOL", "whether a footprint draws each bar's volume profile at its left, everything traded at each row's prices, the narrow bar and the delta rows moved right of it (off unless set on)").of(SWITCHES),
+    Flag::valued("profile-color", "COLOUR", "a footprint's volume profile's colour, or `default` for the theme's blue"),
+    Flag::valued("profile-transparency", "F", "how much of the chart shows through a footprint's volume profile, 0-1, or `default` (0.45 at its strongest row)"),
+    Flag::valued("profile-numbers", "BOOL", "whether a footprint's volume profile writes each row's total in it (on unless set off)").of(SWITCHES),
+    Flag::valued("rth-threshold", "N", "the size, in contracts, an order in regular hours has to be bigger than to be a large order (default 50)"),
+    Flag::valued("eth-threshold", "N", "the same outside regular hours (default 20)"),
+    Flag::valued("size-against", "WHAT", "what a large order's bubble is sized against: the large orders on screen, the session's, or the session's regular or extended hours' (default session)").of(SIZE_AGAINST),
+    Flag::valued("combine", "BOOL", "whether prints of one moment and one side count as one large order, their sizes added (on unless set off)").of(SWITCHES),
     Flag::valued("visible", "BOOL", "draw it at all").of(SWITCHES),
     Flag::valued("legend", "BOOL", "name it in the chart's legend; off by default for session_times").of(SWITCHES),
 ];
@@ -726,6 +666,25 @@ pub const SURFACE: &[Noun] = &[
                 args: &[Arg::req("ROOT", "a futures root, such as ES")],
                 flags: &[],
                 example: "omacharts symbol contracts ES",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
+                name: "quote",
+                about: "The last price of one instrument, from a chart of it on screen when there is one, else as last fetched; no feed here gives a bid or an ask, so they are null",
+                args: &[
+                    Arg::req(
+                        "SYMBOL",
+                        "the ticker, or the ticker and its venue: SAP DE and SAP.DE are one",
+                    ),
+                    Arg::opt(
+                        "SUFFIX",
+                        "the venue suffix for a listing abroad, such as DE",
+                    ),
+                ],
+                flags: &[],
+                example: "omacharts symbol quote ES",
                 json: true,
                 writes: false,
                 workspace: false,
@@ -1142,6 +1101,65 @@ pub const SURFACE: &[Noun] = &[
                 workspace: true,
             },
             Verb {
+                name: "bars",
+                about: "A chart's last bars as it holds them on screen, oldest first: time, open, high, low, close and volume",
+                args: &[],
+                flags: &[
+                    Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+                    Flag::valued("chart", "CHART", CHART_SELECTOR),
+                    Flag::valued(
+                        "last",
+                        "N",
+                        "how many bars, the newest of them (default 20)",
+                    ),
+                ],
+                example: "omacharts chart bars --chart pos:0 --last 50 --json",
+                json: true,
+                writes: false,
+                workspace: true,
+            },
+            Verb {
+                name: "values",
+                about: "A chart's indicators in numbers, as drawn: with no bars named, each one's latest — a line's value, a VWAP's and its bands', a volume profile's point of control and value area, the newest bar's footprint and large orders — and the chart's levels; with --last, --from or --visible, every one of those bars' readings, in the field names of the omacharts-studies type the indicator reads as (value; line, signal and histogram; k and d; center and bands; open, high, low and close of a delta), whole periods' profiles, each bar's footprint row by row, and each large order",
+                args: &[],
+                flags: &[
+                    Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+                    Flag::valued("chart", "CHART", CHART_SELECTOR),
+                    Flag::valued("indicator", "KIND", "only indicators of this kind; once per kind. footprint reads the chart's volume at price whether a footprint is drawn or not").of(KINDS).repeating(),
+                    Flag::valued("id", "N", "only the indicator with this id, from `chart indicator list`; once per indicator").repeating(),
+                    Flag::valued("last", "N", "every reading of the last N bars, the forming one among them, 1-10000"),
+                    Flag::valued("from", "WHEN", "every reading from this bar, 2026-09-01 or 2026-09-01T14:30 in the chart's clock, or unix seconds"),
+                    Flag::valued("to", "WHEN", "with --from: up to this moment, not including it (default: the newest bar)"),
+                    Flag::switch("visible", "every reading of the bars on screen"),
+                    Flag::valued("row-ticks", "auto|N", "ticks a footprint's rows hold; auto, the default, is the step it draws"),
+                    Flag::switch("footprint", "the same as --indicator footprint"),
+                ],
+                example: "omacharts chart values --chart pos:0 --indicator footprint --last 5 --json",
+                json: true,
+                writes: false,
+                workspace: true,
+            },
+            Verb {
+                name: "stream",
+                about: "A chart's indicators as the market moves, one JSON object a line: a snapshot of the newest bar's readings, then an update each time the bar changes, at most every --every milliseconds, and a close with the final readings of each bar as it closes. The readings are those of `chart values --last 1`, in the same field names. Reads what the chart has already worked out, drawing nothing; runs until --count, --for, the window closing or the reader going away",
+                args: &[],
+                flags: &[
+                    Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+                    Flag::valued("chart", "CHART", CHART_SELECTOR),
+                    Flag::valued("indicator", "KIND", "only indicators of this kind; once per kind. footprint reads the chart's volume at price whether a footprint is drawn or not").of(KINDS).repeating(),
+                    Flag::valued("id", "N", "only the indicator with this id, from `chart indicator list`; once per indicator").repeating(),
+                    Flag::valued("row-ticks", "auto|N", "ticks a footprint's rows hold; auto, the default, is the step it draws"),
+                    Flag::switch("footprint", "the same as --indicator footprint"),
+                    Flag::valued("every", "MS", "an update at most this often, in milliseconds (default 250; 0 every change). A close is never held back"),
+                    Flag::valued("count", "N", "stop after this many updates and closes"),
+                    Flag::valued("for", "SECONDS", "stop after this long"),
+                ],
+                example: "omacharts chart stream --chart pos:0 --indicator vwap --indicator footprint --every 0",
+                json: true,
+                writes: false,
+                workspace: true,
+            },
+            Verb {
                 name: "split",
                 about: "Divide a chart in two, copying what it shows",
                 args: &[Arg::req("DIRECTION", "which way to divide it").of(SPLITS)],
@@ -1278,7 +1296,7 @@ pub const SURFACE: &[Noun] = &[
                 name: "indicator",
                 about: "Add, remove, list or reconfigure a chart's indicators",
                 args: &[
-                    Arg::req("ACTION", "what to do").of(&["list", "add", "remove", "set"]),
+                    Arg::req("ACTION", "what to do; kinds lists every kind there is, with the flags that set it and its defaults").of(&["list", "add", "remove", "set", "kinds"]),
                     Arg::opt("KIND", "the indicator: for add, and for remove and set without --id").of(KINDS),
                 ],
                 flags: INDICATOR_FLAGS,
@@ -1383,7 +1401,7 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("poc", "BOOL", "whether a volume profile draws its point of control (on unless set)").of(SWITCHES),
                     Flag::valued("rows", "N", "volume profile rows, 4-800, or `auto` to follow the instrument's own increment, as the study does"),
                     Flag::valued("profile-method", "WHAT", "what a volume profile's rows measure: all the volume at each price, or the ask volume less the bid volume, which needs a feed with volume at price").of(PROFILE_METHODS),
-                    Flag::valued("colouring", "COLOURING", "how a delta volume profile's bought and sold rows are painted: in the colouring chosen in Preferences (default), or theme, theme-soft or theme-quiet").of(VOLUME_COLOURINGS),
+                    Flag::valued("colouring", "COLOURING", "how a delta volume profile's bought and sold rows are painted: as the chart's bars (default, or chart), or theme, theme-soft, theme-quiet or theme-mono, or custom, each its own, starting from what was drawn").of(VOLUME_COLOURINGS),
                     Flag::valued("profile-width", "F", "how much of its span a volume profile's longest row reaches, 0.1-1 (default 1, the whole span)"),
                     Flag::valued("outline", "BOOL", "whether a filled volume profile wears an outline, as --border").of(SWITCHES),
                     Flag::valued("outline-color", "COLOUR", "a volume profile's outline, as --color: a preset name or #rrggbb"),
@@ -1542,7 +1560,7 @@ pub const SURFACE: &[Noun] = &[
                 about: "Add, remove, list or reconfigure a chart template's indicators; \
                         every chart using it follows",
                 args: &[
-                    Arg::req("ACTION", "what to do").of(&["list", "add", "remove", "set"]),
+                    Arg::req("ACTION", "what to do; kinds lists every kind there is, with the flags that set it and its defaults").of(&["list", "add", "remove", "set", "kinds"]),
                     Arg::req("TEMPLATE", TEMPLATE_SELECTOR),
                     Arg::opt("KIND", "the indicator: for add, and for remove and set without --id").of(KINDS),
                 ],
@@ -1806,6 +1824,26 @@ pub const SURFACE: &[Noun] = &[
                 json: true,
                 writes: false,
                 workspace: false,
+            },
+            Verb {
+                name: "snapshot",
+                about: "A chart in a few lines: the last price, the key levels and the last bars; with the `agent-trading` flag on, the chart's account, the position and the working orders too",
+                args: &[],
+                flags: SNAPSHOT_FLAGS,
+                example: "omacharts trading snapshot --chart pos:0 --bars 12",
+                json: true,
+                writes: false,
+                workspace: true,
+            },
+            Verb {
+                name: "wait",
+                about: "Wait until a price is crossed or a bar closes, or with the `agent-trading` flag on a fill, an order or a position changing or an alert, or the time is up; then say what, and the snapshot",
+                args: &[],
+                flags: WAIT_FLAGS,
+                example: "omacharts trading wait --timeout 30 --cross 7620 --bar-close --since 12.1794866400",
+                json: true,
+                writes: false,
+                workspace: true,
             },
             Verb {
                 name: "flatten",

@@ -119,6 +119,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     use super::*;
+    use omacharts_studies::footprint::point_of_control;
 
     /// A small deterministic generator, so a failing case can be run again.
     struct Rng(u64);
@@ -256,7 +257,7 @@ mod tests {
         let s = m.ladder.sides;
         assert_eq!((s.at_bid, s.at_ask, s.unknown, s.volume(), s.delta()), (3, 5, 2, 10, 2));
         assert_eq!((s.bid_trades, s.ask_trades, s.unknown_trades), (1, 1, 1));
-        assert_eq!(m.ladder.point_of_control(), Some(400));
+        assert_eq!(point_of_control(m.ladder.low_tick, &m.ladder.levels, 1, Level::volume), Some(400));
         let prices: Vec<_> = m.ladder.prices(0.25).collect();
         assert_eq!(prices, vec![(99.5, 3, 0), (99.75, 0, 0), (100.0, 0, 5), (100.25, 0, 0), (100.5, 0, 0)]);
     }
@@ -277,7 +278,7 @@ mod tests {
         assert_eq!((ladder.low_tick, ladder.levels.len()), (400, 3));
         let volumes: Vec<u64> = ladder.levels.iter().map(Level::volume).collect();
         assert_eq!(volumes, vec![40, 5, 5]);
-        assert_eq!(ladder.point_of_control(), Some(400));
+        assert_eq!(point_of_control(ladder.low_tick, &ladder.levels, 1, Level::volume), Some(400));
         assert_eq!((ladder.total(), ladder.delta()), (50, 0));
         assert_eq!((ladder.sides.at_bid, ladder.sides.at_ask, ladder.sides.unknown), (0, 0, 50));
         for bar in s.bars_by(0, 600, |ts| ts.div_euclid(300) * 300) {

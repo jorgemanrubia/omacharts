@@ -41,7 +41,7 @@ use rusqlite::{params, Connection};
 pub const LATEST: i32 = 11;
 
 /// How far the market data file's own migrations go.
-pub const MARKET_LATEST: i32 = 2;
+pub const MARKET_LATEST: i32 = 4;
 
 /// The schema the market data file is attached as.
 pub const MARKET: &str = "market";
@@ -408,6 +408,33 @@ Migration {
              PRIMARY KEY (key, from_ts)
          );",
     ),
+}, Migration {
+    version: 3,
+    name: "large order prints",
+    risky: false,
+    // A contract's single trades, one row per trading day, for large
+    // orders: sixteen bytes a trade in one blob (see `crate::store`'s print
+    // section). `upto` is how far the day is known, so today is asked only
+    // from there; `complete`, a day that will not change again.
+    step: Step::Sql(
+        "CREATE TABLE market.print_days (
+             key       TEXT NOT NULL,
+             day       INTEGER NOT NULL,
+             tick_size REAL NOT NULL,
+             upto      INTEGER NOT NULL,
+             complete  INTEGER NOT NULL,
+             data      BLOB NOT NULL,
+             PRIMARY KEY (key, day)
+         );",
+    ),
+}, Migration {
+    version: 4,
+    name: "where a day's prints were read from",
+    risky: false,
+    // Of the two files Sierra Chart may keep of one contract, the one a day
+    // was read from: a day kept from the other is read again. Every day kept
+    // before this is from nowhere known, and read again once.
+    step: Step::Sql("ALTER TABLE market.print_days ADD COLUMN source TEXT NOT NULL DEFAULT '';"),
 }];
 
 /// Version 4: the bars and quotes over to the market data file, then out of
@@ -684,6 +711,7 @@ mod tests {
                 "ladder_coverage:key,from_ts,to_ts",
                 "ladder_days:key,day,tick_size,minutes,first_ts,last_ts,fetched_at,data,total",
                 "ladder_tail:key,ts,day,tick_size,data",
+                "print_days:key,day,tick_size,upto,complete,data,source",
                 "quotes:key,last,previous,at,fetched_at,previous_at",
             ]
         );

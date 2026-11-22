@@ -9,7 +9,8 @@ description: >-
   open", "a 2x2 of the majors with RSI on each, linked", "put a 200-day
   average on this", "add AMD to my semis list", "what have I got open". Also
   for indicators (moving average, VWAP, Bollinger bands, volume profile,
-  market profile or TPO, RSI, MACD, ATR), for session times — "shade the overnight", "shade
+  market profile or TPO, cumulative delta, volume delta, footprint, large
+  orders, RSI, MACD, ATR), for session times — "shade the overnight", "shade
   the London session", "show RTH", "a lunch hour background" — and for
   which time zone and 12 or 24 hours the charts show, resolutions and sessions, bar styles and colours, watchlists and their
   sections, chartbooks, link modes, the instrument search, and the cached
@@ -86,6 +87,13 @@ a timer; if it looks still, `provider status` is where to look first.
 One chart can be drawn from another feed than the rest with `chart set
 --feed FEED`, by the id or the name `provider list` gives, and put back on
 the order with `--feed default`.
+
+**Reading a chart in numbers needs no flag.** `chart bars --json`, `chart
+values --json`, `symbol quote SYMBOL --json` and `trading snapshot --json`
+read what a chart on screen holds; `trading wait --cross PRICE` or
+`--bar-close` waits on the price. Only trading is behind the experimental
+`agent-trading` flag: the account, position and orders in a snapshot,
+`trading watch` and `trading alert`.
 
 **Trading is real money, and nothing asks twice.** Trading is experimental.
 `trading accounts`, `positions` and `orders` read freely. `trading buy`,
@@ -392,6 +400,62 @@ omacharts chart indicator set market_profile --expand-last on
 # Its look
 omacharts chart indicator set market_profile --tpo-style blocks --poc-color Amber --value-area-color Teal
 ```
+
+**Order flow: who took liquidity.** Four indicators in the Order flow
+family. `cvd` (Cumulative Delta) is buying less selling added up over a
+period, in a strip; `volume_delta` (VD) is the same delta bar by bar, one
+candle per bar from nought, in a strip; `footprint` replaces each candle,
+once a bar is wide enough for its rows to read (worked out from the figures' width; narrower with `--numbers off`), with a narrow bar of the chart's own style (none on a line chart)
+and each price's delta beside it, rows filled more solidly the bigger the
+delta unless `--intensity off`, the figures written in them unless
+`--numbers off`, `--row-ticks N` ticks a row or `auto` (the default: a
+compact line's worth), and with `--profile on` each bar's volume profile
+at its left (total traded at each row, one colour: `--profile-color`,
+`--profile-transparency`, `--profile-numbers on|off`; it needs about twice
+the bar width); `large_orders` draws a bubble at the price of
+each order bigger than `--rth-threshold` (50) in regular hours or
+`--eth-threshold` (20) outside them, sized against `--size-against visible`,
+`session` or `hours`, prints of one moment and side counted as one order
+unless `--combine off`. The footprint and large orders need a feed with
+volume at price and say so on any other; the two deltas are estimated
+there and their legends read `≈`. The three new ones are painted by
+`--colouring default|theme|theme-soft|theme-quiet|theme-mono|custom` (the one
+value set every study takes, Volume, CVD and profiles too; `default` is the
+chart's own bars and each preset is worn swapped when they are; Monochrome,
+also spelled `monochrome`: one colour for buying and selling alike, the
+Monochrome candles' ink; every colouring flag takes it, Volume's too; `custom`
+is each colour its own, starting from what was drawn), with `--buy-color`,
+`--sell-color` (`none` to let it go; a colour given on a preset makes the
+colouring `custom`, the other side kept as drawn; Volume and CVD take
+`--up-color`/`--down-color` the same way, a delta volume profile `--buy-color`/`--sell-color`) and `--buy-transparency`,
+`--sell-transparency` (`default` for their own); `volume_delta` takes
+`--height`. They have no line, so `--color` and `--transparency` are refused.
+
+```
+omacharts chart indicator add footprint --row-ticks 4
+omacharts chart indicator add large_orders --rth-threshold 100 --size-against visible
+omacharts chart indicator add volume_delta --colouring monochrome --sell-transparency 0.3
+```
+
+To read a footprint in numbers rather than look at it, use `chart values
+--indicator footprint` (it needs volume at price). It reads the newest bar,
+or `--last N`, `--from WHEN [--to WHEN]` or `--visible`, in rows of
+`--row-ticks auto|N`. `--json` gives an entry in `indicators` with each bar's
+`time`, OHLC, `volume`, `delta` and `poc`, and `rows` lowest first, each with
+`low`, `high`, `at_bid`, `at_ask`, `delta`, `total` and `trades`. These are
+exactly the rows drawn. Look for absorption (a big `at_bid` at a low that
+holds), imbalances (one side several times the other) and where the `poc`
+sits in the bar. For a quick look at the last few bars, pipe `chart values
+--indicator footprint --last 3 --json` into `jq '.indicators[0].bars[] |
+{time, delta, poc}'`. The same range flags read any indicator bar by bar:
+`chart values --indicator rsi --last 20 --json` gives `bars` of `{time,
+value}`, a MACD `{time, line, signal, histogram}`, large orders `orders`.
+To follow them live instead of asking again, `chart stream --indicator
+vwap --indicator footprint --count 20` writes a JSON line for each change
+of the newest bar (a `snapshot` first, then `update`s, and a `close` with
+each bar's final readings); `--every MS` throttles it (default 250), and
+`--count` or `--for SECONDS` stop it, so it never hangs a turn.
+`chart indicator kinds` lists every kind and the flags each one takes.
 
 **A volume profile of any span is a drawing.** `profile` (or `vp`) profiles
 the bars between `--from` and `--to`; only their times are read. `--color` is

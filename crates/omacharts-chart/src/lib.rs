@@ -31,6 +31,39 @@
 //!   both time and price is one of these.
 //! - **Price marks**: [`ChartView::set_marks`], see [`marks`].
 //!
+//! - **Order flow**: what the footprint, a volume profile drawing and the
+//!   large orders indicator read is lent, not handed, so the chart reads it
+//!   as it draws and nothing is copied per frame:
+//!   - [`ChartView::set_volume_at_price`] with a [`VolumeAtPrice`]: handed
+//!     the first bar's time, it calls back with the ladders held now, if
+//!     any, and whether more are on their way.
+//!   - [`ChartView::set_large_orders`] with a [`LargeOrderBooks`]: handed a
+//!     large orders indicator's thresholds, regular and extended, and
+//!     whether it combines same-time prints, it answers the
+//!     [`omacharts_engine::studies::orders::Book`] built so far and the tick
+//!     size its prices are in. Call [`ChartView::large_orders_changed`] when
+//!     a book is swapped for a newer one.
+//!
+//!   A book is built from the prints with omacharts-studies'
+//!   [`Builder`](omacharts_engine::studies::orders::Builder), oldest first;
+//!   `hours` says, of a moment, its session and whether it is in regular
+//!   hours:
+//!
+//!   ```ignore
+//!   use omacharts_engine::studies::orders::{Aggressor, Builder, Print, Thresholds};
+//!
+//!   let mut builder = Builder::new(true, Thresholds { regular: 50, extended: 20 });
+//!   let mut hours = |ts: i64| (ts.div_euclid(86_400), true);
+//!   for (nanos, tick, size, buy) in prints {
+//!       let side = if buy { Aggressor::Buy } else { Aggressor::Sell };
+//!       builder.push(Print::new(nanos, tick, size, side, false), &mut hours);
+//!   }
+//!   let book = std::sync::Arc::new(builder.book(&mut hours));
+//!   view.set_large_orders(Some(Rc::new(move |_regular, _extended, _combine| {
+//!       Some((book.clone(), 0.25))
+//!   })));
+//!   ```
+//!
 //! What comes out is said through handlers — `set_*_handler` — and never
 //! acted on here: a drawing added or moved ([`DrawingEvent`]), an indicator
 //! picked ([`IndicatorEvent`]), a mark clicked or dragged ([`MarkEvent`]),
@@ -50,12 +83,13 @@ pub mod zoom;
 
 pub use marks::{AnyPrice, AxisChip, LabelSide, MarkDrag, MarkEvent, MarkLink, MarkPreview, MarkRules, MarkTab, PriceMark, MARK_NEAR};
 pub use view::bench;
+pub use view::flow_bench;
 pub use view::{CompareLine, Comparing, Reading, Readout};
 pub use view::{ExecutionMark, Executions, TripLine};
 pub use view::{
     clamp_thickness, delta_colours, volume_alphas, volume_colours, volume_opacity, ChartView, Clock, DrawingEvent, Drawn, Echo, Hidden, Hover, Viewport,
     IndicatorEvent, PriceWindow, ProfileSpot, DEFAULT_OHLC_THICKNESS, MAX_OHLC_THICKNESS, MIN_OHLC_THICKNESS, POINTER_LAYER, PULSE_LAYER,
-    PRICE_AXIS_W, TIME_AXIS_H, VISIBLE_BARS, VolumeAtPrice,
+    PRICE_AXIS_W, TIME_AXIS_H, VISIBLE_BARS, LargeOrderBooks, VolumeAtPrice, BarPick, FootprintBar, FootprintRead, FootprintRow,
 };
 
 /// The class the editor typed into on the chart wears.

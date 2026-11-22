@@ -484,6 +484,21 @@ pub trait Live {
     ) -> Result<crate::trading::reading::ChartRead, Fault> {
         Err(Fault::no_window("chart on screen"))
     }
+    /// Chart `chart`'s indicators in numbers, as `chart values` asks for
+    /// them: see [`crate::trading::reading::ValuesAsk`].
+    fn read_values(
+        &self,
+        _chart: u32,
+        _ask: &crate::trading::reading::ValuesAsk,
+    ) -> Result<crate::trading::reading::ValuesRead, Fault> {
+        Err(Fault::no_window("chart on screen"))
+    }
+    /// Stream chart `ask.chart`'s readings to `ask.sink` as it moves: see
+    /// [`crate::trading::reading::StreamAsk`]. Answers at once with
+    /// nothing; the lines go to the sink.
+    fn stream_values(&self, _ask: crate::trading::reading::StreamAsk) -> Result<String, Fault> {
+        Err(Fault::no_window("chart on screen"))
+    }
     /// The last price a chart on screen has of `instrument`, with when its
     /// last bar began and the step its price moves in; none with no chart
     /// of it.
@@ -614,6 +629,12 @@ pub fn runs_in_the_caller(args: &[String]) -> bool {
     // person inside the window's main loop is a frozen window.
     let Some(second) = args.get(2).map(String::as_str) else { return false };
     spec::IN_THE_CALLER.contains(&(first, second))
+}
+
+/// Whether this command streams to the terminal that typed it until it
+/// is stopped, and so wants the window told who is reading.
+pub fn streams(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("chart") && args.get(2).map(String::as_str) == Some("stream")
 }
 
 /// Whether a command that ran in the caller has to tell an open window
@@ -1518,6 +1539,18 @@ impl Live for Rc<crate::ui::Window> {
         last: usize,
     ) -> Result<crate::trading::reading::ChartRead, Fault> {
         crate::ui::Window::read_chart(self, chart, last)
+    }
+
+    fn read_values(
+        &self,
+        chart: u32,
+        ask: &crate::trading::reading::ValuesAsk,
+    ) -> Result<crate::trading::reading::ValuesRead, Fault> {
+        crate::ui::Window::read_values(self, chart, ask)
+    }
+
+    fn stream_values(&self, ask: crate::trading::reading::StreamAsk) -> Result<String, Fault> {
+        crate::ui::Window::stream_values(self, ask)
     }
 
     fn chart_price(&self, instrument: &Instrument) -> Option<(f64, i64, Option<f64>)> {

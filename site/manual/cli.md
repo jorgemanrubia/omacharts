@@ -290,6 +290,7 @@ as one JSON document.
 | `launch` | The launch options and the values each takes, feed names included |
 | `exitCodes` | Every exit code and what it means |
 | `commands` | Every command: group, description, arguments and flags with their allowed values, an example, and three facts about it: whether it changes anything (`writes`), whether it reads or changes what is on screen (`touchesWorkspace`), and whether it runs without the window (`runsInTheCaller`) |
+| `indicators` | Every indicator kind, as `chart indicator kinds --json` lists it: its name, category, what it needs, whether it has a pane of its own, the flags that set it and its defaults. Each flag of `chart indicator` and `template indicator` also lists the kinds it sets, in `appliesTo` |
 
 `surface --man` writes the manual page, and `surface --completions bash`,
 `zsh` or `fish` writes a completion script. They regenerate what the package

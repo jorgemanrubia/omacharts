@@ -2323,7 +2323,7 @@ pub(super) mod tests {
     /// under the last one was on the chart at one hour and off it at
     /// another. Here every run charts the same bars, the last one well
     /// inside their range.
-    const FROZEN_AT: i64 = 1_794_438_900;
+    pub(crate) const FROZEN_AT: i64 = 1_794_438_900;
 
     /// A real window on a store in memory, charting from the synthetic
     /// feed with its clock stopped at [`FROZEN_AT`]: nothing reaches a

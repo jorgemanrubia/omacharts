@@ -94,7 +94,7 @@ pub fn compute(bars: &[Bar], period: usize, bands: &[Band]) -> Bands {
     // be a figure: anchoring on a close that is not a number would make every
     // distance from it one too, and the count below, which watches the
     // closes, would never notice.
-    omacharts_studies::series::bollinger(bars, period, |i, spread| out.set(i, spread.center, spread.deviation));
+    omacharts_studies::series::bollinger(bars, period, |i, spread| out.set(i, spread));
     out
 }
 

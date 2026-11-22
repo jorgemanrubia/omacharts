@@ -7,6 +7,7 @@
 
 pub mod bars;
 pub mod clock;
+pub mod colouring;
 pub mod compare;
 pub mod continuous;
 pub mod contracts;
@@ -16,6 +17,9 @@ pub mod formula;
 pub mod frame;
 pub mod indicators;
 pub mod ladders;
+/// The indicator arithmetic, for the chart to draw from without a
+/// dependency of its own.
+pub use omacharts_studies as studies;
 pub mod ink;
 pub mod link;
 pub mod log;
@@ -42,7 +46,7 @@ pub use bars::{
 pub use indicators::{palette_colors, Indicator, Kind as IndicatorKind, Output, Params, Reset};
 pub use link::LinkMode;
 pub use provider::{
-    Capability, Closes, Delivery, Described, FetchFailure, LadderSink, LadderUpdate, Ladders, Pacing, Provider,
+    Capability, Closes, Delivery, Described, FetchFailure, LadderSink, LadderUpdate, Ladders, Pacing, PrintSink, Provider,
     ProviderError, SharedCooldown,
     Sink, Stream, Subscription, Update,
 };

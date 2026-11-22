@@ -3297,9 +3297,10 @@ mod outside_change_tests {
         });
     }
 
-    /// The volume pane's Up and Down rows sit right under its Colouring,
-    /// each carrying how solid its bars are, starting at 85%; each slider
-    /// reaches its own bars alone, and a command's --opacity both.
+    /// A volume pane on a preset shows one Opacity row under its Colouring,
+    /// starting at 85%, for both its bars; on Custom, its Up and Down rows
+    /// instead, each carrying how solid its own bars are and reaching them
+    /// alone; and a command's --opacity is both.
     #[test]
     fn the_volume_colours_carry_their_opacity_and_follow_a_command() {
         crate::ui::on_gtk(|| {
@@ -3321,30 +3322,167 @@ mod outside_change_tests {
             let row = |title: &str| {
                 titled::<adw::ActionRow>(&window, title).into_iter().next().unwrap_or_else(|| panic!("an {title} row"))
             };
+            let shown = |row: &adw::ActionRow| row.property::<bool>("visible");
             let (up, down) = (crate::ui::chart_settings::VOLUME_UP, crate::ui::chart_settings::VOLUME_DOWN);
-            assert!(
-                titled::<adw::ActionRow>(&window, "Opacity %").is_empty(),
-                "no opacity row of its own"
-            );
-            let above = row(up).prev_sibling().and_then(|w| w.downcast::<adw::ComboRow>().ok());
-            assert_eq!(above.map(|r| r.title()).as_deref(), Some("Colouring"), "Up is not under Colouring");
+            let opacity = crate::ui::colouring_rows::OPACITY;
+            let above = row(opacity).prev_sibling().and_then(|w| w.downcast::<adw::ComboRow>().ok());
+            assert_eq!(above.map(|r| r.title()).as_deref(), Some("Colouring"), "Opacity is not under Colouring");
+            assert!(shown(&row(opacity)) && !shown(&row(up)) && !shown(&row(down)), "a preset shows no colours");
             let slider = |row: adw::ActionRow| rows::<gtk::Scale>(row.upcast_ref()).into_iter().next().expect("a slider");
-            assert_eq!((slider(row(up)).value(), slider(row(down)).value()), (85.0, 85.0));
+            assert_eq!(slider(row(opacity)).value(), 85.0);
             assert_eq!(alphas(), (0.85, 0.85));
-
-            slider(row(up)).set_value(100.0);
-            assert_eq!(alphas(), (1.0, 0.85), "the Up slider reached its own bars alone");
-            slider(row(down)).set_value(40.0);
-            assert_eq!(alphas(), (1.0, 0.4), "the Down slider reached its own bars alone");
+            slider(row(opacity)).set_value(60.0);
+            assert_eq!(alphas(), (0.6, 0.6), "one Opacity for both");
 
             command(&window, &["chart", "indicator", "set", "volume", "--opacity", "0.5"]);
             assert_eq!(alphas(), (0.5, 0.5), "--opacity is both");
-            assert_eq!((slider(row(up)).value(), slider(row(down)).value()), (50.0, 50.0), "the rows kept the old opacity");
+            assert_eq!(slider(row(opacity)).value(), 50.0, "the row kept the old opacity");
+
+            let colouring = titled::<adw::ComboRow>(&window, "Colouring").pop().expect("the colouring row");
+            colouring.set_selected(colouring.model().map_or(0, |m| m.n_items()) - 1);
+            assert!(!shown(&row(opacity)) && shown(&row(up)) && shown(&row(down)), "Custom shows each colour");
+            assert_eq!((slider(row(up)).value(), slider(row(down)).value()), (50.0, 50.0));
+            slider(row(up)).set_value(100.0);
+            assert_eq!(alphas(), (1.0, 0.5), "the Up slider reached its own bars alone");
 
             command(&window, &["chart", "indicator", "set", "volume", "--down-transparency", "0.75"]);
-            assert_eq!(alphas(), (0.5, 0.25));
+            assert_eq!(alphas(), (1.0, 0.25));
             assert_eq!(slider(row(down)).value(), 25.0);
         });
+    }
+
+    /// A footprint's volume profile: a switch, off, with its colour and
+    /// numbers rows hidden under it; on, both show, and each changes the
+    /// profile alone, its colour on the one row with how solid it is.
+    #[test]
+    fn a_footprint_s_profile_is_switched_on_with_its_own_rows() {
+        use crate::ui::chart_settings::{FOOTPRINT_PROFILE_COLOUR_LABEL, FOOTPRINT_PROFILE_LABEL, FOOTPRINT_PROFILE_NUMBERS_LABEL};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "indicator", "add", "footprint"]);
+            let id = window.indicators().last().map(|i| i.id).expect("added");
+            let profile = || match window.indicators().into_iter().find(|i| i.id == id).expect("the footprint").params {
+                omacharts_engine::Params::Footprint { profile, .. } => profile,
+                _ => unreachable!(),
+            };
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, id);
+            let switch = || titled::<adw::SwitchRow>(&window, FOOTPRINT_PROFILE_LABEL).pop().expect("the profile switch");
+            let colour = || titled::<adw::ActionRow>(&window, FOOTPRINT_PROFILE_COLOUR_LABEL).pop().expect("its colour row");
+            let numbers = || titled::<adw::SwitchRow>(&window, FOOTPRINT_PROFILE_NUMBERS_LABEL).pop().expect("its numbers row");
+            let shown = |row: &gtk::Widget| row.property::<bool>("visible");
+            assert!(!switch().is_active(), "off unless turned on");
+            assert!(!shown(colour().upcast_ref()) && !shown(numbers().upcast_ref()), "its rows hidden while off");
+
+            switch().set_active(true);
+            assert!(profile().on);
+            assert!(shown(colour().upcast_ref()) && shown(numbers().upcast_ref()), "its rows shown while on");
+            assert!(numbers().is_active(), "its numbers on unless turned off");
+            numbers().set_active(false);
+            assert!(!profile().numbers);
+
+            // The colour row: a swatch and how solid, on one row.
+            let slider = rows::<gtk::Scale>(colour().upcast_ref()).into_iter().next().expect("its transparency");
+            assert!(!rows::<gtk::MenuButton>(colour().upcast_ref()).is_empty(), "its swatch on the same row");
+            assert_eq!(slider.value().round(), 55.0, "under the delta's strongest row");
+            slider.set_value(40.0);
+            assert!((profile().drawn_alpha() - 0.4).abs() < 1e-9);
+            assert!(profile().colour.is_none(), "the theme's swatch until one is picked");
+
+            switch().set_active(false);
+            assert!(!profile().on);
+            assert!(!shown(colour().upcast_ref()) && !shown(numbers().upcast_ref()));
+        });
+    }
+
+    /// Every study painted in a colouring offers Custom last, from the one
+    /// shared set of rows. A preset shows no colour of its own; Custom shows
+    /// a row a colour the study draws with, each starting at the colour it
+    /// was drawn in; a colour picked there refines that one alone; a preset
+    /// chosen again is drawn as it is; and Custom chosen again, while the
+    /// dialog is open, brings back what was picked.
+    #[test]
+    fn every_study_with_a_colouring_offers_custom_with_a_row_a_colour() {
+        use omacharts_engine::colouring::Colouring;
+        use omacharts_engine::theme::ColorChoice;
+        let studies: [(&str, &[&str], [&str; 2], bool); 6] = [
+            ("volume", &[], ["Up", "Down"], true),
+            ("cvd", &[], ["Up", "Down"], false),
+            ("volume_profile", &["--profile-method", "delta"], ["Buying", "Selling"], false),
+            ("volume_delta", &[], ["Buying", "Selling"], true),
+            ("footprint", &[], ["Buying", "Selling"], true),
+            ("large_orders", &[], ["Buying", "Selling"], true),
+        ];
+        for (kind, extra, roles, opacity) in studies {
+            crate::ui::on_gtk(move || {
+                let store = Rc::new(Store::memory().expect("a store"));
+                let window = bare_window(&store);
+                command(&window, &["chart", "set", "--resolution", "5m"]);
+                let mut words = vec!["chart", "indicator", "add", kind];
+                words.extend_from_slice(extra);
+                command(&window, &words);
+                let id = window.indicators().last().map(|i| i.id).expect("added");
+                let study = || window.indicators().into_iter().find(|i| i.id == id).expect("the study");
+                let colours = || {
+                    let params = study().params;
+                    let (colouring, own) = params.colours().expect("a colouring");
+                    (colouring, own.map(|c| c.cloned()))
+                };
+                crate::ui::chart_settings::ChartSettings::present_indicator(&window, id);
+                // Read again after each change: a change can rebuild the page.
+                let colouring = || titled::<adw::ComboRow>(&window, "Colouring").pop().expect("the colouring row");
+                assert_eq!(offered(&colouring()).last().map(String::as_str), Some("Custom"), "{kind}");
+                let role = |at: usize| titled::<adw::ActionRow>(&window, roles[at]).pop().expect("a role row");
+                let shown = |row: &adw::ActionRow| row.property::<bool>("visible");
+                let opacity_row = || titled::<adw::ActionRow>(&window, crate::ui::colouring_rows::OPACITY).pop();
+                assert_eq!(opacity_row().is_some(), opacity, "{kind}: an Opacity row where it has a strength");
+
+                // A preset: its colours, and no swatch.
+                colouring().set_selected(1);
+                assert_eq!(colours().0, Some(Colouring::Scheme(omacharts_engine::BarColouring::Vivid)), "{kind}");
+                assert!(!shown(&role(0)) && !shown(&role(1)), "{kind}: a preset shows no colours");
+                if let Some(row) = &opacity_row() {
+                    assert!(shown(row), "{kind}: one Opacity row under a preset");
+                }
+                let theme = window.theme();
+                let (house, swapped) = window.chart_look();
+                let vivid = match kind {
+                    "volume" => crate::ui::chart::volume_colours(&study(), &theme, &window.bar_scheme(), swapped),
+                    _ => crate::ui::chart::delta_colours(Some(omacharts_engine::BarColouring::Vivid), &theme, house, swapped),
+                };
+
+                // Custom: each colour as it was drawn a moment ago.
+                let custom = colouring().model().map_or(0, |m| m.n_items()) - 1;
+                colouring().set_selected(custom);
+                let fixed = |hex: &str| Some(ColorChoice::Fixed { hex: hex.to_string() });
+                assert_eq!(colours(), (Some(Colouring::Custom), [fixed(&vivid.0), fixed(&vivid.1)]), "{kind}: seeded");
+                assert!(shown(&role(0)) && shown(&role(1)), "{kind}: Custom shows a row a colour");
+                if let Some(row) = &opacity_row() {
+                    assert!(!shown(row), "{kind}: each colour carries its own under Custom");
+                }
+
+                // A pick refines the one colour.
+                let swatch = theme.swatches[0].name.clone();
+                let button = rows::<gtk::MenuButton>(role(0).upcast_ref()).pop().expect("a swatch");
+                let popover = button.popover().expect("the palette");
+                let cell = rows::<gtk::Button>(popover.upcast_ref())
+                    .into_iter()
+                    .find(|b| b.tooltip_text().as_deref() == Some(swatch.as_str()))
+                    .expect("the swatch in the palette");
+                cell.emit_clicked();
+                let picked = Some(ColorChoice::swatch(&swatch));
+                assert_eq!(colours(), (Some(Colouring::Custom), [picked.clone(), fixed(&vivid.1)]), "{kind}: refined");
+
+                // A preset again is drawn as it is.
+                colouring().set_selected(3);
+                assert_eq!(colours(), (Some(Colouring::Scheme(omacharts_engine::BarColouring::Quiet)), [None, None]), "{kind}");
+                assert!(!shown(&role(0)), "{kind}");
+
+                // Custom again, while the dialog is open, is what was picked.
+                colouring().set_selected(custom);
+                assert_eq!(colours(), (Some(Colouring::Custom), [picked, fixed(&vivid.1)]), "{kind}: kept");
+            });
+        }
     }
 
     /// A volume profile's settings offer a colouring right under its
@@ -3385,13 +3523,13 @@ mod outside_change_tests {
             let names: Vec<String> = (0..row.model().map_or(0, |m| m.n_items()))
                 .filter_map(|at| row.model()?.item(at)?.downcast::<gtk::StringObject>().ok().map(|s| s.string().to_string()))
                 .collect();
-            assert_eq!(names, ["Default", "Vivid", "Soft", "Quiet"]);
+            assert_eq!(names, ["Default", "Vivid", "Soft", "Quiet", "Monochrome", "Custom"]);
 
             row.set_selected(3);
             let stored = window.indicators();
             let params = &stored.iter().find(|i| i.id == profile).expect("the profile").params;
             assert!(
-                matches!(params, omacharts_engine::indicators::Params::VolumeProfile { colouring: Some(BarColouring::Quiet), .. }),
+                matches!(params, omacharts_engine::indicators::Params::VolumeProfile { colouring: Some(omacharts_engine::colouring::Colouring::Scheme(BarColouring::Quiet)), .. }),
                 "{params:?}"
             );
             let (method, row) = rows();
@@ -3783,7 +3921,7 @@ mod outside_change_tests {
             let shown = window.indicators();
             let params = &shown.iter().find(|i| i.id == volume).expect("the volume pane").params;
             assert!(
-                matches!(params, omacharts_engine::indicators::Params::Volume { colouring: Some(BarColouring::Soft), .. }),
+                matches!(params, omacharts_engine::indicators::Params::Volume { colouring: Some(omacharts_engine::colouring::Colouring::Scheme(BarColouring::Soft)), .. }),
                 "{params:?}"
             );
         });
@@ -3797,8 +3935,8 @@ mod outside_change_tests {
     }
 
     /// A volume pane's Colouring is the delta profile's: Default first, which
-    /// is the chart's own as it always was, then the three that tell a rise
-    /// from a fall.
+    /// is the chart's own as it always was, then the four colourings,
+    /// Monochrome last.
     #[test]
     fn a_volume_pane_offers_the_delta_profiles_colourings() {
         crate::ui::on_gtk(|| {
@@ -3813,7 +3951,7 @@ mod outside_change_tests {
                 .expect("a volume pane added");
             crate::ui::chart_settings::ChartSettings::present_indicator(&window, volume);
             let strip = titled::<adw::ComboRow>(&window, "Colouring").pop().expect("the volume pane's");
-            assert_eq!(offered(&strip), ["Default", "Vivid", "Soft", "Quiet"]);
+            assert_eq!(offered(&strip), ["Default", "Vivid", "Soft", "Quiet", "Monochrome", "Custom"]);
             assert_eq!(strip.selected(), 0, "the chart's own, to begin with");
         });
     }
@@ -3855,7 +3993,7 @@ mod outside_change_tests {
             assert_eq!(names.last().map(String::as_str), Some(cvd::NEVER));
             assert_eq!(names[reset().selected() as usize], "Session", "the session, to begin with");
             assert_eq!(style().selected(), 0);
-            assert_eq!(offered(&colouring()), ["Default", "Vivid", "Soft", "Quiet"]);
+            assert_eq!(offered(&colouring()), ["Default", "Vivid", "Soft", "Quiet", "Monochrome", "Custom"]);
 
             let group = reset().ancestor(adw::PreferencesGroup::static_type()).and_downcast::<adw::PreferencesGroup>();
             let said = group.and_then(|g| g.description()).map(|d| d.to_string());
@@ -3877,7 +4015,7 @@ mod outside_change_tests {
             assert!(matches!(params(), Params::Cvd { style: cvd::Style::Line, .. }), "{:?}", params());
             assert!(line_shown(), "a line's own rows");
             colouring().set_selected(2);
-            assert!(matches!(params(), Params::Cvd { colouring: Some(BarColouring::Soft), .. }), "{:?}", params());
+            assert!(matches!(params(), Params::Cvd { colouring: Some(omacharts_engine::colouring::Colouring::Scheme(BarColouring::Soft)), .. }), "{:?}", params());
 
             // The line's rows follow a command that draws it as candles again.
             command(&window, &["chart", "indicator", "set", "cvd", "--cvd-style", "candles"]);
@@ -4203,6 +4341,10 @@ struct Feed {
     /// Its volume at price, for a feed whose provider has ladders. `None`
     /// for every other, which then pays nothing: no thread, no query.
     at_price: Option<Rc<AtPrice>>,
+    /// Its large orders, for a feed with single trades: a thread and a
+    /// queue of their own, apart from the ladders', so a slow history of
+    /// trades holds up no bar and no ladder.
+    large_orders: Option<Rc<crate::large_orders::LargeOrders>>,
     /// Can it be charted from with what is saved? Read from disk when the
     /// list is built and when a sign-in or sign-out finishes, never by
     /// connecting. A feed that cannot is passed over by [`Window::route`].
@@ -4231,11 +4373,14 @@ impl Feed {
             .is_some()
             .then(|| Rc::new(Live::new(provider.clone(), store.path().map(Path::to_path_buf))));
         let at_price = AtPrice::new(provider.clone(), store.path().map(Path::to_path_buf)).map(Rc::new);
+        let large_orders =
+            crate::large_orders::LargeOrders::new(provider.clone(), store.path().map(Path::to_path_buf)).map(Rc::new);
         let feed = Feed {
             provider,
             loader,
             live,
             at_price,
+            large_orders,
             usable: Cell::new(true),
             unusable_because: Cell::new(""),
             backfill_quiet_until: Cell::new(None),
@@ -5765,8 +5910,7 @@ impl Window {
         pane.colouring.set(look.colouring);
         pane.swapped.set(look.swapped);
         pane.hollow_up.set(look.hollow_up);
-        let (house, swapped) = self.house_look();
-        pane.view.set_house_look(house, swapped);
+        pane.view.set_house_look(look.colouring, look.swapped);
         pane.view.set_bar_style(bar_style);
         pane.view.set_show_grid(show_grid);
 
@@ -5955,6 +6099,7 @@ impl Window {
         let keeper = self.clone();
         pane.view.set_drawing_handler(move |event| keeper.record_drawing(id, event));
         pane.view.set_volume_at_price(Some(self.volume_at_price_for(&pane)));
+        pane.view.set_large_orders(Some(Self::large_orders_for(&pane)));
         // What the hand did to the orders and the position on it, which the
         // window sends, never the chart.
         let trader = self.clone();
@@ -7457,12 +7602,12 @@ impl Window {
         self.focused_pane().ladders.borrow().is_some()
     }
 
-    /// The colouring chosen in Preferences, and whether it is worn the other
-    /// way round: what a delta profile or a cumulative delta with no
-    /// colouring of its own is painted in, on every chart.
-    pub fn house_look(&self) -> (BarColouring, bool) {
-        let theming = self.theming.borrow();
-        (theming.colouring(), theming.swapped())
+    /// The focused chart's colouring, and whether it is worn the other way
+    /// round: what every study with no colouring of its own is painted in,
+    /// as the bars under it are, and how its presets are worn.
+    pub fn chart_look(&self) -> (BarColouring, bool) {
+        let pane = self.focused_pane();
+        (pane.colouring.get(), pane.swapped.get())
     }
 
     /// Adopt a theme or bar scheme chosen outside this window, and repaint.
@@ -9629,10 +9774,8 @@ impl Window {
         if let Some(bar) = self.drawing_bar.borrow().as_ref() {
             bar.restyle();
         }
-        let (house, swapped) = self.house_look();
         for pane in self.panes.borrow().iter() {
-            pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
-            pane.view.set_house_look(house, swapped);
+            pane.view.restyle(theme.clone(), pane_scheme(pane, &theme), (pane.colouring.get(), pane.swapped.get()));
             self.apply_marks_to(pane);
             // The colour is the theme's answer about the mode, which has just
             // changed.
@@ -10139,12 +10282,20 @@ impl Window {
             .at_price
             .as_ref()
             .filter(|at_price| at_price.serves(&symbol, &instrument))
-            .map(|at_price| LadderSource { at_price: at_price.clone(), key: key.clone(), symbol: symbol.clone() });
+            .map(|at_price| LadderSource {
+                at_price: at_price.clone(),
+                large_orders: feed.large_orders.clone().filter(|large| large.serves(&symbol, &instrument)),
+                key: key.clone(),
+                symbol: symbol.clone(),
+            });
         let was = pane.ladders.replace(source);
         if let Some(was) = was
             && pane.ladders.borrow().as_ref().is_none_or(|now| now.key != was.key)
         {
             was.at_price.unwatch(pane.id);
+            if let Some(large) = &was.large_orders {
+                large.unwatch(pane.id);
+            }
         }
 
         *pane.instrument.borrow_mut() = Some(instrument.clone());
@@ -10951,6 +11102,19 @@ impl Window {
         })
     }
 
+    /// Where chart `pane`'s large orders indicators read their books: from
+    /// its feed's, for whatever contract it shows now.
+    fn large_orders_for(pane: &Rc<ChartPane>) -> crate::ui::chart::LargeOrderBooks {
+        let pane = Rc::downgrade(pane);
+        Rc::new(move |regular, extended, combine| {
+            let pane = pane.upgrade()?;
+            let source = pane.ladders.borrow();
+            let source = source.as_ref()?;
+            let large = source.large_orders.as_ref()?;
+            large.book(&source.key, crate::large_orders::Settings { regular, extended, combine })
+        })
+    }
+
     /// [`Self::drawn_indicators`]'s computation, on the context it made.
     #[allow(clippy::too_many_arguments)]
     fn compute_drawn(
@@ -11015,12 +11179,10 @@ impl Window {
         let source = pane.ladders.borrow().clone();
         let Some(source) = source else { return compute(&context) };
         // A volume profile drawing reads them as the study does.
-        if !all.iter().any(|indicator| indicator.kind.uses_volume_at_price()) && !pane.view.has_profile_drawing() {
-            source.at_price.unwatch(pane.id);
+        let ladders = all.iter().any(|indicator| indicator.kind.uses_volume_at_price()) || pane.view.has_profile_drawing();
+        source.want(pane.id, instrument, bars, all, ladders);
+        if !ladders {
             return compute(&context);
-        }
-        if let Some(first) = bars.first() {
-            source.at_price.want(pane.id, &source.key, &source.symbol, instrument, first.ts);
         }
         // Ladders on their way are waited for: a profile drawn from the bars
         // now would be redrawn from them in a moment, rows and shape.
@@ -11091,6 +11253,9 @@ impl Window {
             if let Some(at_price) = &feed.at_price {
                 self.wire_at_price(at_price.clone());
             }
+            if let Some(large) = &feed.large_orders {
+                self.wire_large_orders(large.clone());
+            }
         }
     }
 
@@ -11158,6 +11323,30 @@ impl Window {
                     panes.extend(at_price.finished(more));
                 }
                 this.recompute_panes(&panes);
+            }
+        });
+    }
+
+    /// The same for a feed's large orders: a book built is swapped in and
+    /// only the charts drawing it are drawn again, once however many came
+    /// back together. Nothing is worked out again.
+    fn wire_large_orders(self: &Rc<Self>, large: Rc<crate::large_orders::LargeOrders>) {
+        let this = Rc::downgrade(self);
+        let done = large.done();
+        glib::spawn_future_local(async move {
+            while let Ok(first) = done.recv().await {
+                let mut panes = large.finished(first);
+                while let Ok(more) = done.try_recv() {
+                    panes.extend(large.finished(more));
+                }
+                let Some(this) = this.upgrade() else { return };
+                panes.sort_unstable();
+                panes.dedup();
+                for id in panes {
+                    if let Some(pane) = this.pane(id) {
+                        pane.view.large_orders_changed();
+                    }
+                }
             }
         });
     }
@@ -11687,6 +11876,7 @@ impl Window {
         let mut receivers = Vec::new();
         let mut lives = Vec::new();
         let mut at_prices = Vec::new();
+        let mut larges = Vec::new();
         let feeds: Vec<Rc<Feed>> = providers
             .into_iter()
             .map(|provider| {
@@ -11699,6 +11889,7 @@ impl Window {
                 receivers.push((Rc::downgrade(&feed), receiver));
                 lives.extend(feed.live.clone());
                 at_prices.extend(feed.at_price.clone());
+                larges.extend(feed.large_orders.clone());
                 feed
             })
             .collect();
@@ -11717,6 +11908,9 @@ impl Window {
         }
         for at_price in at_prices {
             self.wire_at_price(at_price);
+        }
+        for large in larges {
+            self.wire_large_orders(large);
         }
         self.wire_refresh();
     }
@@ -11849,6 +12043,9 @@ impl Window {
         if let Some(at_price) = &feed.at_price {
             at_price.shutdown();
         }
+        if let Some(large) = &feed.large_orders {
+            large.shutdown();
+        }
         feed.loader.drop_prefetches();
         feed.loader.drop_backfill();
         // Whatever the provider holds beyond its value: a connection, a
@@ -11898,6 +12095,9 @@ impl Window {
             if let Some(at_price) = &feed.at_price {
                 let touched = at_price.drain();
                 self.recompute_panes(&touched);
+            }
+            if let Some(large) = &feed.large_orders {
+                large.tick();
             }
             let Some(live) = &feed.live else { continue };
             let drained = live.drain();
@@ -12070,6 +12270,9 @@ impl Window {
             if let Some(at_price) = &feed.at_price {
                 at_price.unwatch(id);
             }
+            if let Some(large) = &feed.large_orders {
+                large.unwatch(id);
+            }
         }
     }
 
@@ -12088,6 +12291,9 @@ impl Window {
             if let Some(at_price) = &feed.at_price {
                 at_price.unwatch(id);
             }
+            if let Some(large) = &feed.large_orders {
+                large.unwatch(id);
+            }
         }
     }
 
@@ -12102,6 +12308,9 @@ impl Window {
             pane.ladders.borrow_mut().take();
         }
         for feed in self.feeds() {
+            if let Some(large) = &feed.large_orders {
+                large.unwatch_all();
+            }
             if let Some(at_price) = &feed.at_price {
                 at_price.unwatch_all();
                 // On idle, as a series is: the next chartbook's charts take
@@ -12196,7 +12405,24 @@ impl Window {
         }
         if !self.repaint_indicators(pane) {
             self.recompute_panes(&[pane.id]);
+            return;
         }
+        // Nothing worked out again, but a large orders indicator's
+        // thresholds name the book it draws: the feed is asked for it, and
+        // the chart drawn again when it comes. Without this the chart drew
+        // the book of the settings it last computed with, and none at all
+        // for any other.
+        self.want_large_orders(pane);
+    }
+
+    /// Ask chart `pane`'s feed for the books of its large orders indicators
+    /// as they are set now, over the bars it holds.
+    fn want_large_orders(&self, pane: &Rc<ChartPane>) {
+        let source = pane.ladders.borrow().clone();
+        let instrument = pane.instrument.borrow().clone();
+        let (Some(source), Some(instrument)) = (source, instrument) else { return };
+        let all = pane.indicators.borrow().clone();
+        pane.view.with_bars(|bars| source.want_large_orders(pane.id, &instrument, bars, &all));
     }
 
     /// The colour indicator `id` is drawn in on chart `pane` now, for its
@@ -13288,7 +13514,7 @@ impl Window {
         pane.view.set_bars_hidden(false);
         self.sync_chart_actions(&pane);
         let theme = self.theme();
-        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
+        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme), (pane.colouring.get(), pane.swapped.get()));
         self.save_workspace();
     }
 
@@ -13300,7 +13526,7 @@ impl Window {
         let pane = self.focused_pane();
         pane.colouring.set(colouring);
         let theme = self.theme();
-        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
+        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme), (pane.colouring.get(), pane.swapped.get()));
         self.save_workspace();
     }
 
@@ -13313,7 +13539,7 @@ impl Window {
         let pane = self.focused_pane();
         pane.swapped.set(swapped);
         let theme = self.theme();
-        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
+        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme), (pane.colouring.get(), pane.swapped.get()));
         // Profit and loss turn round with the candles.
         self.apply_marks_to(&pane);
         self.save_workspace();
@@ -13395,7 +13621,7 @@ impl Window {
         let pane = self.focused_pane();
         pane.hollow_up.set(hollow_up);
         let theme = self.theme();
-        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
+        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme), (pane.colouring.get(), pane.swapped.get()));
         self.save_workspace();
     }
 
@@ -13487,7 +13713,7 @@ impl Window {
         pane.hollow_up.set(defaults.hollow_up);
         pane.set_ohlc_thickness(defaults.ohlc_thickness);
         let theme = self.theme();
-        pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
+        pane.view.restyle(theme.clone(), pane_scheme(pane, &theme), (pane.colouring.get(), pane.swapped.get()));
         self.apply_marks_to(pane);
         pane.session.set(defaults.session);
         pane.continuous.set(defaults.continuous);
@@ -14298,12 +14524,19 @@ impl Window {
     /// Another of the indicator copied, on the focused chart, or on the
     /// template it is on, as adding one there does. Selected once it is
     /// down, so a paste can be followed at once by its properties.
+    ///
+    /// A kind a chart holds one of is not put down twice: pasted where there
+    /// is one, it sets that one, which keeps its place.
     fn paste_indicator(self: &Rc<Self>, mut indicator: Indicator) {
         let pane = self.focused_pane();
         let mut indicators = pane.indicators.borrow().clone();
-        indicator.id = indicators.iter().map(|i| i.id).max().unwrap_or(0) + 1;
-        let id = indicator.id;
-        indicators.push(indicator);
+        let id = crate::ui::chart_settings::there_already(&indicators, indicator.kind)
+            .unwrap_or_else(|| indicators.iter().map(|i| i.id).max().unwrap_or(0) + 1);
+        indicator.id = id;
+        match indicators.iter_mut().find(|i| i.id == id) {
+            Some(slot) => *slot = indicator,
+            None => indicators.push(indicator),
+        }
         self.change_indicators_of(&pane, indicators);
         pane.view.area.grab_focus();
         pane.view.pick_when_shown(id);

@@ -1253,12 +1253,59 @@ impl Ladders for Continuous {
         Ok(minutes)
     }
 
+    /// A stitched root's trades are its front month's, and come from where
+    /// that month's do.
+    fn source(&self, symbol: &str) -> Option<String> {
+        let ladders = self.inner.ladders()?;
+        match Continuous::front_of(symbol) {
+            Some((_, front)) => ladders.source(&front),
+            None => ladders.source(symbol),
+        }
+    }
+
     /// The front month's live ladders: never moved.
     fn watch(&self, symbol: &str, tick_size: f64, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {
         let ladders = self.inner.ladders().ok_or(ProviderError::NotFound)?;
         match Continuous::front_of(symbol) {
             Some((spelled, front)) => Ok(Box::new(follow(self.inner.clone(), spelled, ladders.watch(&front, tick_size, sink)?))),
             None => ladders.watch(symbol, tick_size, sink),
+        }
+    }
+
+    /// A stitched root's single trades are its front month's: an older
+    /// month traded at prices of its own, which no bubble is moved onto.
+    fn has_prints(&self, symbol: &str) -> bool {
+        let Some(ladders) = self.inner.ladders() else { return false };
+        match Continuous::front_of(symbol) {
+            Some((_, front)) => ladders.has_prints(&front),
+            None => ladders.has_prints(symbol),
+        }
+    }
+
+    fn prints(
+        &self,
+        symbol: &str,
+        tick_size: f64,
+        from: i64,
+        to: i64,
+    ) -> Result<Vec<crate::studies::orders::Print>, ProviderError> {
+        let ladders = self.inner.ladders().ok_or(ProviderError::NotFound)?;
+        match Continuous::front_of(symbol) {
+            Some((_, front)) => ladders.prints(&front, tick_size, from, to),
+            None => ladders.prints(symbol, tick_size, from, to),
+        }
+    }
+
+    fn watch_prints(
+        &self,
+        symbol: &str,
+        tick_size: f64,
+        sink: crate::provider::PrintSink,
+    ) -> Result<Option<Box<dyn Subscription>>, ProviderError> {
+        let ladders = self.inner.ladders().ok_or(ProviderError::NotFound)?;
+        match Continuous::front_of(symbol) {
+            Some((_, front)) => ladders.watch_prints(&front, tick_size, sink),
+            None => ladders.watch_prints(symbol, tick_size, sink),
         }
     }
 }

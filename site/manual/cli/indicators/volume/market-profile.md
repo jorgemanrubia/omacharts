@@ -23,7 +23,7 @@ omacharts chart indicator add market_profile --tpo-minutes 30 --row-ticks auto
 |---|---|---|
 | `--anchor P` | `session`, `week`, `month`, `quarter`, `year`; `never` for one running total | VWAP, volume profile, market profile, cumulative delta; `never` only for cumulative delta |
 | `--tpo-minutes N` | 1 to 1440; 30 when not given | Market profile: how long each TPO period is |
-| `--row-ticks N` | `auto`, or ticks to a row, 1 to 10000 | Market profile |
+| `--row-ticks N` | `auto`, or ticks to a row, 1 to 10000 | Market profile, and a [footprint](/manual/cli/indicators/order-flow/footprint/) |
 | `--tpo-style S` | `letters`, `blocks` | Market profile |
 | `--open-close B` | `on`, `off`; on when not given | Market profile: whether it marks its open and its close with an arrow each, beside the TPO at its opening price and the one at its closing price |
 | `--open-color C`, `--close-color C` | A colour, or `none` for the theme's | Market profile |

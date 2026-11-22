@@ -222,7 +222,7 @@ fn indicators() -> Vec<(String, Indicator)> {
         let key = reset.map_or("never", Reset::key);
         out.push((
             format!("cvd:{key}"),
-            with(Kind::Cvd, Params::Cvd { reset, style: cvd::Style::Line, height: 0.2, colouring: None }),
+            with(Kind::Cvd, Params::Cvd { reset, style: cvd::Style::Line, height: 0.2, colouring: None, up_color: None, down_color: None }),
         ));
     }
     out
@@ -303,6 +303,14 @@ fn live() -> BTreeMap<String, String> {
                     let Params::Cvd { reset, .. } = indicator.params else { continue };
                     let delta = memos.with(1, |memo| {
                         cvd::compute(&bars, reset, 79_200, Timeframe::minutes(1), None, Some(memo))
+                    });
+                    let _ = write!(texts.entry(format!("{label}:memo")).or_default(), "{delta:?}");
+                }
+                // The volume delta through the same memos, under an id of
+                // its own, as a chart keeps it.
+                if indicator.kind == Kind::VolumeDelta {
+                    let delta = memos.with(2, |memo| {
+                        cvd::per_bar(&bars, 79_200, Timeframe::minutes(1), None, Some(memo))
                     });
                     let _ = write!(texts.entry(format!("{label}:memo")).or_default(), "{delta:?}");
                 }

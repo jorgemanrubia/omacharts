@@ -108,6 +108,15 @@ the screen either way.
 
 ## Indicators and their parameters
 
+`chart indicator kinds` lists every indicator kind with the flags that set
+it; with `--json`, `{kinds: [{kind, name, category, needs, ownPane, flags,
+defaults}]}`, `needs` being `bars` or `volume at price` and `defaults` its
+settings as `indicator list --json` writes them. `surface --json` carries the
+same list as `indicators`, and each flag of `chart indicator` and `template
+indicator` says the kinds it sets in `appliesTo`. Both are worked out from
+what the command takes, so they cannot disagree with it. A flag given to a
+kind it does not set is refused (exit `2`) naming the kinds it is for.
+
 Every indicator the app has, with every parameter it exposes:
 
 | Indicator | Parameters |
@@ -118,11 +127,24 @@ Every indicator the app has, with every parameter it exposes:
 | `macd` | `--fast`, `--slow`, `--signal`, `--signal-color`, `--signal-transparency`, `--signal-style`, `--height` |
 | `atr` | `--period`, `--height` |
 | `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color`, `--d-transparency`, `--d-style` |
-| `volume` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--opacity` (0 to 1, both bars), `--up-color`, `--down-color`, `--up-transparency`, `--down-transparency` (0 to 1, or `default` to follow `--opacity`) |
-| `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--height` |
+| `volume` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--opacity` (0 to 1, both bars), `--up-color`, `--down-color` (a colour given on a preset makes it `custom`), `--up-transparency`, `--down-transparency` (0 to 1, or `default` to follow `--opacity`) |
+| `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--up-color` and `--down-color` (a colour given on a preset makes it `custom`), `--height` |
+| `volume_delta` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--buy-color` and `--sell-color` (a colour, or `none` to let it go; a colour given on a preset makes it `custom`, the other side kept as drawn), `--buy-transparency` and `--sell-transparency` (0 to 1, or `default` for its own) |
+| `footprint` | `--intensity` (`on` or `off`, on by default: rows filled more solidly the bigger their delta), `--numbers` (`on` or `off`, on by default: each row's delta written in it; off draws the rows alone), `--row-ticks` (ticks to a row, 1 to 10000, or `auto`, the default: the fewest round ticks that make a row about a line of small type tall), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--buy-color` and `--sell-color` (a colour, or `none` to let it go; a colour given on a preset makes it `custom`, the other side kept as drawn), `--buy-transparency` and `--sell-transparency` (0 to 1, or `default` for its own), `--profile` (`on` or `off`, off by default: each bar's volume profile at its left, everything traded at each row's prices), `--profile-color` (a colour, or `default` for the theme's blue), `--profile-transparency` (0 to 1, or `default`), `--profile-numbers` (`on` or `off`, on by default); `list --json` reads the profile back as `params.profile` |
+| `large_orders` | `--rth-threshold` and `--eth-threshold` (the size, in contracts, an order has to be bigger than in and out of regular hours; 50 and 20 by default), `--size-against` (`visible`, `session` or `hours`; `session` by default), `--combine` (`on` or `off`, on by default: prints of one moment and one side are one order), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--buy-color` and `--sell-color` (a colour, or `none` to let it go; a colour given on a preset makes it `custom`, the other side kept as drawn), `--buy-transparency` and `--sell-transparency` (0 to 1, or `default` for its own) |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha`, `--band-transparency` |
 | `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--outline-style`, `--poc-style`, `--transparency` (0 to 1: 0 is its colour solid, 0.7 by default), `--value-area-transparency`, `--outside-transparency`, `--outline-transparency` and `--poc-transparency` (0 to 1, or `default` to follow `--transparency`, or for the point of control its own), `--last-only` (`on` or `off`), `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the rows' own), `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
 | `market_profile` | `--anchor`, `--tpo-minutes` (1 to 1440, 30 by default), `--row-ticks` (ticks to a row, or `auto`), `--tpo-style` (`letters` or `blocks`), `--open-close` (`on` or `off`, on by default: an arrow beside the TPO at the opening price and one beside the TPO at the closing price), `--open-color` and `--close-color` (a colour, or `none` for the theme's), `--open-transparency` and `--close-transparency` (0 to 1, or `default`), `--expand-last` (`on` or `off`, off by default: the newest profile drawn expanded, its TPOs laid out over its bars), `--value-area`, `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the letters' own), `--poc` (`on` or `off`), `--poc-color`, `--poc-width` (2 by default) and `--poc-style` (its point of control is a line across the profile, as a volume profile's), `--outline` (`on` or `off`, off by default: the stepped edge round its TPOs), `--outline-color`, `--outline-width`, `--outline-style`, `--transparency` (0 to 1, 0.05 by default), `--value-area-transparency`, `--outside-transparency`, `--outline-transparency` (solid by default) and `--poc-transparency` (as a volume profile's), `--last-only` (`on` or `off`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1) |
+
+`cvd`, `volume_delta`, `footprint` and `large_orders` are the Order flow
+family, after Volume in the indicator picker. The footprint and large orders
+need a feed with volume at price; on any other they draw only a line saying
+so. The volume delta has no line, nor have the footprint and large orders, so
+they refuse `--color`, `--transparency`, `--width` and `--line-style`.
+
+`chart values --indicator footprint` reads each bar's footprint back as the
+chart draws it, from the same ladders and the same fold into rows, in rows of
+`--row-ticks auto|N`; its schema is under "Reading a chart in numbers".
 
 Anything that draws a line also takes `--color`, `--transparency` (0 to 1:
 how much of the chart shows through the line, 0 solid, which it is unless
@@ -879,7 +901,7 @@ and `--poc-transparency` (0 to 1, or `default` to follow the rows again),
 `--highlight-value-area on|off`, `--value-area-color` (or `none` for its
 rows' own), `--poc on|off`, `--rows` (a number, or `auto`, as the
 study's), `--profile-method total|delta`, `--colouring` (for a delta:
-`default`, `theme`, `theme-soft` or `theme-quiet`) and `--profile-width`
+`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono` or `custom`) and `--profile-width`
 (0.1 to 1, the whole span by default) are the rest. The study's
 `--outline`, `--outline-color`, `--outline-width` and `--outline-style` are
 taken too, as `--border`, `--color`, `--width` and `--line-style`. A delta
@@ -1226,11 +1248,17 @@ once — the charts in every chartbook and the ones made next — the way Apply 
 all charts does in the preferences. One chart on its own is
 `chart set --colouring theme|theme-soft|theme-quiet|theme-mono`, and
 `theme-hollow` or `theme-red-up` from an earlier version is `theme` with the
-switch on for that chart. A volume pane follows the chart's colouring, swapped
-or not, unless given one of its own: `chart indicator set volume --colouring
-theme-soft`, which is painted its own way round whatever the chart's switch
-says, and `--colouring default` (or `chart`) to follow the chart again.
-Monochrome is refused for a volume pane, as for a delta. A hollow rise never
+switch on for that chart. Every study painted in a colouring — a volume pane,
+a volume profile's delta and its drawing, the cumulative delta, the volume
+delta, the footprint and large orders — takes the one `--colouring` value set:
+`default` (or `chart`) paints it as the chart's bars, and `theme`,
+`theme-soft`, `theme-quiet` and `theme-mono` (or `monochrome`) paint it
+exactly as the chart's bars would be in that preset, swapped when the chart's
+bars are. `custom` paints it in colours of its own, each starting at the
+colour it was drawn in; a colour flag given on a preset makes it `custom`,
+and any other `--colouring` lets the custom colours go. In `list --json` the
+colouring reads `custom`, beside the colours. `theme-mono` is one ink for a
+rise and a fall, buying and selling alike. A hollow rise never
 reaches the volume: its bars are solid, with no body to leave open. They are
 the candles' own colours, drawn at `--opacity`, 0 to 1 and 0.85 unless set;
 `--up-transparency` and `--down-transparency` set each apart.
@@ -1489,6 +1517,60 @@ Sessions expire. When one does, charts say so rather than claiming the
 provider is unreachable, `provider status` says `Session expired`, and signing
 in again is the fix. All of this is also in Preferences → Market data →
 Provider, which is the same four facts with a button.
+
+## Reading a chart in numbers
+
+Five commands read a chart on screen back as numbers, for a script or an
+agent: `chart bars` (its last bars, oldest first), `chart values` (each
+indicator's latest values and the levels read off the chart, or each bar's
+readings over a range), `chart stream` (those readings as the market moves
+them), `symbol
+quote` (the last price) and `trading snapshot` (the price, the levels and
+the last bars in a few lines, with a token for asking what changed since).
+`trading wait` waits for a price to be crossed (`--cross`) or a bar to close
+(`--bar-close`), up to `--timeout`, and answers with the snapshot. They read
+what the window holds, so they need one open (exit `6` without), and none of
+them is behind a flag: only trading is. With `agent-trading` on, the snapshot
+also says the chart's account, position and working orders, and a wait also
+wakes on a fill, an order or a position changing, or a price alert;
+`trading watch` and `trading alert` are behind it too.
+
+`chart values` takes `--indicator KIND` and `--id N` (each repeatable;
+neither means every indicator but `session_times`) and, for each bar's
+readings rather than the latest, one of `--last N`, `--from WHEN [--to
+WHEN]` or `--visible`. `--json` writes `{chart, symbol, resolution,
+indicators: [...], levels}`, `levels` only with no range. Each indicator is
+`{id, kind, label, visible, ...}`: with no range its latest (`value`, and
+`signal`, `histogram` or `bands` where it has them; a profile's `poc`, `vah`,
+`val`); with a range `bars: [{time, ...}]` in the field names of the
+omacharts-studies type it reads as (`value`; `line`, `signal`, `histogram`;
+`k`, `d`; `center` and `bands: [{deviations, upper, lower}]`; a delta's
+`open`, `high`, `low`, `close`, `estimated`, `starts`), or `profiles: [{from,
+to, poc, vah, val, ...}]` for a volume or market profile. A footprint adds
+`tick_size`, `row_ticks` and `bars: [{time, open, high, low, close, volume,
+delta, poc, rows: [{low, high, at_bid, at_ask, delta, total, trades}]}]`
+(the newest bar alone with no range; `rows` lowest first; `delta` is
+`at_ask` less `at_bid`; `total` includes trades with no known side; `poc`
+is the low of the most traded row). Large orders give `orders: [{time,
+time_ns, price, size, side, fills, regular}]`, `null` until the trades have
+been read. Something the feed cannot compute has `unmet`. An id or kind the
+chart has not got exits `3`.
+
+`chart stream` takes the same `--indicator`, `--id`, `--footprint` and
+`--row-ticks`, and writes JSON lines, each flushed as it is written:
+`{ev: "snapshot", chart, symbol, resolution, bar, indicators}` first, then
+`{ev: "update", bar, indicators}` when the newest bar changes, at most every
+`--every MS` (default 250, `0` every change), and `{ev: "close", bar,
+indicators}` with each bar's final readings as the next begins, never held
+back. `bar` is `[time, open, high, low, close, volume]`; each indicator is
+its entry in a one-bar `chart values --last 1`, without `time`. Another
+symbol or resolution starts over with a snapshot; `{ev: "closed"}` when the
+window goes and `{ev: "gone"}` when the chart does end it. It stops after
+`--count N` updates and closes or `--for SECONDS`, and as soon as its reader
+goes: the window watches the caller's name on the session bus (the caller
+passes it in a hidden `--caller`), and the caller exits `0` once its stdout
+pipe is closed. It reads the drawn indicators, never redraws, and is not
+behind a flag.
 
 ## Trading from a terminal
 

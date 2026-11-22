@@ -24,6 +24,46 @@
 //! **Nothing allocates after construction.** A study's windows are sized
 //! when it is made; `step` and `peek` only read and write them.
 //!
+//! # Readings
+//!
+//! Each indicator in [`INDICATORS`] reads, a bar at a time, as one of this
+//! crate's types, and the chart draws exactly that reading:
+//!
+//! | indicator | a bar's reading |
+//! | --- | --- |
+//! | `sma`, `ema`, `rsi`, `atr`, `volume` | `f64` ([`Sma`], [`Ema`], [`Rsi`], [`Atr`], [`Volume`]) |
+//! | `macd` | [`MacdValue`] `{ line, signal, histogram }` |
+//! | `stochastic` | [`StochasticValue`] `{ k, d }` |
+//! | `vwap`, `bollinger` | [`Spread`] `{ center, deviation }`, a band `k` out at [`Spread::upper`] and [`Spread::lower`] |
+//! | `cvd`, `volume_delta` | [`DeltaBar`] `{ open, high, low, close, estimated, starts }`: [`CvdEstimate`] and [`BarDeltaEstimate`] from bars, [`VolumeDelta`] from volume at price |
+//! | `volume_profile` | [`volume_profile::Profile`], a whole period's |
+//! | `market_profile` | [`ProfileReading`] `{ poc, vah, val }`, so far: [`DevelopingMarketProfile`] |
+//! | `footprint` | [`footprint::BarFootprint`], a bar's rows of [`footprint::Sides`] |
+//! | `large_orders` | [`orders::Placed`] in an [`orders::Book`], from [`orders::Builder`] |
+//! | `session_times` | none: a calendar |
+//!
+//! Live, a study is pushed each bar as it closes ([`Study::step`]) and
+//! asked about the bar still forming on every print ([`Study::peek`]),
+//! which changes nothing; stepping that bar once it closes answers what the
+//! last peek did, to the bit.
+//!
+//! ```
+//! use omacharts_studies::{Bar, Macd, Study};
+//!
+//! let mut macd = Macd::new(12, 26, 9);
+//! let closed = (0..40).map(|i| {
+//!     let close = 100.0 + (i as f64 * 0.7).sin();
+//!     Bar { ts: i * 60, open: close, high: close + 0.5, low: close - 0.5, close, volume: 10.0 }
+//! });
+//! for bar in closed {
+//!     macd.step(&bar, false);
+//! }
+//! let forming = Bar { ts: 40 * 60, open: 100.0, high: 101.0, low: 99.5, close: 100.8, volume: 3.0 };
+//! let now = macd.peek(&forming, false).expect("warmed up");
+//! assert_eq!(macd.step(&forming, false), Some(now));
+//! println!("line {} signal {:?} histogram {:?}", now.line, now.signal, now.histogram);
+//! ```
+//!
 //! The crate has no dependencies and no `unsafe`.
 
 #![forbid(unsafe_code)]
@@ -35,18 +75,22 @@ pub mod average;
 pub mod catalog;
 pub mod bollinger;
 pub mod cvd;
+pub mod footprint;
 pub mod market_profile;
 pub mod oscillators;
+pub mod orders;
 pub mod series;
 pub mod volume;
+pub mod volume_profile;
 pub mod vwap;
 
 pub use at_price::{AtPrice, AtPriceStudy, DeltaReading, DevelopingProfile, ProfileReading, VolumeDelta};
 pub use average::{Ema, EmaOf, Sma};
 pub use bollinger::Bollinger;
-pub use cvd::CvdEstimate;
+pub use cvd::{BarDeltaEstimate, CvdEstimate, DeltaBar};
 pub use catalog::{Form, AT_PRICE, DEVELOPING, INDICATORS};
 pub use market_profile::DevelopingMarketProfile;
+pub use orders::{Aggressor, Combiner, Order, Print, Thresholds};
 pub use oscillators::{Atr, Macd, MacdValue, Rsi, Smoothing, Stochastic, StochasticValue};
 pub use volume::Volume;
 pub use vwap::{Source, Spread, Vwap};

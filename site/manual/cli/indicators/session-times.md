@@ -3,7 +3,7 @@ title: "Session times"
 description: "Shading the extended hours, the regular session and hours of your own, from the CLI."
 section: agents
 parent: cli/indicators
-nav_order: 4
+nav_order: 5
 ---
 
 `session_times` is [Session Times](/manual/indicators/session-times/), a
