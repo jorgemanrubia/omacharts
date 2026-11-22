@@ -28,6 +28,7 @@ mod footprint;
 mod market;
 mod pulse;
 mod selection;
+mod zoom_box;
 pub use executions::{ExecutionMark, Executions, TripLine};
 pub use compare::{CompareLine, Comparing, Reading, Readout};
 pub use selection::ProfileSpot;
@@ -453,6 +454,12 @@ struct State {
     /// The ruler lives only on the pointer layer; its tuple is start, end, finished.
     ruler_armed: bool,
     ruler: Option<(Anchor, Anchor, bool)>,
+    /// The zoom tool is in hand: the next drag on the price plot is a box
+    /// the view is laid over. Put down once it has zoomed, as the ruler is.
+    zoom_armed: bool,
+    /// Where the chart was looking before each zoom, the latest last: what
+    /// stepping back returns to. See [`zoom_box`].
+    zoom_memory: Vec<Viewport>,
     /// A drawing with its first anchor down and its second following the
     /// pointer. Drawn on the pointer layer, since it moves with the hand;
     /// committed to `drawings` on the second press or at the end of a drag.
@@ -578,6 +585,9 @@ enum Drag {
     /// Shift and a press on empty chart: a box dragged out from `from`,
     /// in pixels, that selects every drawing it touches as it goes.
     Marquee { from: (f64, f64), to: (f64, f64) },
+    /// The zoom tool's box, dragged out from `from`, in pixels: the view is
+    /// laid over it when the hand lets go.
+    Zoom { from: (f64, f64), to: (f64, f64) },
     /// A mark's tab pulled out, or a mark's line taken to another price:
     /// `at` is where the hand has it, on the tick, and `allowed` whether
     /// the mark's rules let it go there. Only a preview until the release;
@@ -820,6 +830,14 @@ struct Columns<'a> {
     /// Where the plot ends on the right: past the last bar by whatever room
     /// is open after it, or at its end when there is none.
     end: f64,
+    /// One past the series' last bar, on screen or not: what the session
+    /// still forming ends at.
+    live: usize,
+    /// Where the plot's right edge stands with the view at rest at the live
+    /// edge, wherever the view is now: the end of the room the right-aligned
+    /// profiles' live sessions are drawn in, which moves with the bars when
+    /// they are scrolled, off the right of the plot and out of view.
+    margin_end: f64,
     /// The visible bars the columns were made from.
     slice: &'a [Bar],
     /// Bars to a group: the fewest that make half a pixel.
@@ -858,6 +876,8 @@ impl<'a> Columns<'a> {
             bar_px,
             start: plot_x,
             end: plot_x + plot_w.max(1.0),
+            live: first + visible,
+            margin_end: plot_x + plot_w.max(1.0),
             slice: bars,
             per,
             groups: 0..=0,
@@ -1077,8 +1097,21 @@ impl<'a> Columns<'a> {
     /// The empty space past the last bar on screen, in pixels: where the
     /// series ends short of the plot's right edge. Nothing with the bars
     /// running to the edge, or off it.
+    #[cfg(test)]
     fn room_after(&self) -> f64 {
         (self.end - self.left_of(self.first + self.visible)).max(0.0)
+    }
+
+    /// The room past the series' last bar the right-aligned profiles' live
+    /// sessions are drawn in: where it ends, and how wide it is. At rest at
+    /// the live edge it is the empty space past the last bar, to the plot's
+    /// right edge; scrolled back it is the same room where it was, carried
+    /// right with the bars, so what is drawn in it keeps its place beside
+    /// them and its width rather than being squeezed into what is left.
+    fn margin(&self) -> (f64, f64) {
+        let from = self.left_of(self.live);
+        let end = self.margin_end.max(from);
+        (end, (end - from).max(0.0))
     }
 }
 
@@ -1560,6 +1593,8 @@ impl State {
             placing: None,
             ruler_armed: false,
             ruler: None,
+            zoom_armed: false,
+            zoom_memory: Vec::new(),
             next_config: 1,
             configs: Configurations::default(),
             sends: true,
@@ -2673,6 +2708,21 @@ impl State {
         }
     }
 
+    /// The empty columns past the last bar with the view at rest at the live
+    /// edge, wherever it is now: the resting margin with the profiles' room
+    /// on top, or what is there now while it is at rest.
+    fn resting_overhang(&self) -> usize {
+        let columns = self.columns();
+        if columns == 0 {
+            return 0;
+        }
+        let rest = match self.anchored && !self.overhang_by_hand {
+            true => self.overhang_now(),
+            false => RIGHT_MARGIN + self.margin_floor(),
+        };
+        rest.min(columns - 1)
+    }
+
     /// How many empty columns `OVERHANG_PX` is at this zoom — short of the
     /// whole view, so a bar always stays on screen.
     fn max_overhang(&self, plot_w: f64) -> usize {
@@ -2794,6 +2844,7 @@ impl State {
     /// Back to fitting the data, at the live edge, with the resting margin
     /// past it: the price and every strip.
     fn reset_view(&mut self) {
+        self.forget_zooms();
         self.range = None;
         self.free_price();
         self.free_strips();
@@ -2846,6 +2897,9 @@ impl State {
             // A measured range belongs to the series it was measured on.
             self.ruler = None;
             self.ruler_armed = false;
+            // And a view kept to go back to was a view of that series.
+            self.zoom_armed = false;
+            self.forget_zooms();
             self.anchored = true;
             self.overhang = RIGHT_MARGIN;
             self.overhang_by_hand = false;
@@ -3559,6 +3613,10 @@ impl ChartView {
             }
             state.ruler_armed = false;
             state.ruler = None;
+            state.zoom_armed = false;
+            if matches!(state.drag, Some(Drag::Zoom { .. })) {
+                state.drag = None;
+            }
             state.tool = kind;
             state.placing = None;
             if kind.is_some() {
@@ -3584,10 +3642,16 @@ impl ChartView {
     /// pointer. The tool belongs to the window, not to one chart: picking
     /// the line and then clicking into the chart beside draws a line there.
     pub fn hand_over(&self, to: &ChartView) {
-        let (kind, sticky, next, ruler) = {
+        let (kind, sticky, next, ruler, zoom) = {
             let state = self.state.borrow();
-            (state.tool, state.sticky, state.next_config, state.ruler_armed)
+            (state.tool, state.sticky, state.next_config, state.ruler_armed, state.zoom_armed)
         };
+        if zoom {
+            self.arm(None);
+            to.arm_zoom();
+            to.tool_changed();
+            return;
+        }
         if ruler {
             self.arm(None);
             to.arm_ruler();
@@ -3616,6 +3680,78 @@ impl ChartView {
 
     pub fn ruler_armed(&self) -> bool {
         self.state.borrow().ruler_armed
+    }
+
+    /// Pick up the zoom tool: the next drag on the price plot is a box the
+    /// view is laid over, and then the tool is put down again.
+    pub fn arm_zoom(&self) {
+        self.arm(None);
+        {
+            let mut state = self.state.borrow_mut();
+            state.zoom_armed = true;
+            state.selected.clear();
+            state.drag = None;
+        }
+        self.area.set_cursor_from_name(Some("crosshair"));
+        self.redraw();
+    }
+
+    pub fn zoom_armed(&self) -> bool {
+        self.state.borrow().zoom_armed
+    }
+
+    /// Show the bars from `from` to `to`, both whole, and hold the price
+    /// scale at `prices`, bottom and top, when given: the zoom tool's box,
+    /// asked for by moments and prices rather than drawn. Remembered to step
+    /// back from, as a box is. False with no bars to show.
+    pub fn zoom_to_span(&self, from: i64, to: i64, prices: Option<(f64, f64)>) -> bool {
+        let zoomed = {
+            let mut state = self.state.borrow_mut();
+            let window = state.zoom_span(from, to, prices);
+            window.is_some_and(|window| state.zoom_to(window))
+        };
+        if zoomed {
+            self.redraw();
+        }
+        zoomed
+    }
+
+    /// Back to where the chart was looking before its last zoom. False when
+    /// there is none to go back from, and nothing changes.
+    pub fn zoom_back(&self) -> bool {
+        let back = self.state.borrow_mut().zoom_back();
+        if back {
+            self.redraw();
+        }
+        back
+    }
+
+    /// How many zooms the chart can step back through.
+    pub fn zooms_back(&self) -> usize {
+        self.state.borrow().zooms_back()
+    }
+
+    /// The first and last moments in view and the prices on the axis, bottom
+    /// and top: what a zoom left on screen, for saying so.
+    pub fn view_span(&self) -> Option<(i64, i64, f64, f64)> {
+        let state = self.state.borrow();
+        if state.bars.is_empty() {
+            return None;
+        }
+        let left = state.left_edge() as f64;
+        let right = left + state.columns() as f64 - 1.0;
+        let (from, to) = (ts_at(&state.bars, left), ts_at(&state.bars, right));
+        let (low, high) = match state.held_window() {
+            Some(held) => held,
+            None => {
+                let (first, visible) = state.slice();
+                let plan = layout(&state, self.area.width() as f64, self.area.height() as f64);
+                let scale = price_range(&state, &state.bars[first..first + visible], &plan)?;
+                let price = |value: f64| if scale.log { value.exp() } else { value };
+                (price(scale.low), price(scale.high))
+            }
+        };
+        Some((from, to, low, high))
     }
 
     pub fn measure(
@@ -3663,14 +3799,17 @@ impl ChartView {
         let busy = {
             let mut s = self.state.borrow_mut();
             let busy = s.ruler_armed
+                || s.zoom_armed
                 || s.ruler.is_some()
                 || s.tool.is_some()
                 || s.placing.is_some()
                 || !s.selected.is_empty();
             s.selected.clear();
             // The drag the gesture is still in ends with nothing to commit.
-            if matches!(s.drag, Some(Drag::Place { .. })) {
+            // A zoom box the same: dropped, and the view left as it was.
+            if matches!(s.drag, Some(Drag::Place { .. } | Drag::Zoom { .. })) {
                 s.drag = None;
+                self.pointer.queue_draw();
             }
             // A mark being dragged goes back where it was, unsaid.
             let dragging = matches!(s.drag, Some(Drag::Mark { .. }));
@@ -5854,7 +5993,7 @@ impl ChartView {
             let (armed, over_drawing, over_indicator, holding, over_mark) = {
                 let mut s = state.borrow_mut();
                 let (w, h) = (area.width() as f64, area.height() as f64);
-                let free = s.drag.is_none() && s.tool.is_none() && !s.ruler_armed;
+                let free = s.drag.is_none() && s.tool.is_none() && !s.ruler_armed && !s.zoom_armed;
                 // A mark's handle under the hand is lit; its line is only
                 // said by the cursor.
                 let over_mark = match free && !over_edge && !over_control {
@@ -5898,7 +6037,7 @@ impl ChartView {
                     _ => None,
                 };
                 (
-                    s.tool.is_some() || s.ruler_armed,
+                    s.tool.is_some() || s.ruler_armed || s.zoom_armed,
                     over.map(|(index, grip)| s.grip_cursor(index, grip, false)),
                     indicator,
                     holding,
@@ -6175,6 +6314,13 @@ impl ChartView {
             let mut s = state.borrow_mut();
             if s.ruler_armed && let Some(anchor) = s.ruler_anchor(width, height, x, y) {
                 s.ruler_click(anchor);
+                pointer.queue_draw();
+                return;
+            }
+            // The zoom tool's box starts where the ruler would: on the price
+            // plot, and nowhere else.
+            if s.zoom_armed && s.ruler_anchor(width, height, x, y).is_some() {
+                s.drag = Some(Drag::Zoom { from: (x, y), to: (x, y) });
                 pointer.queue_draw();
                 return;
             }
@@ -6526,6 +6672,13 @@ impl ChartView {
                     pointer.queue_draw();
                     return;
                 }
+                Drag::Zoom { from, .. } => {
+                    let Some(to) = hand else { return };
+                    s.drag = Some(Drag::Zoom { from, to });
+                    drop(s);
+                    pointer.queue_draw();
+                    return;
+                }
                 Drag::Marquee { from, .. } => {
                     let Some((x, y)) = hand else { return };
                     s.drag = Some(Drag::Marquee { from, to: (x, y) });
@@ -6692,7 +6845,7 @@ impl ChartView {
                     s.keep_room_on_screen();
                     s.trim_room(plot_w);
                 }
-                Drag::Place { .. } | Drag::Grip { .. } | Drag::Marquee { .. } | Drag::Mark { .. } => {
+                Drag::Place { .. } | Drag::Grip { .. } | Drag::Marquee { .. } | Drag::Zoom { .. } | Drag::Mark { .. } => {
                     unreachable!("handled above")
                 }
             }
@@ -6736,6 +6889,31 @@ impl ChartView {
                 // Pressed and released in place: the first anchor is down
                 // and the second waits for the next press.
                 Some(Drag::Place { moved: false }) => return,
+                // Let go: the view laid over the box, and the tool put down.
+                // A box too small to be one leaves the tool in hand for
+                // another go; Escape is the way to put it down.
+                Some(Drag::Zoom { from, to }) => {
+                    let Some(view) = view.upgrade() else { return };
+                    view.pointer.queue_draw();
+                    let (width, height) = (view.area.width() as f64, view.area.height() as f64);
+                    let was = state.borrow().scales();
+                    let zoomed = {
+                        let mut s = state.borrow_mut();
+                        let window = s.zoom_box(width, height, from, to, drag_threshold());
+                        let zoomed = window.is_some_and(|window| s.zoom_to(window));
+                        if zoomed {
+                            s.zoom_armed = false;
+                        }
+                        zoomed
+                    };
+                    if zoomed {
+                        view.area.set_cursor_from_name(Some("default"));
+                        view.redraw();
+                        notify_price_auto(&state, &on_price_auto, was);
+                        view.tool_changed();
+                    }
+                    return;
+                }
                 // The box is gone with the drag; what it took stays taken.
                 Some(Drag::Marquee { .. }) => {
                     state.borrow_mut().marquee_base.clear();
@@ -6830,7 +7008,7 @@ impl ChartView {
         let on_price_auto = self.on_price_auto.clone();
         let view = Rc::downgrade(self);
         click.connect_pressed(move |_, presses, x, y| {
-            if presses < 2 || state.borrow().ruler_armed {
+            if presses < 2 || state.borrow().ruler_armed || state.borrow().zoom_armed {
                 return;
             }
             // The press that made this a double-click already ended a
@@ -7083,6 +7261,9 @@ fn frame(state: &State, width: f64, height: f64) -> Option<Frame<'_>> {
     let bars_x = plan.plot_x + lead as f64 * column_w;
     let mut columns = Columns::of(bars, first, visible, bars_x, column_w * visible as f64);
     columns.end = plan.plot_x + plan.plot_w;
+    columns.live = state.bars.len();
+    let resting = columns.left_of(columns.live) + state.resting_overhang() as f64 * column_w;
+    columns.margin_end = resting.max(columns.end);
 
     let max_volume = columns.bars.iter().fold(0.0_f64, |most, b| most.max(b.volume));
     // Off the real bars rather than the columns. The two agree, because a
@@ -7343,8 +7524,10 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         draw_mark_preview(cr, state, &plan, width, what, *at, *allowed, &to_y);
     }
 
-    // The selection box, while a hand drags one out.
-    if let Some(Drag::Marquee { from, to }) = state.drag {
+    // The selection box, while a hand drags one out, and the zoom tool's,
+    // which is drawn the same: both are a stretch of the chart being
+    // chosen, and neither is a drawing.
+    if let Some(Drag::Marquee { from, to } | Drag::Zoom { from, to }) = state.drag {
         let (x, y) = (from.0.min(to.0), from.1.min(to.1));
         let (w, h) = ((from.0 - to.0).abs(), (from.1 - to.1).abs());
         cr.save().ok();
@@ -9112,7 +9295,7 @@ impl State {
     /// `width` by `height`: nothing at all while a tool or the ruler is in
     /// hand, which the press belongs to.
     fn mark_under(&self, width: f64, height: f64, x: f64, y: f64) -> Option<MarkHit> {
-        if self.marks.is_empty() || self.tool.is_some() || self.ruler_armed {
+        if self.marks.is_empty() || self.tool.is_some() || self.ruler_armed || self.zoom_armed {
             return None;
         }
         let (first, visible, _) = self.view();

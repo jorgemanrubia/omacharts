@@ -425,9 +425,8 @@ pub(super) fn placed_box(
     partner: Option<&Drawn>,
 ) -> Option<ProfileBox> {
     if partner.is_some_and(|partner| expands_session(partner, profile)) {
-        let live = profile.last_bar + 1 == state.bars.len()
-            && profile.last_bar + 1 == columns.first + columns.visible;
-        let room = columns.room_after();
+        let live = profile.last_bar + 1 == state.bars.len() && profile.last_bar + 1 == columns.live;
+        let (end, room) = columns.margin();
         if !live || room < PROFILE_ROOM_MIN {
             return None;
         }
@@ -440,12 +439,8 @@ pub(super) fn placed_box(
             spine: false,
             ..*look
         };
-        let (edge, span) = in_margin(columns, room, &alone);
-        return Some(ProfileBox {
-            edge,
-            span,
-            towards: -1.0,
-        });
+        let (edge, span) = in_margin(columns, end, room, &alone);
+        return in_view(columns, ProfileBox { edge, span, towards: -1.0 });
     }
     let area = profile_box(profile, columns, look);
     (area.span > 0.0).then_some(area)
@@ -554,7 +549,8 @@ pub(super) const PROFILE_ROOM_MIN: f64 = 48.0;
 /// the period still forming at the live edge, aligned right: that one is
 /// drawn back from the plot's right edge across the empty space past the
 /// last bar, so it describes the session without sitting on the bars it is
-/// about. Past periods keep the end of their own, which is where the next
+/// about. Scrolled back, it stays in that space, which moves right with the
+/// bars, and leaves the plot when the space does. Past periods keep the end of their own, which is where the next
 /// one starts: the profiles read as a row of them, each beside the session
 /// it describes.
 ///
@@ -562,9 +558,21 @@ pub(super) const PROFILE_ROOM_MIN: f64 = 48.0;
 /// the legend lists them, each in a slot as wide as its width says, all of
 /// them squeezed alike when their widths come to more than the room.
 pub(super) fn profile_box(profile: &Profile, columns: &Columns, look: &ProfileLook) -> ProfileBox {
+    const NONE: ProfileBox = ProfileBox { edge: 0.0, span: 0.0, towards: 1.0 };
+    // The session still forming, aligned right, is drawn in the margin past
+    // the series' last bar, and stays there as the view is scrolled back:
+    // carried right with the bars and out of view, as wide as it was, never
+    // moved onto its own bars to be stretched across what is left.
+    if look.align == Align::Right && !look.spine && profile.last_bar + 1 == columns.live {
+        let (end, room) = columns.margin();
+        if room >= PROFILE_ROOM_MIN {
+            let (edge, span) = in_margin(columns, end, room, look);
+            return in_view(columns, ProfileBox { edge, span, towards: -1.0 }).unwrap_or(NONE);
+        }
+    }
     let (first, last) = (columns.first, columns.first + columns.visible);
     if profile.last_bar < first || profile.first_bar >= last {
-        return ProfileBox { edge: 0.0, span: 0.0, towards: 1.0 };
+        return NONE;
     }
     let from = profile.first_bar.max(first);
     let to = profile.last_bar.min(last - 1) + 1;
@@ -574,17 +582,16 @@ pub(super) fn profile_box(profile: &Profile, columns: &Columns, look: &ProfileLo
     let span = share * look.width;
     match look.align {
         Align::Left => ProfileBox { edge: columns.left_of(from) + share * look.before, span, towards: 1.0 },
-        Align::Right => {
-            let room = columns.room_after();
-            match !look.spine && profile.last_bar + 1 == last && room >= PROFILE_ROOM_MIN {
-                true => {
-                    let (edge, span) = in_margin(columns, room, look);
-                    ProfileBox { edge, span, towards: -1.0 }
-                }
-                false => ProfileBox { edge: columns.left_of(from) + width - share * look.after, span, towards: -1.0 },
-            }
-        }
+        Align::Right => ProfileBox { edge: columns.left_of(from) + width - share * look.after, span, towards: -1.0 },
     }
+}
+
+/// A box drawn in the margin past the last bar, while any of it is left of
+/// the plot's right edge; nothing once the view is scrolled far enough back
+/// to leave it all off screen.
+fn in_view(columns: &Columns, area: ProfileBox) -> Option<ProfileBox> {
+    let (from, _) = area.row(1.0);
+    (area.span > 0.0 && from < columns.end).then_some(area)
 }
 
 /// Where in the empty space past the last bar a right-aligned profile's
@@ -594,10 +601,10 @@ pub(super) fn profile_box(profile: &Profile, columns: &Columns, look: &ProfileLo
 /// there, a gap between each two. A slot is its width's share of a
 /// profile's room at 100%, [`SLOT_SHARE`] of the plot, whatever room is
 /// open: whatever there is past what they take is empty, between the last
-/// bar and the first of them, as it would be with none there. Squeezed by a
-/// hand into less than they take, they keep a gap off the last bar and are
+/// bar and the first of them, as it would be with none there. In less room
+/// than they take, they keep a gap off the last bar and are
 /// narrowed alike until they fit.
-fn in_margin(columns: &Columns, room: f64, look: &ProfileLook) -> (f64, f64) {
+fn in_margin(columns: &Columns, end: f64, room: f64, look: &ProfileLook) -> (f64, f64) {
     let plot_w = (columns.end - columns.plot_x).max(1.0);
     let gap = plot_w * SLOT_GAP_SHARE;
     let total = look.total.max(f64::EPSILON);
@@ -605,7 +612,7 @@ fn in_margin(columns: &Columns, room: f64, look: &ProfileLook) -> (f64, f64) {
     let block = taken.min((room - gap).max(room * 0.5));
     let between = gap * look.count.saturating_sub(1) as f64;
     let unit = (block - between).max(block * 0.5) / total;
-    let edge = columns.end - unit * look.after - gap * look.later as f64;
+    let edge = end - unit * look.after - gap * look.later as f64;
     (edge, unit * look.width)
 }
 
@@ -1127,21 +1134,19 @@ mod tests {
         }
     }
 
+    /// With the room past the last bar taken back by a hand, the live
+    /// session's profile is not moved onto its own bars to fit: it stays in
+    /// the margin, carried off the plot's right edge with it.
     #[test]
-    fn with_no_room_past_the_last_bar_the_live_session_keeps_its_own_end() {
+    fn with_no_room_past_the_last_bar_the_live_session_is_off_the_plot() {
         let mut state = profiled(profile::Align::Right, 0.4);
-        state.overhang = 0;
-        state.overhang_by_hand = true;
-        let all = boxes(&state);
-        let (_, area, start, end) = all.last().expect("the live session");
-        assert_eq!(area.edge, *end);
-        assert!((area.span - (end - start) * 0.4).abs() < 1e-9);
-
-        // Room for only a sliver is no room either.
-        state.overhang = 1;
-        let (_, area, _, end) = boxes(&state).pop().expect("the live session");
-        assert!(frame(&state, W, H).unwrap().columns.room_after() < PROFILE_ROOM_MIN);
-        assert_eq!(area.edge, end);
+        for overhang in [0, 1] {
+            state.overhang = overhang;
+            state.overhang_by_hand = true;
+            assert!(frame(&state, W, H).unwrap().columns.room_after() < PROFILE_ROOM_MIN);
+            let (_, area, _, end) = boxes(&state).pop().expect("the live session");
+            assert!(area.span == 0.0 || area.row(1.0).0 >= end, "{overhang}: {area:?}, its bars end at {end}");
+        }
     }
 
     #[test]
@@ -1314,16 +1319,17 @@ mod tests {
     }
 
     /// Past the last bar on screen: the empty room before the first
-    /// profile there, what the profiles take from there to the price axis,
+    /// profile there, what the profiles take from there to the end of the last,
     /// and a bar's width. All of it is empty room with none.
     fn margin_px(state: &State) -> (f64, f64, f64) {
         let frame = frame(state, W, H).expect("a frame");
         let bar = (frame.columns.end - frame.columns.plot_x) / state.columns() as f64;
         let room = frame.columns.room_after();
         let first = period_boxes(state, state.bars.len()).into_iter().map(|(from, _)| from).reduce(f64::min);
-        match first {
-            None => (room, 0.0, bar),
-            Some(from) => (from - last_bar_end(state), frame.columns.end - from, bar),
+        let to = period_boxes(state, state.bars.len()).into_iter().map(|(_, to)| to).reduce(f64::max);
+        match (first, to) {
+            (Some(from), Some(to)) => (from - last_bar_end(state), to - from, bar),
+            _ => (room, 0.0, bar),
         }
     }
 
@@ -1735,8 +1741,11 @@ mod tests {
                     let last = last_bar_end(&state);
                     let boxes = study_boxes(&state, live);
                     match (tpo_edge, vp_edge) {
+                        // With the room past the last bar narrowed by a
+                        // hand, carried as far right with it, some of it
+                        // off the plot.
                         (Right, Right) => assert!(
-                            boxes.iter().all(|((from, _), _)| *from >= last - 1e-9),
+                            boxes.iter().all(|((from, to), _)| from == to || *from >= last - 1e-9),
                             "past the last bar: {case}"
                         ),
                         _ => assert!(
@@ -1999,5 +2008,127 @@ mod tests {
         let (from, to) = area.row(1.0);
         assert_eq!(state.indicator_at(W, H, (from + to) / 2.0, y), Some(1));
         assert_eq!(state.indicator_at(W, H, from - 30.0, y), None, "left of it, over the last bars");
+    }
+
+    /// 2000 hourly bars, 300 columns across, at rest at the live edge, with
+    /// a session profile of `kind` for each of `looks`, in the last period
+    /// only when `last_only` says.
+    fn scrollable(kind: Kind, looks: &[profile::Align], last_only: bool) -> State {
+        let mut state = long_with(&[]);
+        state.indicators = looks
+            .iter()
+            .enumerate()
+            .map(|(i, &align)| {
+                let mut indicator = Indicator::new(i as u32 + 1, kind);
+                match &mut indicator.params {
+                    omacharts_engine::Params::VolumeProfile { align: a, width, last_only: l, .. } => {
+                        *a = align;
+                        *width = 0.6;
+                        *l = last_only;
+                    }
+                    omacharts_engine::Params::MarketProfile { align: a, width, .. } => {
+                        *a = align;
+                        *width = 0.6;
+                    }
+                    _ => unreachable!(),
+                }
+                let output = omacharts_engine::indicators::compute(&indicator, &state.bars, 0, state.timeframe, None);
+                Drawn { indicator, output, color: "#5588ff".to_string() }
+            })
+            .collect();
+        state
+    }
+
+    /// The profiles of the session at `period` (clamped to the newest), as
+    /// laid out for drawing and picking: their boxes, in legend order, and
+    /// a bar's width.
+    fn laid_out(state: &State, period: usize) -> (Vec<ProfileBox>, f64) {
+        let frame = frame(state, W, H).expect("a frame");
+        let boxes = state
+            .indicators
+            .iter()
+            .map(|drawn| {
+                let profile = match &drawn.output {
+                    Output::Profiles(profiles) => profiles[period.min(profiles.len() - 1)].clone(),
+                    Output::MarketProfiles(markets) => markets[period.min(markets.len() - 1)].profile.clone(),
+                    _ => panic!("profiles"),
+                };
+                profile_box(&profile, &frame.columns, &super::placed_look(state, drawn))
+            })
+            .collect();
+        (boxes, frame.columns.bar_px)
+    }
+
+    fn scroll(state: &mut State, bars: f64) {
+        let plot_w = frame(state, W, H).expect("a frame").plan.plot_w;
+        state.pan_by(bars, plot_w);
+    }
+
+    /// Two right-aligned profiles of the last period only, and the same
+    /// with every period and as market profiles: scrolled back, the live
+    /// session's profiles stay in the margin past the last bar, carried
+    /// right with the bars by as far as they are, as wide as they were,
+    /// and drop out once that margin is off the plot. They never move onto
+    /// their own bars, to be stretched across the plot.
+    #[test]
+    fn scrolled_back_the_live_profiles_in_the_margin_move_with_the_bars() {
+        use profile::Align::Right;
+        let cases = [
+            ("last period only", Kind::VolumeProfile, true),
+            ("every period", Kind::VolumeProfile, false),
+            ("market profiles", Kind::MarketProfile, false),
+        ];
+        for (what, kind, last_only) in cases {
+            let build = || scrollable(kind, &[Right, Right], last_only);
+            let mut state = build();
+            let live = usize::MAX;
+            let end = frame(&state, W, H).expect("a frame").columns.end;
+            let (rest, bar) = laid_out(&state, live);
+            assert!(rest.iter().all(|area| area.span > 0.0 && area.edge <= end + 1e-9), "{what}: {rest:?}");
+            assert!((rest[1].edge - end).abs() < 1e-9, "{what}: the last against the axis at rest");
+            for n in [1usize, 5, 12] {
+                let mut moved = build();
+                scroll(&mut moved, -(n as f64));
+                let (now, now_bar) = laid_out(&moved, live);
+                assert!((now_bar - bar).abs() < 1e-9, "{what}: the zoom is untouched");
+                for (was, is) in rest.iter().zip(&now) {
+                    assert!((is.span - was.span).abs() < 1e-9, "{what}, {n} back: {} wide, was {}", is.span, was.span);
+                    let shift = is.edge - was.edge;
+                    assert!((shift - n as f64 * bar).abs() < 1e-6, "{what}, {n} back: moved {shift}, the bars {}", n as f64 * bar);
+                }
+            }
+            // Far enough back that the margin is past the plot's right edge.
+            scroll(&mut state, -100.0);
+            let (gone, _) = laid_out(&state, live);
+            assert!(gone.iter().all(|area| area.span == 0.0), "{what}: off screen, {gone:?}");
+        }
+    }
+
+    /// Aligned left, a live session is on its own bars, and past sessions
+    /// at either edge are on theirs: scrolled back, each is moved as far as
+    /// the bars are and keeps its width, as it always was.
+    #[test]
+    fn scrolled_back_profiles_on_their_own_bars_move_with_them() {
+        use profile::Align::{Left, Right};
+        for (align, last_only) in [(Left, true), (Left, false), (Right, false)] {
+            let build = || scrollable(Kind::VolumeProfile, &[align], last_only);
+            let state = build();
+            let Output::Profiles(profiles) = &state.indicators[0].output else { panic!("profiles") };
+            let count = profiles.len();
+            // The newest whole session, and for a left-aligned profile the live one.
+            let periods: Vec<usize> = match (align, last_only) {
+                (Left, true) => vec![usize::MAX],
+                (Left, false) => vec![count - 2, count - 1],
+                (Right, _) => vec![count - 2],
+            };
+            for period in periods {
+                let (rest, bar) = laid_out(&state, period);
+                let mut moved = build();
+                scroll(&mut moved, -3.0);
+                let (now, _) = laid_out(&moved, period);
+                assert!((now[0].span - rest[0].span).abs() < 1e-6, "{align:?} {period}: {rest:?} {now:?}");
+                assert!((now[0].edge - rest[0].edge - 3.0 * bar).abs() < 1e-6, "{align:?} {period}: {rest:?} {now:?}");
+            }
+        }
     }
 }

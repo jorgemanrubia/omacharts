@@ -220,6 +220,8 @@ The price axis fits the bars on screen until you drag it. A chart's scales come 
 | Double-click the price axis | Back to fitting the bars |
 | Drag the time axis | Left squeezes more time on screen, right spreads it out |
 | Double-click the time axis | Back to the resting zoom, at the latest bar |
+| <kbd>Alt</kbd> + <kbd>Z</kbd>, then drag a box | Shows just the bars and prices in the box ([Zoom](/manual/drawings/zoom/)) |
+| <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd> | Back to the view before the last zoom |
 | <kbd>Ctrl</kbd> + <kbd>Esc</kbd> | **Reset chart**. Both scales back to how the chart opens, at the latest bars |
 
 The time axis is labelled in the time zone and the time format chosen in Preferences › Charts › Other ([Time](/manual/preferences/#time)), New York time unless you change it.

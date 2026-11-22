@@ -3,7 +3,7 @@ title: "Rectangle"
 description: "A box between two corners"
 section: agents
 parent: cli/drawings
-nav_order: 6
+nav_order: 7
 ---
 
 `rect` is a box with `--from` and `--to` at opposite corners. Its edge and fill are set with the flags below, beside the ones [every drawing takes](/manual/cli/drawings/#flags). What it draws, and its properties in the window, are in [Rectangle](/manual/drawings/rectangle/).

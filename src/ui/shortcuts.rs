@@ -97,7 +97,9 @@ pub const BINDINGS: &[Binding] = &[
     global("chart.draw-line", &["<Alt>l"]),
     global("chart.draw-hline", &["<Alt>h"]),
     global("chart.draw-arrow", &["<Alt>a"]),
-    global("chart.draw-zigzag", &["<Alt>z"]),
+    // G for the zig-zag's jagged run of corners: it gave Z up to Zoom,
+    // which is reached for far more often than a zig-zag is drawn.
+    global("chart.draw-zigzag", &["<Alt>g"]),
     global("chart.draw-rect", &["<Alt>r"]),
     global("chart.draw-ellipse", &["<Alt>c"]),
     global("chart.draw-text", &["<Alt>t"]),
@@ -110,6 +112,10 @@ pub const BINDINGS: &[Binding] = &[
     // F for Fibonacci: there is no menu bar for it to be a mnemonic of.
     global("chart.draw-fib", &["<Alt>f"]),
     global("chart.measure", &["<Alt>m"]),
+    // Z for zoom, and back is the same key with Shift: one key for the pair,
+    // a step in and a step out.
+    global("chart.zoom", &["<Alt>z"]),
+    global("chart.zoom-back", &["<Alt><Shift>z"]),
     // The bar itself is a panel, so its key is the watchlist's neighbour:
     // Ctrl+Shift+B for the rail on the right, Ctrl+Shift+D for the tools on
     // the left.
@@ -431,6 +437,33 @@ mod tests {
             let binding = binding(action).expect(action);
             assert!(!binding.global, "{action} must stay out of the accelerator table");
         }
+    }
+
+    /// Zoom took Alt+Z from the zig-zag, which moved to Alt+G, and going back
+    /// is the zoom's key with Shift. Each reaches its own action and nothing
+    /// else once installed, and the zig-zag's old key and the zoom's first one
+    /// are left to nobody.
+    #[test]
+    fn zoom_is_alt_z_and_the_zig_zag_moved_to_alt_g() {
+        use gtk::gdk::ModifierType;
+        assert_eq!(binding("chart.zoom").unwrap().accels, ["<Alt>z"]);
+        assert_eq!(binding("chart.zoom-back").unwrap().accels, ["<Alt><Shift>z"]);
+        assert_eq!(binding("chart.draw-zigzag").unwrap().accels, ["<Alt>g"]);
+        crate::ui::on_gtk(|| {
+            let _ = adw::init();
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            install(&app);
+            for (accel, action, mods) in [
+                ("<Alt>z", "chart.zoom", ModifierType::ALT_MASK),
+                ("<Alt><Shift>z", "chart.zoom-back", ModifierType::ALT_MASK | ModifierType::SHIFT_MASK),
+                ("<Alt>g", "chart.draw-zigzag", ModifierType::ALT_MASK),
+            ] {
+                assert_eq!(app.actions_for_accel(accel), [action], "{accel}");
+                let (_, parsed) = gtk::accelerator_parse(accel).expect(accel);
+                assert_eq!(parsed, mods, "{accel}");
+            }
+            assert!(app.actions_for_accel("<Alt>x").is_empty(), "the zoom's first key");
+        });
     }
 
     /// Nothing is typed into a box with Ctrl+Shift+G, so the gridlines are

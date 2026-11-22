@@ -3,7 +3,7 @@ title: "Volume profile"
 description: "How much volume traded at each price over a span you choose"
 section: charting
 parent: drawings
-nav_order: 9
+nav_order: 10
 hotkey: "Alt + V"
 ---
 

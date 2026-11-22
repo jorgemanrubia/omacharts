@@ -3,7 +3,7 @@ title: "Arrow"
 description: "A line with a head at the end"
 section: agents
 parent: cli/drawings
-nav_order: 4
+nav_order: 5
 ---
 
 `arrow` is a line with a head at the end you give last, `--to`. `--arrow` and `--head` set the heads of an arrow and of a line, beside the flags [every drawing takes](/manual/cli/drawings/#flags). What it draws, and its properties in the window, are in [Arrow](/manual/drawings/arrow/).

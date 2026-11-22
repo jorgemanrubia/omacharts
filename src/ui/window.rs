@@ -254,7 +254,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+L", "Draw a line: click where it starts, then where it ends"),
             ("Alt+H", "Draw a horizontal line: a level, held flat"),
             ("Alt+A", "Draw an arrow"),
-            ("Alt+Z", "Draw a zig-zag: click each corner, double-click or Enter to end it"),
+            ("Alt+G", "Draw a zig-zag: click each corner, double-click or Enter to end it"),
             ("Ctrl+click a tool", "Keep it in hand for drawing after drawing; Esc puts it down"),
             ("Ctrl+X / Ctrl+C / Ctrl+V", "Cut or copy the selected drawings or indicator, and put them down again"),
             ("Alt+R", "Draw a rectangle over a run of bars"),
@@ -264,6 +264,8 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+W", "Anchor a VWAP: click the bar it starts from"),
             ("Alt+F", "Draw a Fibonacci retracement: drag from the swing's start to its end"),
             ("Alt+M", "Measure: click the start, then the end"),
+            ("Alt+Z", "Zoom: drag a box, and the chart shows just that"),
+            ("Alt+Shift+Z", "Back to the view before the last zoom"),
             ("Ctrl+Shift+D", "Show or hide the drawing tools"),
             ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
             ("Enter / F2", "Put the caret in the selected drawing's text"),
@@ -5602,6 +5604,10 @@ impl Window {
             {
                 let this = this.clone();
                 move || this.arm_ruler()
+            },
+            {
+                let this = this.clone();
+                move || this.arm_zoom()
             },
         );
         let with_tools = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -13783,6 +13789,29 @@ impl Window {
         }
     }
 
+    /// Zoom the focused chart to a span of bars and, given them, prices; or
+    /// with `None` step back from its last zoom. For a command, which is
+    /// told what is on screen after.
+    pub fn zoom_focused(
+        self: &Rc<Self>,
+        span: Option<crate::cli::ZoomSpan>,
+    ) -> crate::cli::Zoomed {
+        let pane = self.focused_pane();
+        let chart = self.chart_named(&pane);
+        let changed = match span {
+            None => self.zoom_focused_back(),
+            Some((from, to, prices)) => {
+                let zoomed = pane.view.zoom_to_span(from, to, prices);
+                if zoomed {
+                    self.sync_chart_actions(&pane);
+                    self.save_workspace();
+                }
+                zoomed
+            }
+        };
+        crate::cli::Zoomed { chart, changed, view: pane.view.view_span(), back: pane.view.zooms_back() }
+    }
+
     /// A temporary measurement belongs to the live focused chart, never the store.
     pub fn measure(
         &self,
@@ -14239,6 +14268,7 @@ impl Window {
             let view = &self.focused_pane().view;
             bar.show_armed(view.armed(), view.next_config(), view.is_sticky());
             bar.show_ruler(view.ruler_armed());
+            bar.show_zoom(view.zoom_armed());
         }
     }
 
@@ -14256,6 +14286,29 @@ impl Window {
         pane.view.arm_ruler();
         pane.view.area.grab_focus();
         self.sync_drawing_bar();
+    }
+
+    /// Pick up the zoom tool on the focused chart, from its key or its
+    /// button. Pressing it again keeps it in hand, as the ruler's does.
+    fn arm_zoom(&self) {
+        let pane = self.focused_pane();
+        pane.view.arm_zoom();
+        pane.view.area.grab_focus();
+        self.sync_drawing_bar();
+    }
+
+    /// The focused chart back to where it was looking before its last zoom.
+    /// Says whether there was one: with none, nothing changes.
+    fn zoom_focused_back(self: &Rc<Self>) -> bool {
+        let pane = self.focused_pane();
+        let back = pane.view.zoom_back();
+        if back {
+            // The price scale may have gone back to fitting, and that much
+            // of the view is written down with the chart.
+            self.sync_chart_actions(&pane);
+            self.save_workspace();
+        }
+        back
     }
 
     fn arm_drawing(&self, kind: omacharts_engine::DrawingKind) {
@@ -15242,6 +15295,18 @@ impl Window {
         let this = self.clone();
         measure.connect_activate(move |_, _| this.arm_ruler());
         actions.add_action(&measure);
+
+        let zoom = gio::SimpleAction::new("zoom", None);
+        let this = self.clone();
+        zoom.connect_activate(move |_, _| this.arm_zoom());
+        actions.add_action(&zoom);
+
+        let zoom_back = gio::SimpleAction::new("zoom-back", None);
+        let this = self.clone();
+        zoom_back.connect_activate(move |_, _| {
+            this.zoom_focused_back();
+        });
+        actions.add_action(&zoom_back);
 
         let drawing_text = gio::SimpleAction::new("drawing-text", None);
         let this = self.clone();

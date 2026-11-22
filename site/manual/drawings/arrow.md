@@ -3,7 +3,7 @@ title: "Arrow"
 description: "A line with a head at the end"
 section: charting
 parent: drawings
-nav_order: 4
+nav_order: 5
 hotkey: "Alt + A"
 ---
 
