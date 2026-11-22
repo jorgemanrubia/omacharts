@@ -40,4 +40,9 @@ jobs:
       # OpenSSL fails to start wherever another OpenSSL is installed.
       - run: bin/check-links target/debug/omacharts target/debug/omacharts-launch
       - run: cargo test --workspace --locked
+      # An embedder takes the chart crate with the engine's feeds off and
+      # brings its own bars and ladders: the chart, its order flow too, has
+      # to build that way. Alone, the chart crate's engine has no feeds.
+      - run: cargo check -p omacharts-chart --all-targets --locked
+      - run: "! cargo tree -p omacharts-chart -e features --locked | grep -q 'omacharts-engine feature \"feeds\"'"
       - run: cargo clippy --workspace --all-targets
