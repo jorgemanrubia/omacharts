@@ -264,6 +264,23 @@ impl FlowScene {
         draw_pointer(cr, width, height, &self.state);
     }
 
+    /// The newest bar read out as `chart stream` says it, with no frame:
+    /// its footprint row by row and the large orders in it. How many rows
+    /// and orders that came to.
+    pub fn read_newest(&self) -> (usize, usize) {
+        let rows = super::footprint::read_out(&self.state, super::BarPick::Last(1), None)
+            .map_or(0, |read| read.bars.iter().map(|bar| bar.rows.len()).sum());
+        let newest = self.state.bars.len().saturating_sub(1)..self.state.bars.len();
+        let orders = self
+            .state
+            .indicators
+            .iter()
+            .find(|drawn| drawn.indicator.kind == Kind::LargeOrders)
+            .and_then(|drawn| super::bubbles::read(&self.state, drawn.indicator.id, newest))
+            .map_or(0, |(orders, _)| orders.len());
+        (rows, orders)
+    }
+
     /// How many large orders the book holds.
     pub fn large_orders(&self) -> usize {
         self.book.borrow().as_ref().map_or(0, |book| book.orders.len())

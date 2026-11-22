@@ -309,6 +309,14 @@ pub const HIDDEN_VERBS: &[(&str, Verb)] = &[
 /// noun and verb: as [`HIDDEN_VERBS`], for what is behind a feature flag.
 /// A bracket's exits on an order, behind `agent-trading`.
 pub const HIDDEN_FLAGS: &[(&str, &str, Flag)] = &[
+    // Who is reading a stream, by its name on the session bus: put on the
+    // line by the process it was typed in, so the window stops the moment
+    // that process goes rather than writing to nobody until --for.
+    (
+        "chart",
+        "stream",
+        Flag::valued("caller", "NAME", "the reading process's name on the session bus"),
+    ),
     (
         "trading",
         "buy",
@@ -1127,6 +1135,26 @@ pub const SURFACE: &[Noun] = &[
                     Flag::switch("footprint", "the same as --indicator footprint"),
                 ],
                 example: "omacharts chart values --chart pos:0 --indicator footprint --last 5 --json",
+                json: true,
+                writes: false,
+                workspace: true,
+            },
+            Verb {
+                name: "stream",
+                about: "A chart's indicators as the market moves, one JSON object a line: a snapshot of the newest bar's readings, then an update each time the bar changes, at most every --every milliseconds, and a close with the final readings of each bar as it closes. The readings are those of `chart values --last 1`, in the same field names. Reads what the chart has already worked out, drawing nothing; runs until --count, --for, the window closing or the reader going away",
+                args: &[],
+                flags: &[
+                    Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+                    Flag::valued("chart", "CHART", CHART_SELECTOR),
+                    Flag::valued("indicator", "KIND", "only indicators of this kind; once per kind. footprint reads the chart's volume at price whether a footprint is drawn or not").of(KINDS).repeating(),
+                    Flag::valued("id", "N", "only the indicator with this id, from `chart indicator list`; once per indicator").repeating(),
+                    Flag::valued("row-ticks", "auto|N", "ticks a footprint's rows hold; auto, the default, is the step it draws"),
+                    Flag::switch("footprint", "the same as --indicator footprint"),
+                    Flag::valued("every", "MS", "an update at most this often, in milliseconds (default 250; 0 every change). A close is never held back"),
+                    Flag::valued("count", "N", "stop after this many updates and closes"),
+                    Flag::valued("for", "SECONDS", "stop after this long"),
+                ],
+                example: "omacharts chart stream --chart pos:0 --indicator vwap --indicator footprint --every 0",
                 json: true,
                 writes: false,
                 workspace: true,

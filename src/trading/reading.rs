@@ -299,6 +299,23 @@ impl ValuesAsk {
     }
 }
 
+/// What `chart stream` asks of a chart: which indicators, as
+/// [`ValuesAsk`] says without a pick, how often to say them and for how
+/// long, and where to.
+pub struct StreamAsk {
+    pub chart: u32,
+    pub want: ValuesAsk,
+    /// An update at most this often; zero, every change.
+    pub every: std::time::Duration,
+    /// Stop after this many updates and closes.
+    pub count: Option<u64>,
+    /// Stop after this long.
+    pub lasting: Option<std::time::Duration>,
+    /// The reading process's name on the session bus, to stop when it goes.
+    pub caller: Option<String>,
+    pub sink: Option<std::rc::Rc<dyn crate::cli::Sink>>,
+}
+
 /// One indicator read out: its id, kind, label and visibility with what it
 /// reads, and for a footprint its bars to write out.
 #[derive(Clone, Debug)]

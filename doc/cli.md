@@ -1520,10 +1520,11 @@ Provider, which is the same four facts with a button.
 
 ## Reading a chart in numbers
 
-Four commands read a chart on screen back as numbers, for a script or an
+Five commands read a chart on screen back as numbers, for a script or an
 agent: `chart bars` (its last bars, oldest first), `chart values` (each
 indicator's latest values and the levels read off the chart, or each bar's
-readings over a range), `symbol
+readings over a range), `chart stream` (those readings as the market moves
+them), `symbol
 quote` (the last price) and `trading snapshot` (the price, the levels and
 the last bars in a few lines, with a token for asking what changed since).
 `trading wait` waits for a price to be crossed (`--cross`) or a bar to close
@@ -1554,6 +1555,22 @@ is the low of the most traded row). Large orders give `orders: [{time,
 time_ns, price, size, side, fills, regular}]`, `null` until the trades have
 been read. Something the feed cannot compute has `unmet`. An id or kind the
 chart has not got exits `3`.
+
+`chart stream` takes the same `--indicator`, `--id`, `--footprint` and
+`--row-ticks`, and writes JSON lines, each flushed as it is written:
+`{ev: "snapshot", chart, symbol, resolution, bar, indicators}` first, then
+`{ev: "update", bar, indicators}` when the newest bar changes, at most every
+`--every MS` (default 250, `0` every change), and `{ev: "close", bar,
+indicators}` with each bar's final readings as the next begins, never held
+back. `bar` is `[time, open, high, low, close, volume]`; each indicator is
+its entry in a one-bar `chart values --last 1`, without `time`. Another
+symbol or resolution starts over with a snapshot; `{ev: "closed"}` when the
+window goes and `{ev: "gone"}` when the chart does end it. It stops after
+`--count N` updates and closes or `--for SECONDS`, and as soon as its reader
+goes: the window watches the caller's name on the session bus (the caller
+passes it in a hidden `--caller`), and the caller exits `0` once its stdout
+pipe is closed. It reads the drawn indicators, never redraws, and is not
+behind a flag.
 
 ## Trading from a terminal
 

@@ -450,6 +450,12 @@ sits in the bar. For a quick look at the last few bars, pipe `chart values
 {time, delta, poc}'`. The same range flags read any indicator bar by bar:
 `chart values --indicator rsi --last 20 --json` gives `bars` of `{time,
 value}`, a MACD `{time, line, signal, histogram}`, large orders `orders`.
+To follow them live instead of asking again, `chart stream --indicator
+vwap --indicator footprint --count 20` writes a JSON line for each change
+of the newest bar (a `snapshot` first, then `update`s, and a `close` with
+each bar's final readings); `--every MS` throttles it (default 250), and
+`--count` or `--for SECONDS` stop it, so it never hangs a turn.
+`chart indicator kinds` lists every kind and the flags each one takes.
 
 **A volume profile of any span is a drawing.** `profile` (or `vp`) profiles
 the bars between `--from` and `--to`; only their times are read. `--color` is

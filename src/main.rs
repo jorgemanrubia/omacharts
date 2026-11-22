@@ -406,11 +406,63 @@ fn run() -> glib::ExitCode {
     // Registering is the first thing running does anyway.
     if app.register(gio::Cancellable::NONE).is_ok() && app.is_remote() {
         omacharts::update::not_a_window();
+        // What the window answers is printed here, as it comes: a line at a
+        // time, and a reader that has stopped reading — `| head` — ends
+        // this process quietly rather than leaving it printing to nobody.
+        glib::set_print_handler(|text| {
+            use std::io::Write;
+            let mut out = std::io::stdout().lock();
+            if out.write_all(text.as_bytes()).and_then(|()| out.flush()).is_err() {
+                std::process::exit(0);
+            }
+        });
+        // A stream is told who reads it, so the window stops writing the
+        // moment this process goes.
+        if cli::streams(&args) {
+            if let Some(name) = app.dbus_connection().and_then(|bus| bus.unique_name()) {
+                launch.push(format!("--caller={name}"));
+            }
+            // A pipe whose reader has gone says so without being written to:
+            // a quiet market need not tick before `| head -1` gets its prompt.
+            exit_once_stdout_is_closed();
+        }
     }
 
     // The arguments as typed, launch options included: these travel to
     // whichever process holds the window, and the flag is answered there.
     app.run_with_args(&launch)
+}
+
+/// End this process, quietly, once nothing reads what it writes: a pipe
+/// whose reader has gone. Watched on a thread of its own, asleep in
+/// `poll(2)` until then; a terminal or a file never wakes it.
+fn exit_once_stdout_is_closed() {
+    #[repr(C)]
+    struct PollFd {
+        fd: i32,
+        events: i16,
+        revents: i16,
+    }
+    unsafe extern "C" {
+        fn poll(fds: *mut PollFd, count: u64, timeout: i32) -> i32;
+    }
+    const POLLERR: i16 = 0x8;
+    const POLLHUP: i16 = 0x10;
+    let _ = std::thread::Builder::new().name("stdout closed".into()).spawn(|| {
+        loop {
+            let mut stdout = PollFd { fd: 1, events: 0, revents: 0 };
+            // SAFETY: one valid pollfd, for as long as the call.
+            let ready = unsafe { poll(&mut stdout, 1, -1) };
+            if ready > 0 && stdout.revents & (POLLERR | POLLHUP) != 0 {
+                std::process::exit(0);
+            }
+            if ready > 0 {
+                // Something else to report about it, which is not a reader
+                // gone: nothing to wait on.
+                return;
+            }
+        }
+    });
 }
 
 /// Could GDK open a display? What its backends try, asked without starting

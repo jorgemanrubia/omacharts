@@ -28,6 +28,8 @@ use crate::cli::{Fault, Sink};
 use crate::trading::{self, events, reading};
 use crate::ui::pane::ChartPane;
 
+mod stream;
+
 /// How many events are kept for a token to be answered from.
 const KEPT: usize = 512;
 
@@ -80,6 +82,8 @@ enum Kind {
     Stream { pnl_every: Option<Duration> },
     /// `trading wait`: the first event that wakes it, or the time.
     Wait(Waiting),
+    /// `chart stream`: one chart's readings as it moves.
+    Chart(Box<stream::Charting>),
 }
 
 struct Waiting {
@@ -369,7 +373,7 @@ impl Window {
                     (settling, began) = (true, true);
                 }
                 Kind::Wait(_) if events::wakes(&event) => woken.push(listener.id),
-                Kind::Wait(_) => {}
+                Kind::Wait(_) | Kind::Chart(_) => {}
             }
         }
         for id in woken {
@@ -427,7 +431,7 @@ impl Window {
             .iter()
             .filter_map(|listener| match listener.kind {
                 Kind::Stream { pnl_every } => pnl_every,
-                Kind::Wait(_) => None,
+                Kind::Wait(_) | Kind::Chart(_) => None,
             })
             .min();
         let Some(every) = every else { return };
@@ -451,10 +455,12 @@ impl Window {
         }
     }
 
-    /// Chart `pane` moved: alerts and waits on its price, and on its bars.
+    /// Chart `pane` moved: streams of it, alerts and waits on its price,
+    /// and on its bars.
     pub(super) fn agent_heard_price(self: &Rc<Self>, pane: &ChartPane) {
+        self.stream_heard(pane);
         if self.agent.alerts.borrow().is_empty()
-            && self.agent.listeners.borrow().iter().all(|listener| matches!(listener.kind, Kind::Stream { .. }))
+            && self.agent.listeners.borrow().iter().all(|listener| matches!(listener.kind, Kind::Stream { .. } | Kind::Chart(_)))
         {
             return;
         }
@@ -1265,6 +1271,100 @@ mod tests {
             assert!(why.contains("large_orders"), "{why}");
             let (code, _) = command(&window, "chart values --last 3 --visible");
             assert_eq!(code, crate::cli::EXIT_USAGE);
+        });
+    }
+
+    /// `pane`'s newest bar is `bar` (a new one when it begins later), its
+    /// indicators worked out again and the chart told, as a tick does.
+    fn ticked(window: &Rc<Window>, pane: &Rc<ChartPane>, bar: omacharts_engine::Bar) {
+        pane.view.apply_tail(&[bar]);
+        let instrument = pane.instrument.borrow().clone().expect("an instrument");
+        let drawn = pane.view.with_bars(|bars| window.drawn_indicators(pane, &instrument, pane.timeframe.get(), bars));
+        pane.view.set_indicators(drawn);
+        window.chart_moved(pane);
+    }
+
+    fn lines_of(terminal: &Terminal) -> Vec<Value> {
+        terminal.said.borrow().lines().map(|line| serde_json::from_str(line).expect("a JSON line")).collect()
+    }
+
+    /// `chart stream` says a snapshot, then an update for each change of
+    /// the newest bar and a close as each bar ends, in the readings
+    /// `chart values` gives; nothing when the chart moves without its bars
+    /// changing; and stops after --count or --for, or when the window goes.
+    /// Off the `agent-trading` flag: it trades nothing.
+    #[test]
+    fn a_stream_says_each_change_of_a_charts_readings() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, _session, _) = long_es(trading::Linking::AfterTheFact);
+            assert!(settle(&window, || pane.view.bar_count() > 40));
+            crate::features::force(crate::features::Feature::AgentTrading, false);
+            let (code, out) = command(&window, "chart indicator add sma --period 3");
+            assert_eq!(code, 0, "{out}");
+            let newest = || pane.view.with_bars(|bars| *bars.last().unwrap());
+
+            let streaming = Rc::new(Terminal::default());
+            let (code, out) =
+                command_from(&window, "chart stream --indicator sma --every 0 --count 3", &Typed(streaming.clone()));
+            assert_eq!((code, out.as_str()), (0, ""), "it answers on the terminal");
+            let lines = lines_of(&streaming);
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert_eq!(lines[0]["ev"], "snapshot");
+            assert_eq!(lines[0]["symbol"], "ES");
+            assert_eq!(lines[0]["indicators"][0]["kind"], "sma", "{lines:?}");
+            assert_eq!(lines[0]["bar"][0], newest().ts, "{lines:?}");
+
+            // Moved, the bars as they were: nothing to say.
+            window.chart_moved(&pane);
+            assert_eq!(lines_of(&streaming).len(), 1, "{}", streaming.said.borrow());
+
+            let bar = newest();
+            ticked(&window, &pane, omacharts_engine::Bar { close: bar.close + 1.0, high: bar.high.max(bar.close + 1.0), volume: bar.volume + 5.0, ..bar });
+            let lines = lines_of(&streaming);
+            assert_eq!(lines.len(), 2, "{lines:?}");
+            assert_eq!(lines[1]["ev"], "update");
+            let near = |said: &Value, price: f64| said.as_f64().is_some_and(|said| (said - price).abs() <= 0.005 + 1e-9);
+            assert!(near(&lines[1]["bar"][4], bar.close + 1.0), "{lines:?}");
+            let (_, read) = command(&window, "chart values --indicator sma --last 1 --json");
+            let read: Value = serde_json::from_str(&read).expect("JSON");
+            assert_eq!(lines[1]["indicators"][0]["value"], read["indicators"][0]["bars"][0]["value"], "as chart values reads it");
+
+            let closing = newest();
+            let next = omacharts_engine::Bar { ts: closing.ts + pane.timeframe.get().seconds(), open: closing.close, high: closing.close, low: closing.close, close: closing.close, volume: 1.0 };
+            ticked(&window, &pane, next);
+            let lines = lines_of(&streaming);
+            assert_eq!(lines.len(), 4, "{lines:?}");
+            assert_eq!((&lines[2]["ev"], &lines[2]["bar"][0]), (&json!("close"), &json!(closing.ts)), "{lines:?}");
+            assert_eq!((&lines[3]["ev"], &lines[3]["bar"][0]), (&json!("update"), &json!(next.ts)), "{lines:?}");
+            assert!(streaming.ended.get(), "three events, and --count 3");
+
+            // Held back to one update every --every, the last change in it.
+            let held = Rc::new(Terminal::default());
+            let (code, _) = command_from(&window, "chart stream --id 1 --every 300", &Typed(held.clone()));
+            assert_eq!(code, 0);
+            for step in 1..=3 {
+                let bar = newest();
+                ticked(&window, &pane, omacharts_engine::Bar { close: bar.close + 0.25, high: bar.high.max(bar.close + 0.25), volume: bar.volume + step as f64, ..bar });
+            }
+            assert_eq!(lines_of(&held).len(), 1, "within --every of the snapshot: {}", held.said.borrow());
+            assert!(settle(&window, || lines_of(&held).len() == 2), "never said: {}", held.said.borrow());
+            let lines = lines_of(&held);
+            assert!(near(&lines[1]["bar"][4], newest().close), "the last of them: {lines:?}");
+            assert_eq!(lines[1]["indicators"].as_array().map(Vec::len), Some(1), "only --id 1: {lines:?}");
+
+            let timed = Rc::new(Terminal::default());
+            let (code, _) = command_from(&window, "chart stream --for 1", &Typed(timed.clone()));
+            assert_eq!(code, 0);
+            assert!(settle(&window, || timed.ended.get()), "--for 1 never ended it");
+
+            let (code, why) = command_from(&window, "chart stream --id 999", &Typed(Rc::new(Terminal::default())));
+            assert_eq!(code, crate::cli::EXIT_NOT_FOUND, "{why}");
+            let (code, _) = command_from(&window, "chart stream --every soon", &Typed(Rc::new(Terminal::default())));
+            assert_eq!(code, crate::cli::EXIT_USAGE);
+
+            window.agent_closing();
+            assert!(held.ended.get(), "still held after the window went");
+            assert_eq!(lines_of(&held).last().map(|line| line["ev"].clone()), Some(json!("closed")));
         });
     }
 

@@ -125,6 +125,7 @@ pub fn dispatch(
         ("symbol", "quote") => symbol_quote(store, m, json, live),
         ("chart", "bars") => chart_bars(store, m, json, live),
         ("chart", "values") => chart_values(store, m, json, live),
+        ("chart", "stream") => chart_stream(store, m, live, caller),
         ("symbol", "contracts") => symbol_contracts(m, json),
 
         ("watchlist", "list") => watchlist_list(store, json),
@@ -698,14 +699,10 @@ fn chart_bars(
 }
 
 /// `chart values`: each indicator's latest values, and the levels.
-fn chart_values(
-    store: &Store,
-    m: &clap::ArgMatches,
-    as_json: bool,
-    live: Option<&dyn Live>,
-) -> Result<String, Fault> {
-    use crate::trading::reading::{self, ValuesAsk};
-    use omacharts_chart::BarPick;
+/// Which indicators `--indicator`, `--footprint` and `--id` name, and the
+/// rows `--row-ticks` asks a footprint for: what `chart values` and
+/// `chart stream` read.
+fn values_wanted(m: &clap::ArgMatches) -> Result<crate::trading::reading::ValuesAsk, Fault> {
     let mut kinds = Vec::new();
     for text in m.get_many::<String>("indicator").into_iter().flatten() {
         let wanted = text.trim().to_lowercase();
@@ -735,6 +732,49 @@ fn chart_values(
                 .ok_or_else(|| Fault::usage(format!("--row-ticks is auto or a number of ticks from 1 to 10000, not {text:?}")))?,
         ),
     };
+    Ok(crate::trading::reading::ValuesAsk { pick: None, kinds, ids, row_ticks })
+}
+
+/// `chart stream`: see [`crate::trading::reading::StreamAsk`].
+fn chart_stream(store: &Store, m: &clap::ArgMatches, live: Option<&dyn Live>, caller: &dyn Caller) -> Result<String, Fault> {
+    use std::time::Duration;
+    let want = values_wanted(m)?;
+    let number = |name: &str, what: &str, low: u64| -> Result<Option<u64>, Fault> {
+        arg(m, name)
+            .map(|text| {
+                text.trim()
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|n| *n >= low)
+                    .ok_or_else(|| Fault::usage(format!("--{name} is {what}, not {text:?}")))
+            })
+            .transpose()
+    };
+    let every = number("every", "a number of milliseconds, 0 for every change", 0)?.unwrap_or(250);
+    let count = number("count", "a number of events from 1", 1)?;
+    let lasting = number("for", "a number of seconds from 1", 1)?;
+    let live = live.ok_or_else(no_chart_window)?;
+    let chart = chart_on_screen(store, m)?;
+    live.stream_values(crate::trading::reading::StreamAsk {
+        chart,
+        want,
+        every: Duration::from_millis(every),
+        count,
+        lasting: lasting.map(Duration::from_secs),
+        caller: arg(m, "caller").map(|name| name.to_string()),
+        sink: caller.sink(),
+    })
+}
+
+fn chart_values(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: Option<&dyn Live>,
+) -> Result<String, Fault> {
+    use crate::trading::reading::{self, ValuesAsk};
+    use omacharts_chart::BarPick;
+    let want = values_wanted(m)?;
     let live = live.ok_or_else(no_chart_window)?;
     let chart = chart_on_screen(store, m)?;
     let zone = live.read_chart(chart, 1)?.zone;
@@ -762,7 +802,7 @@ fn chart_values(
         (None, None, Some(_), false) => return Err(Fault::usage("--to needs a --from".into())),
         _ => return Err(Fault::usage("say which bars with one of --last, --from (and --to) or --visible".into())),
     };
-    let read = live.read_values(chart, &ValuesAsk { pick, kinds, ids, row_ticks })?;
+    let read = live.read_values(chart, &ValuesAsk { pick, ..want })?;
     if as_json {
         let indicators: Vec<Value> = read
             .entries

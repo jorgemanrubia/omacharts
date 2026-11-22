@@ -123,6 +123,24 @@ fn frames() {
         });
         rows.borrow_mut().push((format!("{name}, a trade then a frame, 20 bars"), ns, allocs, bytes));
     }
+    // What `chart stream` adds to each tick, against the frame the window
+    // draws for it anyway: the newest bar's footprint read out row by row
+    // and the large orders in it, nothing drawn.
+    {
+        let mut scene = FlowScene::new(400, 20, &["volume", "footprint", "large_orders"], TRADES, 40);
+        let (rows_read, _) = scene.read_newest();
+        let (ns, allocs, bytes) = measure_mut(&mut scene, |scene| {
+            scene.trade();
+            std::hint::black_box(scene.read_newest());
+        });
+        rows.borrow_mut().push((format!("a trade then the newest bar read as a stream says it, {rows_read} rows"), ns, allocs, bytes));
+        let (ns, allocs, bytes) = measure_mut(&mut scene, |scene| {
+            scene.trade();
+            scene.view_frame(&cr, WIDTH, HEIGHT);
+            surface.flush();
+        });
+        rows.borrow_mut().push(("the same trade then a frame, footprint and large orders on".into(), ns, allocs, bytes));
+    }
     // The same stream zoomed out, where a footprint has no room for its
     // rows: it should cost exactly what no footprint costs.
     for (name, kinds) in [("indicators off", &["volume"][..]), ("footprint on but zoomed out", &["volume", "footprint"][..])] {
