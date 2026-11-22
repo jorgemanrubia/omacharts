@@ -49,7 +49,7 @@ impl Inks {
 /// enough to show the candles under them.
 pub const VOLUME_DELTA_ALPHA: f64 = 1.0;
 pub const FOOTPRINT_ALPHA: f64 = 0.85;
-pub const LARGE_ORDERS_ALPHA: f64 = 0.55;
+pub const LARGE_ORDERS_ALPHA: f64 = 0.35;
 
 /// The bar width, in pixels, a footprint is drawn from: narrower, the chart
 /// shows its candles.

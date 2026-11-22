@@ -14,7 +14,7 @@ A bubble at each trade bigger than a size you choose ([Large Orders](/manual/ind
 | `--eth-threshold N` | The same; 20 when not given | The same outside the regular session |
 | `--size-against W` | `visible`, `session`, `hours`; `session` when not given | What a bubble's size is measured against: the large orders on screen, the session's, or its regular or extended hours' |
 | `--combine B` | `on`, `off`; on when not given | Prints of one moment and one side counted as one order |
-| `--colouring C`, `--buy-color C`, `--sell-color C`, `--buy-transparency F`, `--sell-transparency F` | As for [every order flow indicator](/manual/cli/indicators/order-flow/#colours); 0.45 transparency unless set | Its bubbles |
+| `--colouring C`, `--buy-color C`, `--sell-color C`, `--buy-transparency F`, `--sell-transparency F` | As for [every order flow indicator](/manual/cli/indicators/order-flow/#colours); 0.65 transparency unless set | Its bubbles |
 
 `list --json` reads them back as `params.regular`, `params.extended`, `params.compare` and `params.combine`.
 

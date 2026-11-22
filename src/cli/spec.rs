@@ -677,7 +677,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("shade-alpha", "F", "how solid a range's shading is, 0-1; every range, unless one is named"),
     Flag::valued("buy-color", "COLOUR", "buying in a volume delta, a footprint or large orders, in place of its colouring's rise; none gives back the colouring's"),
     Flag::valued("sell-color", "COLOUR", "selling in a volume delta, a footprint or large orders, in place of its colouring's fall; none gives back the colouring's"),
-    Flag::valued("buy-transparency", "F", "how much of the chart shows through buying in a volume delta, a footprint or large orders, 0-1, or `default` for its own (0 for a volume delta, 0.15 for a footprint's strongest row, 0.45 for bubbles)"),
+    Flag::valued("buy-transparency", "F", "how much of the chart shows through buying in a volume delta, a footprint or large orders, 0-1, or `default` for its own (0 for a volume delta, 0.15 for a footprint's strongest row, 0.65 for bubbles)"),
     Flag::valued("sell-transparency", "F", "the same for selling"),
     Flag::valued("show-from", "PX", "the bar width, 24-400 pixels, a footprint is drawn from in place of the candles (default 64)"),
     Flag::valued("intensity", "BOOL", "whether a footprint's rows are filled more solidly the bigger their delta against the biggest on screen (on unless set off); off fills every row alike").of(SWITCHES),
