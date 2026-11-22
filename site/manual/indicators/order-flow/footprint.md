@@ -10,7 +10,7 @@ Each bar's volume at the ask less its volume at the bid, at every price it trade
 
 | Drawn | Legend | Type to add | CLI |
 |---|---|---|---|
-| Over the candles, from a bar width | **FP** | `fp` | `footprint` |
+| Over the candles, from a bar width | **Footprint** | `footprint` | `footprint` |
 
 <!-- regenerate:
 theme: midnight, the fallback when the sandboxed HOME has no Omarchy theme

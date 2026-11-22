@@ -324,8 +324,8 @@ impl Kind {
             Kind::Volume => "Vol",
             Kind::Cvd => "CVD",
             Kind::VolumeDelta => "VD",
-            Kind::Footprint => "FP",
-            Kind::LargeOrders => "Large",
+            Kind::Footprint => "Footprint",
+            Kind::LargeOrders => "Large orders",
             Kind::Rsi => "RSI",
             Kind::Atr => "ATR",
             Kind::Stochastic => "Stoch",
@@ -1465,11 +1465,11 @@ impl Indicator {
                 None => "CVD".to_string(),
             },
             Params::VolumeDelta { .. } => "VD".to_string(),
-            Params::Footprint { .. } => "FP".to_string(),
+            Params::Footprint { .. } => "Footprint".to_string(),
             // The thresholds are what tell two of these apart.
             Params::LargeOrders { regular, extended, .. } => match regular == extended {
-                true => format!("Large > {regular}"),
-                false => format!("Large > {regular} · {extended}"),
+                true => format!("Large orders > {regular}"),
+                false => format!("Large orders > {regular} · {extended}"),
             },
             Params::Rsi { period, .. } | Params::Atr { period, .. } => {
                 format!("{} {period}", self.kind.short_name())

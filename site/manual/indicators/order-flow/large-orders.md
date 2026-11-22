@@ -10,7 +10,7 @@ A bubble at the price and bar of every trade bigger than a size you choose, in t
 
 | Drawn | Legend | Type to add | CLI |
 |---|---|---|---|
-| Over the candles | **Large > 50 · 20** | `large` | `large_orders` |
+| Over the candles | **Large orders > 50 · 20** | `large` | `large_orders` |
 
 <!-- regenerate:
 theme: midnight, the fallback when the sandboxed HOME has no Omarchy theme
