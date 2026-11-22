@@ -1253,6 +1253,16 @@ impl Ladders for Continuous {
         Ok(minutes)
     }
 
+    /// A stitched root's trades are its front month's, and come from where
+    /// that month's do.
+    fn source(&self, symbol: &str) -> Option<String> {
+        let ladders = self.inner.ladders()?;
+        match Continuous::front_of(symbol) {
+            Some((_, front)) => ladders.source(&front),
+            None => ladders.source(symbol),
+        }
+    }
+
     /// The front month's live ladders: never moved.
     fn watch(&self, symbol: &str, tick_size: f64, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {
         let ladders = self.inner.ladders().ok_or(ProviderError::NotFound)?;

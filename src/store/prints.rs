@@ -9,7 +9,10 @@
 //! `upto` is the moment the row is known to, exclusive: a day still
 //! trading is asked of the provider again only from there, and the trades a
 //! live feed delivered past it are never counted twice. `complete` is a day
-//! that has closed and been read whole.
+//! that has closed and been read whole. `source` is where the provider read
+//! the day from — of the two files Sierra Chart may keep of a contract, the
+//! one it was writing — and a day kept from anywhere else is not this one's:
+//! it is read again, so a file given up part way never stands for the day.
 
 use rusqlite::{params, OptionalExtension};
 
@@ -28,6 +31,8 @@ pub struct PrintDay {
     pub upto: i64,
     pub complete: bool,
     pub prints: Vec<Print>,
+    /// Where the provider read it from; empty for a feed with one place.
+    pub source: String,
 }
 
 pub fn encode_prints(prints: &[Print]) -> Vec<u8> {
@@ -57,37 +62,39 @@ pub fn decode_prints(data: &[u8]) -> Vec<Print> {
 }
 
 impl Store {
-    /// Day `day` of `key`'s trades, if it is kept in `tick_size`'s ticks.
-    pub fn load_print_day(&self, key: &str, day: i64, tick_size: f64) -> Option<PrintDay> {
+    /// Day `day` of `key`'s trades, if it is kept in `tick_size`'s ticks,
+    /// read from `source`.
+    pub fn load_print_day(&self, key: &str, day: i64, tick_size: f64, source: &str) -> Option<PrintDay> {
         let row = self
             .conn
-            .prepare_cached("SELECT tick_size, upto, complete, data FROM print_days WHERE key = ?1 AND day = ?2")
+            .prepare_cached("SELECT tick_size, upto, complete, data, source FROM print_days WHERE key = ?1 AND day = ?2")
             .and_then(|mut s| {
                 s.query_row(params![key, day], |r| {
-                    Ok((r.get::<_, f64>(0)?, r.get::<_, i64>(1)?, r.get::<_, bool>(2)?, r.get::<_, Vec<u8>>(3)?))
+                    Ok((r.get::<_, f64>(0)?, r.get::<_, i64>(1)?, r.get::<_, bool>(2)?, r.get::<_, Vec<u8>>(3)?, r.get::<_, String>(4)?))
                 })
                 .optional()
             })
             .ok()??;
-        let (kept_tick, upto, complete, data) = row;
-        (kept_tick == tick_size).then(|| PrintDay { tick_size, upto, complete, prints: decode_prints(&data) })
+        let (kept_tick, upto, complete, data, kept_source) = row;
+        (kept_tick == tick_size && kept_source == source)
+            .then(|| PrintDay { tick_size, upto, complete, prints: decode_prints(&data), source: kept_source })
     }
 
-    /// Is day `day` of `key`'s trades kept whole, in `tick_size`'s ticks?
-    /// Asked without reading the day.
-    pub fn print_day_complete(&self, key: &str, day: i64, tick_size: f64) -> bool {
+    /// Is day `day` of `key`'s trades kept whole, in `tick_size`'s ticks,
+    /// as read from `source`? Asked without reading the day.
+    pub fn print_day_complete(&self, key: &str, day: i64, tick_size: f64, source: &str) -> bool {
         self.conn
-            .prepare_cached("SELECT 1 FROM print_days WHERE key = ?1 AND day = ?2 AND tick_size = ?3 AND complete")
-            .and_then(|mut s| s.exists(params![key, day, tick_size]))
+            .prepare_cached("SELECT 1 FROM print_days WHERE key = ?1 AND day = ?2 AND tick_size = ?3 AND source = ?4 AND complete")
+            .and_then(|mut s| s.exists(params![key, day, tick_size, source]))
             .unwrap_or(false)
     }
 
     /// Keep day `day` of `key`'s trades, in place of what was kept.
     pub fn save_print_day(&self, key: &str, day: i64, held: &PrintDay) -> rusqlite::Result<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO print_days (key, day, tick_size, upto, complete, data)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![key, day, held.tick_size, held.upto, held.complete, encode_prints(&held.prints)],
+            "INSERT OR REPLACE INTO print_days (key, day, tick_size, upto, complete, data, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![key, day, held.tick_size, held.upto, held.complete, encode_prints(&held.prints), held.source],
         )?;
         Ok(())
     }
@@ -121,16 +128,40 @@ mod tests {
     #[test]
     fn a_kept_day_reads_back_only_in_its_own_ticks() {
         let store = Store::memory().expect("a store");
-        let day = PrintDay { tick_size: 0.25, upto: 99, complete: false, prints: vec![Print::new(5, 1, 2, Aggressor::Buy, false)] };
+        let day = PrintDay {
+            tick_size: 0.25,
+            upto: 99,
+            complete: false,
+            prints: vec![Print::new(5, 1, 2, Aggressor::Buy, false)],
+            source: String::new(),
+        };
         store.save_print_day("ES", 3, &day).expect("kept");
-        assert_eq!(store.load_print_day("ES", 3, 0.25), Some(day.clone()));
-        assert!(!store.print_day_complete("ES", 3, 0.25), "still trading");
+        assert_eq!(store.load_print_day("ES", 3, 0.25, ""), Some(day.clone()));
+        assert!(!store.print_day_complete("ES", 3, 0.25, ""), "still trading");
         store.save_print_day("ES", 3, &PrintDay { complete: true, ..day.clone() }).expect("kept");
-        assert!(store.print_day_complete("ES", 3, 0.25));
-        assert!(!store.print_day_complete("ES", 3, 0.5));
-        assert_eq!(store.load_print_day("ES", 3, 0.5), None, "another tick is another ladder");
-        assert_eq!(store.load_print_day("ES", 4, 0.25), None);
+        assert!(store.print_day_complete("ES", 3, 0.25, ""));
+        assert!(!store.print_day_complete("ES", 3, 0.5, ""));
+        assert_eq!(store.load_print_day("ES", 3, 0.5, ""), None, "another tick is another ladder");
+        assert_eq!(store.load_print_day("ES", 4, 0.25, ""), None);
         assert_eq!(store.forget_print_days("ES", 4).expect("forgotten"), 1);
-        assert_eq!(store.load_print_day("ES", 3, 0.25), None);
+        assert_eq!(store.load_print_day("ES", 3, 0.25, ""), None);
+    }
+
+    /// A day read from a file Sierra Chart has since given up for another
+    /// of the same contract is not the day as the other file has it.
+    #[test]
+    fn a_day_kept_from_another_file_is_not_this_one_s() {
+        let store = Store::memory().expect("a store");
+        let old = PrintDay {
+            tick_size: 0.25,
+            upto: 99,
+            complete: true,
+            prints: vec![Print::new(5, 1, 2, Aggressor::Buy, false)],
+            source: "ESZ6.CME".into(),
+        };
+        store.save_print_day("ES", 3, &old).expect("kept");
+        assert!(store.print_day_complete("ES", 3, 0.25, "ESZ6.CME"));
+        assert!(!store.print_day_complete("ES", 3, 0.25, "ESZ26_FUT_CME"), "the old file's day stood for the new one's");
+        assert_eq!(store.load_print_day("ES", 3, 0.25, "ESZ26_FUT_CME"), None);
     }
 }

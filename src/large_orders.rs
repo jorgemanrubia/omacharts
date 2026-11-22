@@ -333,6 +333,11 @@ impl Mailboxes {
 /// One contract, on the thread.
 struct Held {
     stored: String,
+    /// Where the feed reads the trades from now: what is kept of them is
+    /// kept with it, and a day kept from anywhere else is read again.
+    source: String,
+    /// The first moment a chart wants, for reading again from.
+    from: i64,
     symbol: String,
     instrument: Instrument,
     tick_size: f64,
@@ -372,7 +377,7 @@ impl Held {
             match self.open.get(&day) {
                 Some(open) => open.prints.iter().for_each(|print| builder.push(*print, &mut hours)),
                 None => {
-                    if let Some(kept) = store.load_print_day(&self.stored, day, self.tick_size) {
+                    if let Some(kept) = store.load_print_day(&self.stored, day, self.tick_size, &self.source) {
                         kept.prints.iter().for_each(|print| builder.push(*print, &mut hours));
                     }
                 }
@@ -435,9 +440,12 @@ fn work(
         match job {
             Job::Load { key, stored, symbol, instrument, tick_size, from, now, settings } => {
                 let days = Days::new(&instrument);
-                let contract = held.remove(&key).filter(|h| h.stored == stored && h.tick_size == tick_size);
+                let source = ladders.source(&symbol).unwrap_or_default();
+                let contract = held.remove(&key).filter(|h| h.stored == stored && h.tick_size == tick_size && h.source == source);
                 let mut contract = contract.unwrap_or_else(|| Held {
                     stored: stored.clone(),
+                    source: source.clone(),
+                    from,
                     symbol: symbol.clone(),
                     instrument: instrument.clone(),
                     tick_size,
@@ -462,6 +470,7 @@ fn work(
                     rebuild(&key, &mut contract, &settings);
                 }
                 contract.save(&store, true);
+                contract.from = contract.from.min(from);
                 held.insert(key, contract);
             }
             Job::Build { key, settings } => {
@@ -472,6 +481,23 @@ fn work(
             }
             Job::Refresh { key, now } => {
                 let Some(contract) = held.get_mut(&key) else { continue };
+                // The feed reads the contract from elsewhere now — Sierra
+                // Chart went over to another service, and writes another
+                // file of it: everything is read again from there.
+                let source = ladders.source(&contract.symbol).unwrap_or_default();
+                if source != contract.source {
+                    contract.source = source;
+                    contract.whole.clear();
+                    contract.open.clear();
+                    contract.dirty.clear();
+                    let settings: Vec<Settings> = contract.builders.keys().copied().collect();
+                    read_days(&store, ladders, contract, contract.from, now);
+                    let fresh = mailboxes.take(&key);
+                    append(contract, fresh);
+                    rebuild(&key, contract, &settings);
+                    contract.save(&store, true);
+                    continue;
+                }
                 // Only whole minutes, settled: what the feed has of them is
                 // what it will always have.
                 let to = (now - SETTLED).div_euclid(60) * 60;
@@ -548,6 +574,7 @@ fn append(contract: &mut Held, mut fresh: Vec<Print>) -> Vec<Print> {
             upto: i64::MIN,
             complete: false,
             prints: Vec::new(),
+            source: contract.source.clone(),
         });
         if print.ts_nanos < open.upto {
             continue;
@@ -571,7 +598,7 @@ fn read_days(store: &Store, ladders: &dyn omacharts_engine::Ladders, contract: &
     let mut day = last;
     while day >= first && last - day <= DEEPEST {
         let (start, end) = (days.start(day), days.start(day + 1));
-        if contract.whole.contains(&day) || store.print_day_complete(&contract.stored, day, contract.tick_size) {
+        if contract.whole.contains(&day) || store.print_day_complete(&contract.stored, day, contract.tick_size, &contract.source) {
             contract.whole.insert(day);
             day -= 1;
             continue;
@@ -579,8 +606,19 @@ fn read_days(store: &Store, ladders: &dyn omacharts_engine::Ladders, contract: &
         let mut open = contract
             .open
             .remove(&day)
-            .or_else(|| store.load_print_day(&contract.stored, day, contract.tick_size))
-            .unwrap_or(PrintDay { tick_size: contract.tick_size, upto: i64::MIN, complete: false, prints: Vec::new() });
+            .or_else(|| store.load_print_day(&contract.stored, day, contract.tick_size, &contract.source))
+            .unwrap_or_else(|| PrintDay {
+                tick_size: contract.tick_size,
+                upto: i64::MIN,
+                complete: false,
+                prints: Vec::new(),
+                source: contract.source.clone(),
+            });
+        // A weekday known to some moment with not one trade in it was asked
+        // before the feed had it: asked whole again, never taken as quiet.
+        if open.prints.is_empty() && is_weekday(start) {
+            open.upto = i64::MIN;
+        }
         let since = open.upto.div_euclid(1_000_000_000).max(start);
         let to = end.min(settled);
         if since < to {
@@ -644,6 +682,10 @@ mod tests {
         sinks: Vec<PrintSink>,
         /// The feed has nothing from before here.
         depth: i64,
+        /// Nor from here on, when set: a file no longer written.
+        stops: Option<i64>,
+        /// Where it says it reads the trades from.
+        source: Option<String>,
     }
 
     struct Fake(Arc<Mutex<Asked>>);
@@ -682,7 +724,10 @@ mod tests {
         fn prints(&self, _: &str, _: f64, from: i64, to: i64) -> Result<Vec<Print>, ProviderError> {
             let mut asked = self.0.lock().unwrap();
             asked.spans.push((from, to));
-            Ok(hourly(from.max(asked.depth), to))
+            Ok(hourly(from.max(asked.depth), asked.stops.map_or(to, |stops| to.min(stops))))
+        }
+        fn source(&self, _: &str) -> Option<String> {
+            self.0.lock().unwrap().source.clone()
         }
         fn watch_prints(&self, _: &str, _: f64, sink: PrintSink) -> Result<Option<Box<dyn Subscription>>, ProviderError> {
             self.0.lock().unwrap().sinks.push(sink);
@@ -821,6 +866,38 @@ mod tests {
         let now_sizes = sizes(&large);
         assert_eq!(now_sizes.len(), had + 1);
         assert_eq!(now_sizes.last(), Some(&500));
+    }
+
+    /// Days read from a file Sierra Chart stopped writing part way are read
+    /// again whole once it reads the contract from the file written now:
+    /// the empty and the cut-short ones alike.
+    #[test]
+    fn days_read_from_a_file_given_up_are_read_again_from_the_one_written_now() {
+        let path = scratch("source");
+        let stale = Asked { stops: Some(NOW - DAY), source: Some("ESZ6.CME".into()), ..Asked::default() };
+        let asked = Arc::new(Mutex::new(stale));
+        {
+            let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(path.clone())).unwrap();
+            large.set_clock(now);
+            large.want(1, KEY, KEY, "ES", &es(), NOW - 3 * DAY, SETTINGS, false);
+            settle(&large);
+            assert!(sizes(&large).len() < 3 * 12, "the stale file had all of it");
+            large.shutdown();
+        }
+        let short = {
+            let mut asked = asked.lock().unwrap();
+            *asked = Asked { source: Some("ESZ26_FUT_CME".into()), ..Asked::default() };
+            asked.spans.len()
+        };
+        let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(path)).unwrap();
+        large.set_clock(now);
+        large.want(1, KEY, KEY, "ES", &es(), NOW - 3 * DAY, SETTINGS, false);
+        settle(&large);
+        let spans = asked.lock().unwrap().spans.clone();
+        assert_eq!(short, 0);
+        assert!(spans.iter().any(|(from, _)| *from < NOW - 2 * DAY), "the kept days were taken as this file's: {spans:?}");
+        let whole: usize = hourly(NOW - 3 * DAY, NOW - SETTLED).iter().filter(|print| print.size() == 100).count();
+        assert!(sizes(&large).len() + 2 >= whole, "{} of {whole} orders", sizes(&large).len());
     }
 
     #[test]

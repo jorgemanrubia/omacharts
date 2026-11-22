@@ -456,6 +456,15 @@ pub trait Ladders: Send + Sync {
         None
     }
 
+    /// What `symbol`'s trades are read from now, when a feed may read one
+    /// contract from more than one place: the file, of the two Sierra
+    /// Chart may keep of a contract, being written. What is kept of the
+    /// trades is kept with it, so a day read from one is never taken as
+    /// read from the other. `None` for a feed with one place.
+    fn source(&self, _symbol: &str) -> Option<String> {
+        None
+    }
+
     /// The minutes of `symbol` opening in `from..to`, unix seconds, oldest
     /// first, priced in whole ticks of `tick_size`. One request, made now,
     /// on the caller's thread, which is never the one drawing the window.
