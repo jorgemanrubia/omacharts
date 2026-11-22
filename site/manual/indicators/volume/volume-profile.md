@@ -56,7 +56,7 @@ The settings are in four groups, in the order below. A switch's rows show while 
 | **Reset every** | Session | Session, Week, Month, Quarter, Year ([Reset periods](/manual/indicators/#reset-periods)) |
 | **Last period only** | Off | On draws the newest period's profile alone: the same profile, with the same rows, as among the others, and past the last bar when aligned right |
 | **Calculation method** | Total volume | Total volume, or [Ask volume - bid volume](#ask-volume---bid-volume) |
-| **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet**. Only for Ask volume - bid volume |
+| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet** or **Monochrome**. Only for Ask volume - bid volume |
 | **Automatic rows**, **Rows** | On | A number of [rows](#rows) per period, 4 to 800, with **Automatic rows** off |
 | **Value area %** | 70% | 10 to 100%. Greyed for Ask volume - bid volume |
 
@@ -98,7 +98,7 @@ Several profiles aligned to the same edge sit side by side, in the order the leg
 
 Each row is what was bought at the ask less what was sold at the bid at its prices: rows where buyers took more reach out in the up colour of its **Colouring**, rows where sellers took more in the down colour. The point of control is the row furthest either way, and there is no value area. The legend reads **VP Δ**.
 
-**Default** is the colouring set in Preferences for new charts ([Defaults for new charts](/manual/chart-settings/#defaults-for-new-charts)), and changes when that does. Pick **Vivid**, **Soft** or **Quiet** to keep this profile in that colouring. Either way it is swapped when Preferences' **Swap up and down colours** is on. Monochrome is not offered, because it paints buying and selling alike.
+**Default** is the colouring set in Preferences for new charts ([Defaults for new charts](/manual/chart-settings/#defaults-for-new-charts)), and changes when that does. Pick **Vivid**, **Soft**, **Quiet** or **Monochrome** to keep this profile in that colouring. Either way it is swapped when Preferences' **Swap up and down colours** is on. **Monochrome** paints with one ink, the theme's neutral, solid for buying and faint for selling, so the sign still reads without colour.
 
 Which side a trade took is not in a bar, so this needs a data feed with volume at price: on any other it is one line saying so, and a period from before the feed's history begins is not drawn.
 

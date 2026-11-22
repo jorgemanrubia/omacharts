@@ -21,7 +21,7 @@ What was bought and what was sold is known only on a feed with volume at price, 
 
 ## Colours
 
-Each paints buying and selling in a **Colouring**: **Default**, the colouring chosen in Preferences, followed as it changes, or **Vivid**, **Soft** or **Quiet** of its own. **Buying** and **Selling** set either side's colour apart from the colouring, each with its **Opacity**. **Swap up and down colours** in Preferences swaps them too.
+Each paints buying and selling in a **Colouring**: **Default**, the colouring chosen in Preferences, followed as it changes, or **Vivid**, **Soft**, **Quiet** or **Monochrome** of its own. **Monochrome** paints with one ink, the theme's neutral, solid for buying and faint for selling, so the sign still reads without colour. **Buying** and **Selling** set either side's colour apart from the colouring, each with its **Opacity**. **Swap up and down colours** in Preferences swaps them too.
 
 ## See also
 

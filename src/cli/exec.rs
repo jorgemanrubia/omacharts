@@ -4300,20 +4300,10 @@ impl StyleEdits {
                 kind.label().to_lowercase()
             )));
         }
-        // A delta's sides are a rise and a fall: a colouring that paints
-        // the two alike, or the chart's own, is the study's refusal too.
-        if let Some(colouring) = &self.colouring {
-            let word = self.colouring_word.as_deref().unwrap_or_default();
-            if word == "chart" {
-                return Err(Fault::usage(
-                    "a volume profile follows the colouring chosen in Preferences; use default".into(),
-                ));
-            }
-            if colouring.is_some_and(|c| !omacharts_engine::drawings::DELTA_COLOURINGS.contains(&c)) {
-                return Err(Fault::usage(format!(
-                    "{word} paints rises and falls alike; a volume profile takes default, theme, theme-soft or theme-quiet"
-                )));
-            }
+        // A delta follows the colouring chosen in Preferences, never the
+        // chart's own: the study's refusal too.
+        if self.colouring.is_some() && self.colouring_word.as_deref() == Some("chart") {
+            return Err(Fault::usage("a volume profile follows the colouring chosen in Preferences; use default".into()));
         }
         // Two names for one thing, given two answers.
         for (study, given, drawing, other) in [
@@ -5663,17 +5653,10 @@ impl Edits {
         }
         if let Some(colouring) = &self.colouring {
             let word = self.colouring_word.as_deref().unwrap_or_default();
-            let telling = colouring.is_none_or(|c| omacharts_engine::indicators::profile::DELTA_COLOURINGS.contains(&c));
             match kind {
                 IndicatorKind::VolumeProfile | IndicatorKind::Cvd if word == "chart" => {
                     return Err(Fault::usage(format!(
                         "{} follows the colouring chosen in Preferences; use default",
-                        kind.short_name()
-                    )));
-                }
-                IndicatorKind::Volume | IndicatorKind::VolumeProfile | IndicatorKind::Cvd if !telling => {
-                    return Err(Fault::usage(format!(
-                        "{word} paints rises and falls alike; {} takes default, theme, theme-soft or theme-quiet",
                         kind.short_name()
                     )));
                 }
@@ -5683,12 +5666,6 @@ impl Edits {
                 IndicatorKind::VolumeDelta | IndicatorKind::Footprint | IndicatorKind::LargeOrders if word == "chart" => {
                     return Err(Fault::usage(format!(
                         "{} follows the colouring chosen in Preferences; use default",
-                        kind.short_name()
-                    )));
-                }
-                IndicatorKind::VolumeDelta | IndicatorKind::Footprint | IndicatorKind::LargeOrders if !telling => {
-                    return Err(Fault::usage(format!(
-                        "{word} paints rises and falls alike; {} takes default, theme, theme-soft or theme-quiet",
                         kind.short_name()
                     )));
                 }
@@ -10198,7 +10175,7 @@ mod tests {
         assert_eq!(out.code, 0, "{}", out.err);
         assert_eq!(colouring(&store).as_deref(), Some("theme-quiet"));
 
-        for refused in ["chart", "theme-mono", "loud"] {
+        for refused in ["chart", "loud"] {
             let out = run(&format!("chart indicator set volume_profile --book Macro --colouring {refused}"), &store);
             assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
         }
@@ -10212,8 +10189,8 @@ mod tests {
 
     /// Volume's Colouring is the delta profile's: `default`, and `chart` as
     /// it was spelled before, keep it painted as the chart paints its
-    /// candles, and the three palettes that tell a rise from a fall are its
-    /// own; Monochrome, which tells nothing, is refused.
+    /// candles, and the four colourings are its own, Monochrome among them;
+    /// a word that is no colouring is refused.
     #[test]
     fn volume_takes_the_delta_profiles_colourings() {
         let store = bare();
@@ -10230,7 +10207,7 @@ mod tests {
         assert_eq!(out.code, 0, "{}", out.err);
         assert_eq!(colouring(&store).as_deref(), Some("theme-soft"));
 
-        let out = run("chart indicator set volume --book Macro --colouring theme-mono", &store);
+        let out = run("chart indicator set volume --book Macro --colouring loud", &store);
         assert_eq!(out.code, super::super::EXIT_USAGE);
         assert_eq!(colouring(&store).as_deref(), Some("theme-soft"), "a refusal leaves it as it was");
 
@@ -10239,6 +10216,36 @@ mod tests {
             let out = run(&format!("chart indicator set volume --book Macro --colouring {back}"), &store);
             assert_eq!(out.code, 0, "{back}: {}", out.err);
             assert_eq!(colouring(&store), None, "{back}");
+        }
+    }
+
+    /// Monochrome is offered wherever a colouring is: every indicator with a
+    /// colouring and a volume profile drawing take it, by either spelling,
+    /// write it down by its scheme id, and give it back to `default`.
+    #[test]
+    fn every_colouring_flag_takes_monochrome() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        let read = |store: &Store, at: usize| -> serde_json::Value {
+            let out = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&out.out).unwrap();
+            let params = &parsed["indicators"][at]["params"];
+            match params.get("inks") {
+                Some(inks) => inks["colouring"].clone(),
+                None => params["colouring"].clone(),
+            }
+        };
+        let kinds = ["volume", "volume_profile", "cvd", "volume_delta", "footprint", "large_orders"];
+        for (at, kind) in kinds.iter().enumerate() {
+            assert_eq!(run(&format!("chart indicator add {kind} --book Macro"), &store).code, 0, "{kind}");
+            for word in ["monochrome", "theme-mono"] {
+                let out = run(&format!("chart indicator set {kind} --book Macro --colouring {word}"), &store);
+                assert_eq!(out.code, 0, "{kind} {word}: {}", out.err);
+                assert_eq!(read(&store, at), "theme-mono", "{kind} {word}");
+            }
+            let out = run(&format!("chart indicator set {kind} --book Macro --colouring default"), &store);
+            assert_eq!(out.code, 0, "{kind}: {}", out.err);
+            assert!(read(&store, at).is_null(), "{kind}");
         }
     }
 
@@ -10395,7 +10402,7 @@ mod tests {
         assert_eq!(out.code, 0, "{}", out.err);
         assert_eq!(params(&store)["reset"], "week");
 
-        for refused in ["--colouring chart", "--colouring theme-mono", "--rows 20", "--period 9"] {
+        for refused in ["--colouring chart", "--colouring loud", "--rows 20", "--period 9"] {
             let out = run(&format!("chart indicator set cvd --book Macro {refused}"), &store);
             assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
         }
@@ -11902,6 +11909,10 @@ mod tests {
         assert_eq!(style["line_style"], "dashed");
 
         let id = listed["drawings"][1]["id"].as_i64().unwrap();
+        let mono = run(&format!("chart drawing set --book Macro --id {id} --colouring monochrome"), &store);
+        assert_eq!(mono.code, 0, "{}", mono.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        assert_eq!(listed["drawings"][1]["style"]["profile"]["colouring"], "theme-mono", "Monochrome, as a study's");
         let set = run(&format!("chart drawing set --book Macro --id {id} --profile-method total --colouring default"), &store);
         assert_eq!(set.code, 0, "{}", set.err);
         let listed = json_of(&run("chart drawing list --book Macro --json", &store));

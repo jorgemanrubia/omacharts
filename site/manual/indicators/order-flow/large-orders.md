@@ -20,7 +20,7 @@ A bubble at the price and bar of every trade bigger than a size you choose, in t
 | **ETH threshold** | 20 | The same outside the regular session |
 | **Size against** | Session | **Visible bars**: the large orders on screen, so bubbles change size as the chart scrolls. **Session**: the session's. **RTH or ETH**: the session's regular or extended hours', each against its own |
 | **Combine same-time prints** | On | Off makes every print its own order |
-| **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet** ([Colours](/manual/indicators/order-flow/#colours)) |
+| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet** or **Monochrome** ([Colours](/manual/indicators/order-flow/#colours)) |
 | **Buying** | The colouring's up colour, at 55% opacity | A palette name, or a custom colour, with its **Opacity** |
 | **Selling** | The colouring's down colour, at 55% opacity | The same |
 

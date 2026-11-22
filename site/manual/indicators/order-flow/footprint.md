@@ -18,7 +18,7 @@ Each bar's volume at the ask less its volume at the bid, at every price it trade
 |---|---|---|
 | **Show from bar width** | 64 px | 24 to 400 px. Narrower bars are drawn as candles |
 | **Intensity** | On | Off fills every row alike, at the side's **Opacity** |
-| **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet** ([Colours](/manual/indicators/order-flow/#colours)) |
+| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet** or **Monochrome** ([Colours](/manual/indicators/order-flow/#colours)) |
 | **Buying** | The colouring's up colour, at 85% opacity | A palette name, or a custom colour, with its **Opacity** |
 | **Selling** | The colouring's down colour, at 85% opacity | The same |
 

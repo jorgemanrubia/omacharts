@@ -10794,18 +10794,16 @@ pub fn volume_colours(
     else {
         return (scheme.up.clone(), scheme.down.clone());
     };
-    let own;
-    let scheme = match colouring {
-        Some(colouring) => {
-            own = colouring.scheme(theme);
-            &own
-        }
-        None => scheme,
+    // Its own colouring paints a rise and a fall as a delta does, Monochrome
+    // in one ink at two strengths; Default echoes the chart's candles.
+    let (up, down) = match colouring {
+        Some(colouring) => colouring.signed(theme, false),
+        None => (scheme.up.clone(), scheme.down.clone()),
     };
     let pick = |choice: &Option<omacharts_engine::theme::ColorChoice>, fallback: &str| {
         choice.as_ref().map_or_else(|| fallback.to_string(), |c| c.resolve(theme))
     };
-    (pick(up_color, &scheme.up), pick(down_color, &scheme.down))
+    (pick(up_color, &up), pick(down_color, &down))
 }
 
 /// How solid a volume pane's bars are drawn, kept within what the row offers
@@ -10884,10 +10882,7 @@ const HOUSE_LOOK: (BarColouring, bool) = (BarColouring::Vivid, false);
 /// swapped when the house colouring is: red for a rise is said once, in
 /// Preferences, and a delta reads the way the candles do.
 fn delta_inks(theme: &Theme, (house, swapped): (BarColouring, bool)) -> [(String, String); 1 + DELTA_COLOURINGS.len()] {
-    let pair = |colouring: BarColouring| {
-        let scheme = colouring.scheme(theme).worn(swapped, false);
-        (scheme.up, scheme.down)
-    };
+    let pair = |colouring: BarColouring| colouring.signed(theme, swapped);
     let mut inks: [(String, String); 1 + DELTA_COLOURINGS.len()] = Default::default();
     inks[0] = pair(house);
     for (at, colouring) in DELTA_COLOURINGS.into_iter().enumerate() {
@@ -13133,8 +13128,8 @@ mod tests {
 
     /// A volume pane on Default, which every volume pane before its
     /// Colouring was a delta's is, paints as the chart's candles do; one of
-    /// the three palettes, or a Monochrome kept from before, paints as that
-    /// palette does, as it always did.
+    /// the palettes paints its rises and falls as a delta does, Monochrome in
+    /// one ink, solid and faint.
     #[test]
     fn a_volume_pane_on_default_is_painted_as_the_chart_s_candles() {
         let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
@@ -13145,9 +13140,12 @@ mod tests {
             if let omacharts_engine::Params::Volume { colouring, .. } = &mut indicator.params {
                 *colouring = Some(own);
             }
-            let painted = own.scheme(&theme);
-            assert_eq!(volume_colours(&indicator, &theme, &scheme), (painted.up, painted.down), "{own:?}");
+            assert_eq!(volume_colours(&indicator, &theme, &scheme), own.signed(&theme, false), "{own:?}");
         }
+        // Monochrome tells a rise from a fall by strength alone.
+        let (up, down) = BarColouring::Monochrome.signed(&theme, false);
+        assert_ne!(up, down);
+        assert_eq!(up, BarColouring::Monochrome.scheme(&theme).mono);
     }
 
     /// A chart of the regular session out of hours: the last price is the

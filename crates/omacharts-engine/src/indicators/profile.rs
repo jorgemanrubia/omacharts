@@ -425,13 +425,14 @@ impl Align {
     }
 }
 
-/// The colourings a delta can be painted in: the chart's own, less the one
-/// that paints a rise and a fall alike, which would leave bought and sold
-/// the same colour.
-pub const DELTA_COLOURINGS: [crate::theme::BarColouring; 3] = [
+/// The colourings a delta can be painted in: every one the chart has. A
+/// palette paints bought and sold in its rise and fall; Monochrome in one
+/// ink at two strengths, [`crate::theme::BarColouring::signed`].
+pub const DELTA_COLOURINGS: [crate::theme::BarColouring; 4] = [
     crate::theme::BarColouring::Vivid,
     crate::theme::BarColouring::Soft,
     crate::theme::BarColouring::Quiet,
+    crate::theme::BarColouring::Monochrome,
 ];
 
 /// What each row of a profile measures: everything that traded at its

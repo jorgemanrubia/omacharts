@@ -12,7 +12,7 @@ Buying less selling added up over a period ([Cumulative Delta](/manual/indicator
 |---|---|---|
 | `--anchor P` | `session`, `week`, `month`, `quarter`, `year`, or `never` for one running total | Where it starts again from nought |
 | `--cvd-style S` | `candles`, `line` | How it is drawn |
-| `--colouring C` | `default`, the one chosen in Preferences, or `theme`, `theme-soft`, `theme-quiet` | Its rises and falls |
+| `--colouring C` | `default`, the one chosen in Preferences, or `theme`, `theme-soft`, `theme-quiet`, `theme-mono` (or `monochrome`) | Its rises and falls |
 | `--height F` | 0.05 to 0.95; 0.16 when not given | Its strip |
 
 As a line it also takes `--color`, `--transparency`, `--width` and `--line-style`.

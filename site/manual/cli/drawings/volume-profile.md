@@ -25,7 +25,7 @@ nav_order: 9
 | `--poc B` | `on`, `off` | Whether a volume profile draws its point of control; on by default |
 | `--rows N` | `auto`, or a number of rows, held between 4 and 800 | How finely a volume profile divides its span; `auto` by default, as the study |
 | `--profile-method M` | `total`, `delta` | What a volume profile's rows measure: all the volume, or the ask volume less the bid volume, which needs a feed with volume at price; `total` by default, as the study |
-| `--colouring C` | `default`, `theme`, `theme-soft`, `theme-quiet` | How a delta volume profile's bought and sold rows are painted; `default` follows Preferences |
+| `--colouring C` | `default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono` (or `monochrome`) | How a delta volume profile's bought and sold rows are painted; `default` follows Preferences |
 | `--profile-width F` | 0.1 to 1 | How much of its span a volume profile's longest row reaches; 1, the whole span, by default |
 | `--outline B`, `--outline-color C`, `--outline-width F`, `--outline-style S` | As `--border`, `--color`, `--width`, `--line-style` | The study's names for a volume profile's outline; give one name or the other |
 

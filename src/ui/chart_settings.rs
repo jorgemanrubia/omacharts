@@ -4190,7 +4190,7 @@ mod tests {
     #[test]
     fn a_delta_profile_offers_the_two_toned_colourings_after_the_default() {
         let names: Vec<&str> = DELTA_COLOURINGS.iter().map(|c| c.label()).collect();
-        assert_eq!(names, ["Vivid", "Soft", "Quiet"]);
+        assert_eq!(names, ["Vivid", "Soft", "Quiet", "Monochrome"]);
         assert!(names.iter().all(|name| BarColouring::ALL.iter().any(|c| c.label() == *name)));
         assert_eq!(profile_rows::FOLLOWS_DEFAULTS, "Default");
         assert!(profile_rows::has_colouring(Method::Delta));

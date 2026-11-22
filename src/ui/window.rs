@@ -3383,7 +3383,7 @@ mod outside_change_tests {
             let names: Vec<String> = (0..row.model().map_or(0, |m| m.n_items()))
                 .filter_map(|at| row.model()?.item(at)?.downcast::<gtk::StringObject>().ok().map(|s| s.string().to_string()))
                 .collect();
-            assert_eq!(names, ["Default", "Vivid", "Soft", "Quiet"]);
+            assert_eq!(names, ["Default", "Vivid", "Soft", "Quiet", "Monochrome"]);
 
             row.set_selected(3);
             let stored = window.indicators();
@@ -3795,8 +3795,8 @@ mod outside_change_tests {
     }
 
     /// A volume pane's Colouring is the delta profile's: Default first, which
-    /// is the chart's own as it always was, then the three that tell a rise
-    /// from a fall.
+    /// is the chart's own as it always was, then the four colourings,
+    /// Monochrome last.
     #[test]
     fn a_volume_pane_offers_the_delta_profiles_colourings() {
         crate::ui::on_gtk(|| {
@@ -3811,7 +3811,7 @@ mod outside_change_tests {
                 .expect("a volume pane added");
             crate::ui::chart_settings::ChartSettings::present_indicator(&window, volume);
             let strip = titled::<adw::ComboRow>(&window, "Colouring").pop().expect("the volume pane's");
-            assert_eq!(offered(&strip), ["Default", "Vivid", "Soft", "Quiet"]);
+            assert_eq!(offered(&strip), ["Default", "Vivid", "Soft", "Quiet", "Monochrome"]);
             assert_eq!(strip.selected(), 0, "the chart's own, to begin with");
         });
     }
@@ -3853,7 +3853,7 @@ mod outside_change_tests {
             assert_eq!(names.last().map(String::as_str), Some(cvd::NEVER));
             assert_eq!(names[reset().selected() as usize], "Session", "the session, to begin with");
             assert_eq!(style().selected(), 0);
-            assert_eq!(offered(&colouring()), ["Default", "Vivid", "Soft", "Quiet"]);
+            assert_eq!(offered(&colouring()), ["Default", "Vivid", "Soft", "Quiet", "Monochrome"]);
 
             let group = reset().ancestor(adw::PreferencesGroup::static_type()).and_downcast::<adw::PreferencesGroup>();
             let said = group.and_then(|g| g.description()).map(|d| d.to_string());

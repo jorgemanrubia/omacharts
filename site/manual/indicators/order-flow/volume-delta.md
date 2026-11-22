@@ -17,7 +17,7 @@ Each bar's volume traded at the ask less its volume traded at the bid, drawn as 
 | Setting | Default | Allowed |
 |---|---|---|
 | **Pane height %** | 16% | 5 to 95% |
-| **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet** ([Colours](/manual/indicators/order-flow/#colours)) |
+| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet** or **Monochrome** ([Colours](/manual/indicators/order-flow/#colours)) |
 | **Buying** | The colouring's up colour, solid | A palette name, or a custom colour, with its **Opacity** |
 | **Selling** | The colouring's down colour, solid | The same |
 

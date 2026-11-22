@@ -31,7 +31,7 @@ crop: none
 |---|---|---|
 | **Reset every** | Session | Session, Week, Month, Quarter, Year ([Reset periods](/manual/indicators/#reset-periods)), or Never for one running total over the whole chart |
 | **Style** | Candles | Candles, or Line: the running total at each bar's close |
-| **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet** |
+| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet** or **Monochrome** |
 | **Pane height %** | 16% | 5 to 95% |
 | **Colour**, **Thickness**, **Line style** | The next free colour, 1 px, solid | Only for the Line style |
 

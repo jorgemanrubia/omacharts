@@ -1910,8 +1910,8 @@ mod tests {
                 .collect()
         };
         let pair = |state: &State, colouring: BarColouring, swapped: bool| {
-            let scheme = colouring.scheme(&state.theme).worn(swapped, false);
-            vec![(Side::Up, scheme.up), (Side::Down, scheme.down)]
+            let (up, down) = colouring.signed(&state.theme, swapped);
+            vec![(Side::Up, up), (Side::Down, down)]
         };
         assert_ne!(state.scheme.up, state.scheme.down);
         assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Vivid, false), "the house's Vivid to begin with");
@@ -1937,12 +1937,14 @@ mod tests {
                 }
             }
         }
-        // A colouring a delta is not offered, from a hand-edited chart, is
-        // the house's.
+        // Monochrome is offered too, and paints bought solid and sold faint
+        // in the one ink.
         state.house = (BarColouring::Soft, false);
         state.delta_inks = super::super::delta_inks(&state.theme, state.house);
         drawn.indicator.params = with_colouring(&drawn.indicator.params, Some(BarColouring::Monochrome));
-        assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Soft, false));
+        let mono = fills(&state, &drawn);
+        assert_ne!(mono[0].1, mono[1].1, "bought and sold still tell apart");
+        assert_eq!(mono[0].1, BarColouring::Monochrome.scheme(&state.theme).mono);
     }
 
     fn with_colouring(

@@ -1478,6 +1478,11 @@ pub fn theme_mono_bars(theme: &Theme) -> BarScheme {
     }
 }
 
+/// How far Monochrome's second strength is pushed into the background: far
+/// enough that solid and faint never read as the same, near enough that the
+/// faint one still stands off the background on every theme.
+pub const MONO_FAINT: f64 = 0.55;
+
 /// The palette a chart paints its bars from. The colours are the theme's;
 /// this is only which of them, and it belongs to the chart, as do the two
 /// switches worn over it: a rise drawn hollow, and up and down swapped.
@@ -1549,6 +1554,24 @@ impl BarColouring {
             BarColouring::Quiet => "Quiet",
             BarColouring::Monochrome => "Monochrome",
         }
+    }
+
+    /// The two colours of something with a sign, as an indicator paints
+    /// it: a rise, a buy or a positive delta first, then its opposite,
+    /// swapped when red is a rise. Each palette's rise and fall; Monochrome,
+    /// whose candles give up direction, keeps one ink, the theme's neutral,
+    /// solid for the first and [`MONO_FAINT`] of the way into the
+    /// background for the second, so a sign still reads in one hue.
+    pub fn signed(self, theme: &Theme, swapped: bool) -> (String, String) {
+        let scheme = self.scheme(theme);
+        let (first, second) = match self {
+            BarColouring::Monochrome => {
+                let faint = mix(&scheme.mono, &theme.ui.background, MONO_FAINT);
+                (scheme.mono, faint)
+            }
+            _ => (scheme.up, scheme.down),
+        };
+        if swapped { (second, first) } else { (first, second) }
     }
 
     pub fn scheme(self, theme: &Theme) -> BarScheme {

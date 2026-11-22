@@ -396,7 +396,9 @@ each order bigger than `--rth-threshold` (50) in regular hours or
 unless `--combine off`. The footprint and large orders need a feed with
 volume at price and say so on any other; the two deltas are estimated
 there and their legends read `≈`. The three new ones are painted by
-`--colouring default|theme|theme-soft|theme-quiet`, with `--buy-color`,
+`--colouring default|theme|theme-soft|theme-quiet|theme-mono` (Monochrome,
+also spelled `monochrome`: one ink, solid for buying and faint for
+selling; every colouring flag takes it, Volume's too), with `--buy-color`,
 `--sell-color` (`none` for the colouring's) and `--buy-transparency`,
 `--sell-transparency` (`default` for their own); `volume_delta` takes
 `--height`. They have no line, so `--color` and `--transparency` are refused.
@@ -404,7 +406,7 @@ there and their legends read `≈`. The three new ones are painted by
 ```
 omacharts chart indicator add footprint --show-from 80
 omacharts chart indicator add large_orders --rth-threshold 100 --size-against visible
-omacharts chart indicator set volume_delta --colouring theme-quiet --sell-transparency 0.3
+omacharts chart indicator add volume_delta --colouring monochrome --sell-transparency 0.3
 ```
 
 **A volume profile of any span is a drawing.** `profile` (or `vp`) profiles

@@ -30,7 +30,7 @@ crop: 0,812,1592,380 (then -quality 88 to site/assets/manual/indicators/volume.j
 | Setting | Default | Allowed |
 |---|---|---|
 | **Pane height %** | 18% | 5 to 95% |
-| **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet**, so the volume can be painted in a colouring the price is not ([Colouring](/manual/charts/#colouring)) |
+| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet** or **Monochrome**, so the volume can be painted in a colouring the price is not ([Colouring](/manual/charts/#colouring)) |
 | **Up** | The colouring's up colour, at 85% opacity | A palette name, or a custom colour. Its **Opacity** is how solid rising bars are drawn, 0 to 100%. At 100% they hide what is behind them |
 | **Down** | The colouring's down colour, at 85% opacity | The same for falling bars |
 
@@ -42,7 +42,7 @@ A selected strip is drawn solid whatever its opacity. The command line's `--opac
 
 Choosing a colouring keeps the volume in it while the price changes: vivid candles over a soft volume, or the other way round. A colouring of its own is painted its own way round, whether or not the chart's up and down are swapped. **Up** and **Down** then take that colouring's colours, and a colour set by hand wins over both.
 
-Monochrome is not offered, because it paints rising and falling bars alike. A strip already painted Monochrome keeps it, and it is listed last.
+Chosen here, **Monochrome** paints rising volume in the theme's neutral and falling volume in the same ink, faint, so direction still reads in one hue. A chart whose own candles are Monochrome gives up direction on purpose, and a strip on **Default** echoes it.
 
 <!-- regenerate:
 theme: tokyo-night
