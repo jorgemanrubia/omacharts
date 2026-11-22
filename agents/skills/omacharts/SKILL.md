@@ -88,6 +88,13 @@ One chart can be drawn from another feed than the rest with `chart set
 --feed FEED`, by the id or the name `provider list` gives, and put back on
 the order with `--feed default`.
 
+**Reading a chart in numbers needs no flag.** `chart bars --json`, `chart
+values --json`, `symbol quote SYMBOL --json` and `trading snapshot --json`
+read what a chart on screen holds; `trading wait --cross PRICE` or
+`--bar-close` waits on the price. Only trading is behind the experimental
+`agent-trading` flag: the account, position and orders in a snapshot,
+`trading watch` and `trading alert`.
+
 **Trading is real money, and nothing asks twice.** Trading is experimental.
 `trading accounts`, `positions` and `orders` read freely. `trading buy`,
 `sell`, `exit`, `modify`, `cancel` and `flatten` act on the user's trading
@@ -397,7 +404,7 @@ omacharts chart indicator set market_profile --tpo-style blocks --poc-color Ambe
 **Order flow: who took liquidity.** Four indicators in the Order flow
 family. `cvd` (Cumulative Delta) is buying less selling added up over a
 period, in a strip; `volume_delta` (VD) is the same delta bar by bar, one
-candle per bar from nought, in a strip; `footprint` (FP) replaces each candle,
+candle per bar from nought, in a strip; `footprint` replaces each candle,
 once a bar is wide enough for its rows to read (worked out from the figures' width; narrower with `--numbers off`), with a narrow bar of the chart's own style (none on a line chart)
 and each price's delta beside it, rows filled more solidly the bigger the
 delta unless `--intensity off`, the figures written in them unless
@@ -431,8 +438,7 @@ omacharts chart indicator add volume_delta --colouring monochrome --sell-transpa
 ```
 
 To read a footprint in numbers rather than look at it, use `chart values
---footprint` (it needs the experimental `agent-trading` flag and volume at
-price). It reads the bars on screen, `--last N`, or `--from WHEN [--to
+--footprint` (it needs volume at price). It reads the bars on screen, `--last N`, or `--from WHEN [--to
 WHEN]`, in rows of `--row-ticks auto|N`. `--json` gives each bar's `time`,
 OHLC, `volume`, `delta` and `poc`, and `rows` lowest first, each with `low`,
 `high`, `at_bid`, `at_ask`, `delta`, `total` and `trades`. These are exactly

@@ -31,7 +31,7 @@ omacharts chart values --footprint --last 5 --row-ticks 2 --json
 
 ## Reading it out
 
-`chart values --footprint` reads each bar's footprint back in numbers, row by row as the chart draws it: the same ladders, summed and folded into rows the same way. Like `chart values`, it reads the chart on screen and is behind the `agent-trading` flag. It needs a feed with volume at price; on any other it is refused, as a footprint draws only its line there. No footprint has to be on the chart.
+`chart values --footprint` reads each bar's footprint back in numbers, row by row as the chart draws it: the same ladders, summed and folded into rows the same way. Like `chart values`, it reads the chart on screen, so it needs a window open. It needs a feed with volume at price; on any other it is refused, as a footprint draws only its line there. No footprint has to be on the chart.
 
 | Flag | Takes | For |
 |---|---|---|

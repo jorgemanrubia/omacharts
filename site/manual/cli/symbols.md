@@ -10,6 +10,9 @@ nav_order: 1
 instruments there are, and how a listing abroad is named, is in [Symbols and
 search](/manual/symbols/). `symbol refresh` fetches the newest US listings now
 and says when they were built and how many there are (`--json`: `built`, `rows`, `updated`).
+`symbol quote SYMBOL` is the last price of one instrument, from a chart of it
+on screen when there is one, else as last fetched (`--json`: `source`,
+`last`; no feed gives a bid or an ask, so they are null).
 
 ## `symbol search`
 

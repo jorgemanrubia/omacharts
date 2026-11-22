@@ -133,8 +133,7 @@ need a feed with volume at price; on any other they draw only a line saying
 so. The volume delta has no line, nor have the footprint and large orders, so
 they refuse `--color`, `--transparency`, `--width` and `--line-style`.
 
-`chart values --footprint` (behind `agent-trading`, as `chart values` is)
-reads each bar's footprint back as the chart draws it, from the same
+`chart values --footprint` reads each bar's footprint back as the chart draws it, from the same
 ladders and the same fold into rows: `--row-ticks auto|N` (`auto` is the
 footprint's own, else the step it draws, else one tick), and the bars on
 screen, `--last N`, or `--from WHEN [--to WHEN]` (`--to` not included). It is
@@ -1518,6 +1517,21 @@ Sessions expire. When one does, charts say so rather than claiming the
 provider is unreachable, `provider status` says `Session expired`, and signing
 in again is the fix. All of this is also in Preferences → Market data →
 Provider, which is the same four facts with a button.
+
+## Reading a chart in numbers
+
+Four commands read a chart on screen back as numbers, for a script or an
+agent: `chart bars` (its last bars, oldest first), `chart values` (each
+indicator's latest values, and the levels read off the chart), `symbol
+quote` (the last price) and `trading snapshot` (the price, the levels and
+the last bars in a few lines, with a token for asking what changed since).
+`trading wait` waits for a price to be crossed (`--cross`) or a bar to close
+(`--bar-close`), up to `--timeout`, and answers with the snapshot. They read
+what the window holds, so they need one open (exit `6` without), and none of
+them is behind a flag: only trading is. With `agent-trading` on, the snapshot
+also says the chart's account, position and working orders, and a wait also
+wakes on a fill, an order or a position changing, or a price alert;
+`trading watch` and `trading alert` are behind it too.
 
 ## Trading from a terminal
 

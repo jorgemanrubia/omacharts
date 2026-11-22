@@ -119,11 +119,6 @@ pub fn dispatch(
         ("symbol", "show") => symbol_show(store, m, json, live),
         ("symbol", "refresh") => symbol_refresh(json),
         ("symbol", "reload") => symbol_reload(live),
-        ("symbol", "quote") | ("chart", "bars") | ("chart", "values")
-            if !crate::features::agent_trading() =>
-        {
-            Err(super::trading::agent_off())
-        }
         ("symbol", "quote") => symbol_quote(store, m, json, live),
         ("chart", "bars") => chart_bars(store, m, json, live),
         ("chart", "values") => chart_values(store, m, json, live),

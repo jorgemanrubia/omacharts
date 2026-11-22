@@ -172,7 +172,7 @@ pub fn run(
     live: Option<&dyn Live>,
     caller: &dyn Caller,
 ) -> Result<String, Fault> {
-    if matches!(verb, "snapshot" | "wait" | "watch" | "alert") && !crate::features::agent_trading() {
+    if matches!(verb, "watch" | "alert") && !crate::features::agent_trading() {
         return Err(agent_off());
     }
     match verb {

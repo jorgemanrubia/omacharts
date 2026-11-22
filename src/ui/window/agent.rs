@@ -1,7 +1,8 @@
-//! What an agent trading from the command line asks of the window, behind
-//! the `agent-trading` feature flag: a snapshot of a chart and its account
-//! in a few lines, a wait for the next thing that matters, a stream of
-//! every order, position and P&L change, and price alerts.
+//! What an agent asks of the window from the command line: a snapshot of a
+//! chart in a few lines, and a wait for the next thing that matters. Behind
+//! the `agent-trading` feature flag, what is trading's: the chart's account,
+//! position and orders in the snapshot, a stream of every order, position
+//! and P&L change, and price alerts.
 //!
 //! Everything is answered from what the window already holds — the book
 //! its sessions keep, the bars and indicators on screen — so a snapshot
@@ -452,9 +453,6 @@ impl Window {
 
     /// Chart `pane` moved: alerts and waits on its price, and on its bars.
     pub(super) fn agent_heard_price(self: &Rc<Self>, pane: &ChartPane) {
-        if !crate::features::agent_trading() {
-            return;
-        }
         if self.agent.alerts.borrow().is_empty()
             && self.agent.listeners.borrow().iter().all(|listener| matches!(listener.kind, Kind::Stream { .. }))
         {
@@ -668,7 +666,10 @@ impl Window {
             Some(since) => self.agent.log.borrow().iter().filter(|(seq, _)| *seq > since.seq).map(|(_, event)| event.clone()).collect(),
             None => Vec::new(),
         };
-        let target = self.order_target(pane).ok();
+        // The account, the position and the orders are trading's, behind
+        // its flag; the chart's own numbers are anybody's.
+        let trades = crate::features::agent_trading();
+        let target = if trades { self.order_target(pane).ok() } else { None };
         let view = self.trading.borrow();
         let key = target.as_ref().map(|target| target.account.key());
         let contract = target.as_ref().map(|target| target.contract.clone());
@@ -687,29 +688,32 @@ impl Window {
         let day = money.and_then(|money| money.day_pnl);
         if as_json {
             let p = |price: Option<f64>| price.map(|price| reading::num(price, places).parse::<f64>().unwrap_or(price));
-            return format!(
-                "{}\n",
-                json!({
-                    "tok": token.to_string(),
-                    "sym": read.symbol,
-                    "contract": contract,
-                    "tf": read.timeframe,
-                    "last": p(last),
-                    "bid": null,
-                    "ask": null,
-                    "acct": key.as_ref().map(|key| json!({
-                        "id": events::number(key),
-                        "bal": money.and_then(|money| money.balance),
-                        "day": day,
-                        "open": money.and_then(|money| money.unrealized),
-                    })),
-                    "pos": held.as_ref().map(|held| json!({"net": held.net, "avg": p(held.avg), "open": held.open_pnl})),
-                    "ord": working.iter().map(|order| json!([order.basket_id, side_letter(order.side), order.qty, kind_word(order.kind), p(order.price)])).collect::<Vec<_>>(),
-                    "lv": read.levels.json(places),
-                    "bars": shown.iter().map(|bar| reading::bar_json(bar, places)).collect::<Vec<_>>(),
-                    "ev": happened,
-                })
-            );
+            let mut said = json!({
+                "tok": token.to_string(),
+                "sym": read.symbol,
+                "contract": contract,
+                "tf": read.timeframe,
+                "last": p(last),
+                "bid": null,
+                "ask": null,
+                "acct": key.as_ref().map(|key| json!({
+                    "id": events::number(key),
+                    "bal": money.and_then(|money| money.balance),
+                    "day": day,
+                    "open": money.and_then(|money| money.unrealized),
+                })),
+                "pos": held.as_ref().map(|held| json!({"net": held.net, "avg": p(held.avg), "open": held.open_pnl})),
+                "ord": working.iter().map(|order| json!([order.basket_id, side_letter(order.side), order.qty, kind_word(order.kind), p(order.price)])).collect::<Vec<_>>(),
+                "lv": read.levels.json(places),
+                "bars": shown.iter().map(|bar| reading::bar_json(bar, places)).collect::<Vec<_>>(),
+                "ev": happened,
+            });
+            if !trades && let Some(said) = said.as_object_mut() {
+                for key in ["acct", "pos", "ord"] {
+                    said.remove(key);
+                }
+            }
+            return format!("{said}\n");
         }
         let mut out = String::new();
         let price_or_dash = |price: Option<f64>| price.map_or("-".to_string(), n);
@@ -720,6 +724,7 @@ impl Window {
             price_or_dash(last)
         ));
         match (&key, money) {
+            _ if !trades => {}
             (Some(key), money) => {
                 let mut line = format!("acct {}", events::number(key));
                 if let Some(balance) = money.and_then(|money| money.balance) {
@@ -736,6 +741,7 @@ impl Window {
             (None, _) => out.push_str("acct - (the chart trades no account)\n"),
         }
         match &held {
+            _ if !trades => {}
             Some(held) => out.push_str(&format!(
                 "pos {}{} @{} open {}\n",
                 if held.net > 0 { "+" } else { "" },
@@ -746,6 +752,7 @@ impl Window {
             None => out.push_str("pos flat\n"),
         }
         match working.is_empty() {
+            _ if !trades => {}
             true => out.push_str("ord none\n"),
             false => {
                 let orders: Vec<String> = working
@@ -1062,13 +1069,13 @@ mod tests {
         }
     }
 
-    /// A wait with nothing to wake it answers at its timeout.
+    /// A wait with nothing to wake it answers at its timeout; a wait on a
+    /// price needs no trading, so trading's flag is left off.
     #[test]
     fn a_wait_times_out() {
         crate::ui::on_gtk(|| {
             let (window, pane, _session, _) = long_es(trading::Linking::AfterTheFact);
             assert!(settle(&window, || pane.view.last_price().is_some()));
-            agents_on();
             let waiting = Rc::new(Terminal::default());
             let (code, _) = command_from(&window, "trading wait --timeout 1 --cross 1", &Typed(waiting.clone()));
             assert_eq!(code, 0);
@@ -1082,15 +1089,15 @@ mod tests {
         });
     }
 
-    /// The chart in numbers: bars, indicator values, and a quote.
+    /// The chart in numbers: bars, indicator values, a quote and a
+    /// snapshot, with trading's flag off, as they read only the chart. The
+    /// snapshot keeps the account, the position and the orders for the flag,
+    /// and the stream and the alerts are trading's alone.
     #[test]
     fn a_chart_is_read_in_numbers() {
         crate::ui::on_gtk(|| {
             let (window, pane, _session, _) = long_es(trading::Linking::AfterTheFact);
             assert!(settle(&window, || pane.view.bar_count() > 5));
-            let (code, why) = command(&window, "chart bars --last 3 --json");
-            assert_eq!(code, crate::cli::EXIT_USAGE, "off, there is no such command: {why}");
-            agents_on();
             let (code, out) = command(&window, "chart bars --last 3 --json");
             assert_eq!(code, 0, "{out}");
             let bars: Value = serde_json::from_str(&out).expect("JSON");
@@ -1108,6 +1115,27 @@ mod tests {
             assert_eq!(quote["source"], "chart", "{quote}");
             assert_eq!(quote["last"].as_f64(), close, "{quote}");
             assert!(quote["bid"].is_null());
+
+            let (code, out) = command(&window, "trading snapshot --json");
+            assert_eq!(code, 0, "{out}");
+            let read: Value = serde_json::from_str(&out).expect("JSON");
+            assert!(read["bars"].is_array() && read["last"].is_number(), "{read}");
+            for key in ["acct", "pos", "ord"] {
+                assert!(read.get(key).is_none(), "off, the snapshot says nothing of trading: {read}");
+            }
+            let (code, out) = command(&window, "trading snapshot");
+            assert_eq!(code, 0, "{out}");
+            assert!(!out.contains("\nacct ") && !out.contains("\npos "), "{out}");
+            for verb in ["trading watch", "trading alert 9000"] {
+                let (code, why) = command(&window, verb);
+                assert_eq!(code, crate::cli::EXIT_USAGE, "off, {verb} is refused: {why}");
+            }
+
+            agents_on();
+            let (code, out) = command(&window, "trading snapshot --json");
+            assert_eq!(code, 0, "{out}");
+            let read: Value = serde_json::from_str(&out).expect("JSON");
+            assert!(read["acct"].is_object() && read["pos"].is_object(), "on, the account and the position: {read}");
         });
     }
 

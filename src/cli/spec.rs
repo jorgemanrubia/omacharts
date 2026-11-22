@@ -231,9 +231,7 @@ pub const HIDDEN: &[Noun] = &[Noun {
 /// [`HIDDEN`] does for whole groups: for a verb only an experimental part
 /// of the app has a use for. `provider setup` sets up a feed that reads
 /// something on this machine, and the only one is Sierra Chart's, behind
-/// its feature flag; with the flag off it knows no such feed. `symbol
-/// quote`, `chart bars` and `chart values` read a chart in numbers for an
-/// agent that trades, behind the `agent-trading` flag.
+/// its feature flag; with the flag off it knows no such feed.
 pub const HIDDEN_VERBS: &[(&str, Verb)] = &[
     // Not experimental: the second half of `symbol refresh`, which downloads
     // in the process it was typed in and then hands this to an open window
@@ -252,70 +250,6 @@ pub const HIDDEN_VERBS: &[(&str, Verb)] = &[
         },
     ),
     (
-        "symbol",
-        Verb {
-            name: "quote",
-            about: "The last price of one instrument, from a chart of it on screen when there is one, else as last fetched; no feed here gives a bid or an ask, so they are null",
-            args: &[
-                Arg::req(
-                    "SYMBOL",
-                    "the ticker, or the ticker and its venue: SAP DE and SAP.DE are one",
-                ),
-                Arg::opt(
-                    "SUFFIX",
-                    "the venue suffix for a listing abroad, such as DE",
-                ),
-            ],
-            flags: &[],
-            example: "omacharts symbol quote ES",
-            json: true,
-            writes: false,
-            workspace: false,
-        },
-    ),
-    (
-        "chart",
-        Verb {
-            name: "bars",
-            about: "A chart's last bars as it holds them on screen, oldest first: time, open, high, low, close and volume",
-            args: &[],
-            flags: &[
-                Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
-                Flag::valued("chart", "CHART", CHART_SELECTOR),
-                Flag::valued(
-                    "last",
-                    "N",
-                    "how many bars, the newest of them (default 20)",
-                ),
-            ],
-            example: "omacharts chart bars --chart pos:0 --last 50 --json",
-            json: true,
-            writes: false,
-            workspace: true,
-        },
-    ),
-    (
-        "chart",
-        Verb {
-            name: "values",
-            about: "Each indicator on a chart with its latest values as drawn on screen: a line's value, a VWAP's and its bands', a volume profile's point of control and value area; or with --footprint, each bar's footprint row by row as drawn — sold at the bid, bought at the ask, delta, total and trades a row, and the bar's delta and point of control",
-            args: &[],
-            flags: &[
-                Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
-                Flag::valued("chart", "CHART", CHART_SELECTOR),
-                Flag::switch("footprint", "each bar's footprint, row by row, in place of the indicators (needs volume at price)"),
-                Flag::valued("row-ticks", "auto|N", "with --footprint: ticks a row holds; auto, the default, is the footprint's own or the step it draws"),
-                Flag::valued("last", "N", "with --footprint: the last N bars, the forming one among them (default: the bars on screen)"),
-                Flag::valued("from", "WHEN", "with --footprint: the first bar, 2026-09-01 or 2026-09-01T14:30 in the chart's clock, or unix seconds"),
-                Flag::valued("to", "WHEN", "with --footprint and --from: read up to this moment, not including it (default: the newest bar)"),
-            ],
-            example: "omacharts chart values --chart pos:0 --footprint --last 5 --json",
-            json: true,
-            writes: false,
-            workspace: true,
-        },
-    ),
-    (
         "provider",
         Verb {
             name: "setup",
@@ -331,33 +265,9 @@ pub const HIDDEN_VERBS: &[(&str, Verb)] = &[
             workspace: false,
         },
     ),
-    // Trading for an agent, behind the `agent-trading` feature flag.
-    (
-        "trading",
-        Verb {
-            name: "snapshot",
-            about: "Everything an agent decides on, in a few lines: the chart's account, the position, the working orders, the last price, the key levels and the last bars",
-            args: &[],
-            flags: SNAPSHOT_FLAGS,
-            example: "omacharts trading snapshot --chart pos:0 --bars 12",
-            json: true,
-            writes: false,
-            workspace: true,
-        },
-    ),
-    (
-        "trading",
-        Verb {
-            name: "wait",
-            about: "Wait until something happens (a fill, an order or a position changing, an alert, a price crossed, a bar closed) or the time is up; then say what, and the snapshot",
-            args: &[],
-            flags: WAIT_FLAGS,
-            example: "omacharts trading wait --timeout 30 --cross 7620 --bar-close --since 12.1794866400",
-            json: true,
-            writes: false,
-            workspace: true,
-        },
-    ),
+    // Trading for an agent, behind the `agent-trading` feature flag: the
+    // stream of order, position and P&L changes, and the price alerts said
+    // in it.
     (
         "trading",
         Verb {
@@ -748,6 +658,25 @@ pub const SURFACE: &[Noun] = &[
                 args: &[Arg::req("ROOT", "a futures root, such as ES")],
                 flags: &[],
                 example: "omacharts symbol contracts ES",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
+                name: "quote",
+                about: "The last price of one instrument, from a chart of it on screen when there is one, else as last fetched; no feed here gives a bid or an ask, so they are null",
+                args: &[
+                    Arg::req(
+                        "SYMBOL",
+                        "the ticker, or the ticker and its venue: SAP DE and SAP.DE are one",
+                    ),
+                    Arg::opt(
+                        "SUFFIX",
+                        "the venue suffix for a listing abroad, such as DE",
+                    ),
+                ],
+                flags: &[],
+                example: "omacharts symbol quote ES",
                 json: true,
                 writes: false,
                 workspace: false,
@@ -1159,6 +1088,42 @@ pub const SURFACE: &[Noun] = &[
                 args: &[],
                 flags: &[Flag::valued("book", "BOOK", "which chartbook (default: the open one)")],
                 example: "omacharts chart list --json",
+                json: true,
+                writes: false,
+                workspace: true,
+            },
+            Verb {
+                name: "bars",
+                about: "A chart's last bars as it holds them on screen, oldest first: time, open, high, low, close and volume",
+                args: &[],
+                flags: &[
+                    Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+                    Flag::valued("chart", "CHART", CHART_SELECTOR),
+                    Flag::valued(
+                        "last",
+                        "N",
+                        "how many bars, the newest of them (default 20)",
+                    ),
+                ],
+                example: "omacharts chart bars --chart pos:0 --last 50 --json",
+                json: true,
+                writes: false,
+                workspace: true,
+            },
+            Verb {
+                name: "values",
+                about: "Each indicator on a chart with its latest values as drawn on screen: a line's value, a VWAP's and its bands', a volume profile's point of control and value area; or with --footprint, each bar's footprint row by row as drawn — sold at the bid, bought at the ask, delta, total and trades a row, and the bar's delta and point of control",
+                args: &[],
+                flags: &[
+                    Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+                    Flag::valued("chart", "CHART", CHART_SELECTOR),
+                    Flag::switch("footprint", "each bar's footprint, row by row, in place of the indicators (needs volume at price)"),
+                    Flag::valued("row-ticks", "auto|N", "with --footprint: ticks a row holds; auto, the default, is the footprint's own or the step it draws"),
+                    Flag::valued("last", "N", "with --footprint: the last N bars, the forming one among them (default: the bars on screen)"),
+                    Flag::valued("from", "WHEN", "with --footprint: the first bar, 2026-09-01 or 2026-09-01T14:30 in the chart's clock, or unix seconds"),
+                    Flag::valued("to", "WHEN", "with --footprint and --from: read up to this moment, not including it (default: the newest bar)"),
+                ],
+                example: "omacharts chart values --chart pos:0 --footprint --last 5 --json",
                 json: true,
                 writes: false,
                 workspace: true,
@@ -1828,6 +1793,26 @@ pub const SURFACE: &[Noun] = &[
                 json: true,
                 writes: false,
                 workspace: false,
+            },
+            Verb {
+                name: "snapshot",
+                about: "A chart in a few lines: the last price, the key levels and the last bars; with the `agent-trading` flag on, the chart's account, the position and the working orders too",
+                args: &[],
+                flags: SNAPSHOT_FLAGS,
+                example: "omacharts trading snapshot --chart pos:0 --bars 12",
+                json: true,
+                writes: false,
+                workspace: true,
+            },
+            Verb {
+                name: "wait",
+                about: "Wait until a price is crossed or a bar closes, or with the `agent-trading` flag on a fill, an order or a position changing or an alert, or the time is up; then say what, and the snapshot",
+                args: &[],
+                flags: WAIT_FLAGS,
+                example: "omacharts trading wait --timeout 30 --cross 7620 --bar-close --since 12.1794866400",
+                json: true,
+                writes: false,
+                workspace: true,
             },
             Verb {
                 name: "flatten",

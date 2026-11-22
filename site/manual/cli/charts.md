@@ -11,6 +11,13 @@ nav_order: 2
 chart, or what new charts open with. What each setting looks like on screen
 is in [Charts](/manual/charts/).
 
+`chart bars [--last N]` reads a chart's last bars back as the window holds
+them, oldest first: time, open, high, low, close and volume. `chart values`
+reads each indicator's latest values as drawn, and the levels read off the
+chart: the session's VWAP and bands, the volume profile's point of control
+and value area, and the session's range. Both read the chart on screen, so
+they need a window open; `--json` for a program.
+
 ## `chart set`
 
 Changes what a chart shows and how. The reply names the chart and each
