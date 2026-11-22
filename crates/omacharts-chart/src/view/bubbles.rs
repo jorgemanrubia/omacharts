@@ -44,6 +44,15 @@ pub(super) fn radius(size: u64, largest: u64, bar_px: f64) -> f64 {
     MIN_RADIUS + (most - MIN_RADIUS) * bubble_share(size, largest)
 }
 
+/// Every shown large orders indicator's bubbles.
+pub(super) fn draw_all(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
+    for drawn in state.shown_indicators() {
+        if matches!(drawn.output, omacharts_engine::indicators::Output::LargeOrders) {
+            draw(cr, state, drawn, columns, to_y);
+        }
+    }
+}
+
 /// Draw `drawn`'s bubbles over the bars on screen.
 pub(super) fn draw(cr: &cairo::Context, state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
     let Params::LargeOrders { regular, extended, compare, combine, inks } = &drawn.indicator.params else { return };

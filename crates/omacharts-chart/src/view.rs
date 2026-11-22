@@ -7105,6 +7105,12 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     draw_drawings(cr, state, &plan, &scale, true);
     // A line of the chart's own goes over the compared ones, so it is drawn
     // with them instead.
+    // Under a footprint the bubbles go beneath its rows, so they never hide
+    // a row's figure; over candles they go on top, as there is no figure.
+    let under_footprint = footprint::shown(state, &columns).is_some();
+    if under_footprint {
+        bubbles::draw_all(cr, state, &columns, &to_y);
+    }
     if !(state.drawn_as_line() && compared.is_some()) {
         draw_candles(cr, state, &columns, &to_y);
     }
@@ -10727,7 +10733,10 @@ fn draw_indicator_lines(
             | Output::Time(_)
             | Output::Unmet(_)
             | Output::Footprint => {}
-            Output::LargeOrders => bubbles::draw(cr, state, drawn, columns, to_y),
+            Output::LargeOrders if footprint::shown(state, columns).is_none() => {
+                bubbles::draw(cr, state, drawn, columns, to_y)
+            }
+            Output::LargeOrders => {}
         }
     }
 }

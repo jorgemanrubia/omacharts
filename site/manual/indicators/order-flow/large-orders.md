@@ -13,12 +13,15 @@ A bubble at the price and bar of every trade bigger than a size you choose, in t
 | Over the candles | **Large > 50 · 20** | `large` | `large_orders` |
 
 <!-- regenerate:
-theme: a fresh profile's default
-window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*, signed in to the Fake Rich Feed in Preferences, Data
+theme: midnight, the fallback when the sandboxed HOME has no Omarchy theme
+window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
 state:
+  key ctrl+comma; click 267 252 (Data); click 939 222 (Sign in, Fake Rich Feed)
+  click 643 419; type 12345; click 606 473; type demo; click 767 542; click 1166 91; key Escape
   omacharts chartbook create "Order flow" --symbol ES --switch
   omacharts chart set --resolution 1m
   omacharts chart indicator add large_orders
+  (wait for the bubbles: the trades are read after the bars)
 capture: bin/headless-window cli chart screenshot --output /tmp/large-orders.png; magick /tmp/large-orders.png -quality 88 site/assets/manual/indicators/large-orders.jpg
 crop: none
 -->
@@ -42,7 +45,7 @@ An order that takes more than the best price offers fills against several restin
 
 ## How far back
 
-Large orders start where the feed's trades start. On Rithmic, earlier days' trades are fetched once from its history and kept on disk, back to the first weekday it has none of. Rithmic publishes no limit on how far back that goes. On Sierra Chart they are read from its own data files. Nothing is shown for days before the trades begin, and the chart is drawn first: the bubbles of the last two days appear once their trades are read, and the earlier ones after.
+Large orders start where the feed's trades start. On Rithmic, earlier days' trades are fetched once from its history and kept. Rithmic publishes no limit on how far back that goes. On Sierra Chart they are read from its own data files. Nothing is shown for days before the trades begin, and the chart is drawn first: the bubbles of the last two days appear once their trades are read, and the earlier ones after.
 
 A continuous chart of a futures root shows the large orders of the month that is front now. An earlier month traded at prices of its own, and its trades are not moved onto the continuous chart.
 

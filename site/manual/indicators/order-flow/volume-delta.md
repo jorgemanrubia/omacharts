@@ -13,9 +13,11 @@ Each bar's volume traded at the ask less its volume traded at the bid, drawn as 
 | In a strip of its own | **VD** | `vd` | `volume_delta` |
 
 <!-- regenerate:
-theme: a fresh profile's default
-window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*, signed in to the Fake Rich Feed in Preferences, Data
+theme: midnight, the fallback when the sandboxed HOME has no Omarchy theme
+window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
 state:
+  key ctrl+comma; click 267 252 (Data); click 939 222 (Sign in, Fake Rich Feed)
+  click 643 419; type 12345; click 606 473; type demo; click 767 542; click 1166 91; key Escape
   omacharts chartbook create "Order flow" --symbol ES --switch
   omacharts chart set --resolution 1m
   omacharts chart indicator add volume_delta
