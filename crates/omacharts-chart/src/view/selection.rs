@@ -1937,14 +1937,14 @@ mod tests {
                 }
             }
         }
-        // Monochrome is offered too, and paints bought solid and sold faint
-        // in the one ink.
+        // Monochrome is offered too, and paints bought and sold in its one
+        // ink alike.
         state.house = (BarColouring::Soft, false);
         state.delta_inks = super::super::delta_inks(&state.theme, state.house);
         drawn.indicator.params = with_colouring(&drawn.indicator.params, Some(BarColouring::Monochrome));
         let mono = fills(&state, &drawn);
-        assert_ne!(mono[0].1, mono[1].1, "bought and sold still tell apart");
-        assert_eq!(mono[0].1, BarColouring::Monochrome.scheme(&state.theme).mono);
+        let ink = BarColouring::Monochrome.scheme(&state.theme).mono;
+        assert!(mono.iter().all(|(_, colour)| *colour == ink), "one colour: {mono:?}");
     }
 
     fn with_colouring(

@@ -426,8 +426,8 @@ impl Align {
 }
 
 /// The colourings a delta can be painted in: every one the chart has. A
-/// palette paints bought and sold in its rise and fall; Monochrome in one
-/// ink at two strengths, [`crate::theme::BarColouring::signed`].
+/// palette paints bought and sold in its rise and fall; Monochrome both in
+/// its one ink, [`crate::theme::BarColouring::signed`].
 pub const DELTA_COLOURINGS: [crate::theme::BarColouring; 4] = [
     crate::theme::BarColouring::Vivid,
     crate::theme::BarColouring::Soft,

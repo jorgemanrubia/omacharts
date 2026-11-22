@@ -42,7 +42,7 @@ A selected strip is drawn solid whatever its opacity. The command line's `--opac
 
 Choosing a colouring keeps the volume in it while the price changes: vivid candles over a soft volume, or the other way round. A colouring of its own is painted its own way round, whether or not the chart's up and down are swapped. **Up** and **Down** then take that colouring's colours, and a colour set by hand wins over both.
 
-Chosen here, **Monochrome** paints rising volume in the theme's neutral and falling volume in the same ink, faint, so direction still reads in one hue. A chart whose own candles are Monochrome gives up direction on purpose, and a strip on **Default** echoes it.
+Chosen here, **Monochrome** paints every bar in one colour, the ink of the chart's Monochrome candles, rising and falling alike; a strip on **Default** under Monochrome candles is that same colour. **Quiet** is not the same: it keeps two muted colours, one for rising and one for falling.
 
 <!-- regenerate:
 theme: tokyo-night
