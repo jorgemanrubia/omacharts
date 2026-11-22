@@ -12,6 +12,8 @@ A bubble at the price and bar of every trade bigger than a size you choose, in t
 |---|---|---|---|
 | Over the candles | **Large orders > 50 · 20** | `large` | `large_orders` |
 
+The legend gives the RTH threshold, then the ETH one, and one figure when the two are the same: **Large orders > 5**.
+
 <!-- regenerate:
 theme: midnight, the fallback when the sandboxed HOME has no Omarchy theme
 window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
@@ -40,6 +42,8 @@ crop: none
 | **Opacity** | 35%, a bubble's rim stronger | How solid buying and selling are both drawn, 0 to 100%. Shown for every colouring but **Custom** |
 | **Buying** | The colour buying was drawn in before **Custom** was chosen | A palette name, or a custom colour, with its own **Opacity**. Shown only for **Custom** |
 | **Selling** | The same for selling | The same |
+
+Each threshold changes only its own hours' bubbles. A threshold or **Combine same-time prints** changed makes a new set of bubbles from the trades already read, without asking the feed again: they appear a moment later, and the chart is drawn as it was meanwhile, without bubbles. The bubbles from just before the change are kept, so changing it back shows them at once. Stepping a threshold quickly through several values makes only the last one's bubbles.
 
 ## Combining prints
 

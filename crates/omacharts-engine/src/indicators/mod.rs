@@ -279,6 +279,15 @@ impl Kind {
         !matches!(self, Kind::SessionTimes)
     }
 
+    /// Whether a chart holds at most one. Session Times holds every range,
+    /// and a second would shade the same hours twice; a chart draws one
+    /// footprint, the first shown, in place of its bars, so a second is
+    /// never seen and its settings change nothing. Asking for another opens
+    /// the one there, and pasting one sets the one there.
+    pub fn one_per_chart(self) -> bool {
+        matches!(self, Kind::SessionTimes | Kind::Footprint)
+    }
+
     /// Whether a click on the chart can select it. Session shading is the
     /// ground every bar stands on: a click anywhere would land on it, so it
     /// is reached from the Indicators page instead.

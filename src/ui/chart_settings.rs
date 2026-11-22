@@ -1254,7 +1254,14 @@ enum Panel {
     /// template the chart was on before the indicator went onto it, to go
     /// back onto if it is never added.
     Add(Option<u32>),
+    /// A dialog of its own over one already on the chart, closed by its
+    /// close button: the picker asked for another of a kind a chart holds
+    /// one of, and this is the one it holds.
+    Alone,
 }
+
+/// Retitles an indicator's open panel.
+type Titler = Box<dyn Fn(&str)>;
 
 /// One indicator's settings.
 ///
@@ -1269,6 +1276,22 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
         return;
     };
     let colour = drawn_colour(owner, &indicators, id);
+
+    // The panel's title is the indicator's label, which its settings write
+    // — "Large orders > 50 · 20" — so it follows every change made here, as
+    // the legend does, rather than saying what was set when it opened.
+    let titled: Rc<RefCell<Option<Titler>>> = Rc::default();
+    let refresh = &{
+        let outer = refresh.clone();
+        let owner = owner.clone();
+        let titled = titled.clone();
+        Refresh(Rc::new(move || {
+            outer.run();
+            if let (Some(title), Some(now)) = (titled.borrow().as_ref(), owner.indicators().iter().find(|i| i.id == id)) {
+                title(&now.label());
+            }
+        }))
+    };
 
     let page = adw::PreferencesPage::new();
     // Said before anything can be changed, however the panel was reached —
@@ -1318,12 +1341,24 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
         // Done beside it would be the same action offered twice.
         Panel::Subpage(dialog) => {
             let subpage = adw::NavigationPage::new(&toolbar, &indicator.label());
+            let titling = subpage.downgrade();
+            *titled.borrow_mut() = Some(Box::new(move |title| {
+                if let Some(subpage) = titling.upgrade() {
+                    subpage.set_title(title);
+                }
+            }));
             dialog.push_subpage(&subpage);
             focus_first_parameter(&page);
         }
         Panel::Add(was_on) => {
             let modal = adw::Dialog::new();
             modal.set_title(&indicator.label());
+            let titling = modal.downgrade();
+            *titled.borrow_mut() = Some(Box::new(move |title| {
+                if let Some(modal) = titling.upgrade() {
+                    modal.set_title(title);
+                }
+            }));
             modal.set_content_width(DIALOG_WIDTH);
             modal.set_content_height((owner.window.height() * 85 / 100).max(620));
             modal.set_child(Some(&toolbar));
@@ -1382,6 +1417,21 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
                 refresh_for_close.run();
             });
 
+            modal.present(Some(&owner.window));
+            focus_first_parameter(&page);
+        }
+        Panel::Alone => {
+            let modal = adw::Dialog::new();
+            modal.set_title(&indicator.label());
+            modal.set_content_width(DIALOG_WIDTH);
+            modal.set_content_height((owner.window.height() * 85 / 100).max(620));
+            modal.set_child(Some(&toolbar));
+            let titling = modal.downgrade();
+            *titled.borrow_mut() = Some(Box::new(move |title| {
+                if let Some(modal) = titling.upgrade() {
+                    modal.set_title(title);
+                }
+            }));
             modal.present(Some(&owner.window));
             focus_first_parameter(&page);
         }
@@ -4123,6 +4173,13 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
     rows.connect_row_activated(move |_, row| {
         let at = row.index().max(0) as usize;
         let Some(picked) = shown.borrow().get(at).cloned() else { return };
+        // A kind a chart holds one of, asked for again: the one there is
+        // opened, rather than a second put down that would never be drawn.
+        if let Some(there) = there_already(&owner_for_pick.indicators(), picked.kind) {
+            dialog_for_pick.close();
+            open_indicator_panel_for(&owner_for_pick, &refresh_for_pick, there, Panel::Alone);
+            return;
+        }
         let id = owner_for_pick.next_indicator_id();
         // On a template it goes onto the template, like every other change
         // made here, so there is no template to go back onto if it is not
@@ -4162,6 +4219,12 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
 }
 
 use gtk::glib;
+
+/// The one indicator of `kind` among `indicators`, for a kind a chart holds
+/// at most one of.
+pub(crate) fn there_already(indicators: &[Indicator], kind: Kind) -> Option<u32> {
+    kind.one_per_chart().then(|| indicators.iter().find(|i| i.kind == kind).map(|i| i.id)).flatten()
+}
 
 /// A volume or market profile study's settings, as the rows of each group
 /// by title in the order they are laid out: what the drawing's are held to.
@@ -4238,5 +4301,17 @@ mod tests {
             let shown = as_percent(end);
             assert_eq!(shown, shown.round(), "{end} is not a whole percentage");
         }
+    }
+
+    /// The kinds a chart draws one of are found to be changed rather than
+    /// added again; anything else is added beside what is there.
+    #[test]
+    fn only_one_footprint_or_session_times_is_there_already() {
+        use omacharts_engine::indicators::Kind;
+        let held = [Indicator::new(3, Kind::Sma), Indicator::new(4, Kind::Footprint), Indicator::new(5, Kind::SessionTimes)];
+        assert_eq!(super::there_already(&held, Kind::Footprint), Some(4));
+        assert_eq!(super::there_already(&held, Kind::SessionTimes), Some(5));
+        assert_eq!(super::there_already(&held, Kind::Sma), None, "as many as wanted");
+        assert_eq!(super::there_already(&held[..1], Kind::Footprint), None);
     }
 }

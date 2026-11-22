@@ -3283,13 +3283,19 @@ fn edit_indicators(
 ) -> Result<String, Fault> {
     Ok(match action {
         // One Session Times holds every range; a second would shade the same
-        // ETH twice, which only reads as the shading being too dark.
-        "add" if kind == IndicatorKind::SessionTimes
-            && indicators.iter().any(|i| is_kind(i, kind)) =>
-        {
-            return Err(Fault::usage(format!(
-                "{whose} already has Session Times; add a range to it with `indicator set session_times --add-range`"
-            )));
+        // ETH twice, which only reads as the shading being too dark. And a
+        // chart draws one footprint: a second is never seen.
+        "add" if kind.one_per_chart() && indicators.iter().any(|i| is_kind(i, kind)) => {
+            return Err(Fault::usage(match kind {
+                IndicatorKind::SessionTimes => format!(
+                    "{whose} already has Session Times; add a range to it with `indicator set session_times --add-range`"
+                ),
+                _ => format!(
+                    "{whose} already has a {}, and draws only one; change it with `indicator set {}`",
+                    kind.name(),
+                    kind.key()
+                ),
+            }));
         }
         "add" => {
             let next = indicators
@@ -9094,6 +9100,24 @@ mod tests {
         let refused = run("chart indicator add session_times --book Macro --chart pos:0", &store);
         assert_eq!(refused.code, super::super::EXIT_USAGE);
         assert!(refused.err.contains("already has Session Times"), "{}", refused.err);
+    }
+
+    /// A chart draws one footprint, the first: the author's second, with its
+    /// volume profile on, was never drawn. A second is refused, with the
+    /// command that changes the one there.
+    #[test]
+    fn a_second_footprint_is_refused() {
+        let store = on_default();
+        run("chartbook create Flow --switch", &store);
+        let out = run("chart indicator add footprint --book Flow", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let refused = run("chart indicator add footprint --book Flow", &store);
+        assert_eq!(refused.code, super::super::EXIT_USAGE);
+        assert!(refused.err.contains("already has a Footprint") && refused.err.contains("indicator set footprint"), "{}", refused.err);
+        let workspace = Workspace::load(&store);
+        let panes = charts::panes(&workspace.books()[0]);
+        let footprints = panes[0]["indicators"].as_array().unwrap().iter().filter(|i| i["kind"] == "footprint").count();
+        assert_eq!(footprints, 1);
     }
 
     /// Nothing disappears from a chart when its template goes.

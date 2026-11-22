@@ -12,6 +12,8 @@ Each bar's volume at the ask less its volume at the bid, at every price it trade
 |---|---|---|---|
 | Over the candles, from a bar width | **Footprint** | `footprint` | `footprint` |
 
+A chart has one footprint. Picking **Footprint** again in the indicator picker opens the settings of the one already there, and pasting a footprint onto a chart that has one gives that footprint the pasted settings.
+
 <!-- regenerate:
 theme: midnight, the fallback when the sandboxed HOME has no Omarchy theme
 window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*

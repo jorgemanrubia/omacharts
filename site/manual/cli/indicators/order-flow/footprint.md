@@ -29,6 +29,8 @@ omacharts chart indicator set footprint --profile on --profile-color violet --pr
 omacharts chart values --indicator footprint --last 5 --row-ticks 2 --json
 ```
 
+A chart has one footprint, so a second `add` is refused with exit 2: `` this chart already has a Footprint, and draws only one; change it with `indicator set footprint` ``.
+
 ## Reading it out
 
 `chart values --indicator footprint` reads each bar's footprint back in numbers, row by row as the chart draws it: the same ladders, summed and folded into rows the same way. It reads the chart on screen, so it needs a window open. No footprint has to be on the chart. On a feed without volume at price it reads only `unmet`, as a footprint draws only its line there. `--footprint` is the same as `--indicator footprint`.

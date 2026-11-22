@@ -12405,7 +12405,24 @@ impl Window {
         }
         if !self.repaint_indicators(pane) {
             self.recompute_panes(&[pane.id]);
+            return;
         }
+        // Nothing worked out again, but a large orders indicator's
+        // thresholds name the book it draws: the feed is asked for it, and
+        // the chart drawn again when it comes. Without this the chart drew
+        // the book of the settings it last computed with, and none at all
+        // for any other.
+        self.want_large_orders(pane);
+    }
+
+    /// Ask chart `pane`'s feed for the books of its large orders indicators
+    /// as they are set now, over the bars it holds.
+    fn want_large_orders(&self, pane: &Rc<ChartPane>) {
+        let source = pane.ladders.borrow().clone();
+        let instrument = pane.instrument.borrow().clone();
+        let (Some(source), Some(instrument)) = (source, instrument) else { return };
+        let all = pane.indicators.borrow().clone();
+        pane.view.with_bars(|bars| source.want_large_orders(pane.id, &instrument, bars, &all));
     }
 
     /// The colour indicator `id` is drawn in on chart `pane` now, for its
@@ -14507,12 +14524,19 @@ impl Window {
     /// Another of the indicator copied, on the focused chart, or on the
     /// template it is on, as adding one there does. Selected once it is
     /// down, so a paste can be followed at once by its properties.
+    ///
+    /// A kind a chart holds one of is not put down twice: pasted where there
+    /// is one, it sets that one, which keeps its place.
     fn paste_indicator(self: &Rc<Self>, mut indicator: Indicator) {
         let pane = self.focused_pane();
         let mut indicators = pane.indicators.borrow().clone();
-        indicator.id = indicators.iter().map(|i| i.id).max().unwrap_or(0) + 1;
-        let id = indicator.id;
-        indicators.push(indicator);
+        let id = crate::ui::chart_settings::there_already(&indicators, indicator.kind)
+            .unwrap_or_else(|| indicators.iter().map(|i| i.id).max().unwrap_or(0) + 1);
+        indicator.id = id;
+        match indicators.iter_mut().find(|i| i.id == id) {
+            Some(slot) => *slot = indicator,
+            None => indicators.push(indicator),
+        }
         self.change_indicators_of(&pane, indicators);
         pane.view.area.grab_focus();
         pane.view.pick_when_shown(id);

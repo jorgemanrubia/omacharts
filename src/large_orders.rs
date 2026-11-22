@@ -28,7 +28,11 @@
 //! **Books.** One per contract and settings (thresholds, and whether
 //! same-time prints are combined), built on the thread from every trade
 //! held, and built again there when a setting changes; live trades go into
-//! it as they come, and a new book is handed over each drain.
+//! it as they come, and a new book is handed over each drain. A chart whose
+//! thresholds change keeps the book it had beside the new one, so going
+//! back is instant; any older is let go. A threshold stepped through on the
+//! way to another is never built: the thread skips a build nobody wants by
+//! the time it gets to it.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -64,6 +68,10 @@ impl Settings {
     fn thresholds(&self) -> Thresholds {
         Thresholds { regular: self.regular, extended: self.extended }
     }
+
+    fn key(&self) -> (u64, u64, bool) {
+        (self.regular, self.extended, self.combine)
+    }
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -92,12 +100,70 @@ pub struct Done {
 /// One contract, on the main thread.
 struct Entry {
     watchers: HashMap<u32, Settings>,
+    /// The settings each chart last drew a book of before they changed:
+    /// that book is kept, and kept current, so changing back draws at once.
+    before: HashMap<u32, Settings>,
     from: i64,
     /// Asked for, at least once.
     asked: bool,
     books: HashMap<Settings, Arc<Book>>,
+    /// Asked of the thread and not back yet.
+    building: BTreeSet<(u64, u64, bool)>,
     tick_size: f64,
     live: Option<Box<dyn Subscription>>,
+}
+
+impl Entry {
+    fn watched(&self, settings: &Settings) -> bool {
+        self.watchers.values().any(|s| s == settings)
+    }
+
+    fn kept(&self, settings: &Settings) -> bool {
+        self.watched(settings) || self.before.values().any(|s| s == settings)
+    }
+
+    /// Let go of the books no chart draws or has just drawn, and forget
+    /// builds no chart wants any more, so wanting them again asks again.
+    fn prune(&mut self) {
+        let kept: Vec<Settings> = self.watchers.values().chain(self.before.values()).copied().collect();
+        self.books.retain(|settings, _| kept.contains(settings));
+        let watched: Vec<Settings> = self.watchers.values().copied().collect();
+        self.building.retain(|key| watched.iter().any(|s| s.key() == *key));
+    }
+
+    /// What the thread is told of this contract's settings.
+    fn wanted(&self) -> Wanted {
+        Wanted {
+            watched: self.watchers.values().copied().collect(),
+            kept: self.watchers.values().chain(self.before.values()).copied().collect(),
+        }
+    }
+}
+
+/// A contract's settings, as the thread reads them: those a chart draws,
+/// built when asked, and those it keeps current besides.
+#[derive(Clone, Default)]
+struct Wanted {
+    watched: std::collections::HashSet<Settings>,
+    kept: std::collections::HashSet<Settings>,
+}
+
+/// Every contract's, shared with the thread.
+#[derive(Clone, Default)]
+struct Wants(Arc<Mutex<HashMap<String, Wanted>>>);
+
+impl Wants {
+    fn set(&self, key: &str, wanted: Wanted) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).insert(key.to_string(), wanted);
+    }
+
+    fn forget(&self, key: &str) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).remove(key);
+    }
+
+    fn of(&self, key: &str) -> Wanted {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).get(key).cloned().unwrap_or_default()
+    }
 }
 
 pub struct LargeOrders {
@@ -108,6 +174,7 @@ pub struct LargeOrders {
     done: async_channel::Receiver<Done>,
     sender: mpsc::Sender<Job>,
     mailboxes: Mailboxes,
+    wants: Wants,
     /// The last settled minute contracts were refreshed for.
     refreshed: std::cell::Cell<i64>,
     clock: std::cell::Cell<fn() -> i64>,
@@ -127,12 +194,15 @@ impl LargeOrders {
         let worker = provider.clone();
         let mailboxes = Mailboxes::default();
         let shared = mailboxes.clone();
+        let wants = Wants::default();
+        let told = wants.clone();
         std::thread::Builder::new()
             .name("omacharts large orders".into())
-            .spawn(move || work(&path, worker.as_ref(), &inbox, &finished, &shared))
+            .spawn(move || work(&path, worker.as_ref(), &inbox, &finished, &shared, &told))
             .ok()?;
         Some(LargeOrders {
             mailboxes,
+            wants,
             refreshed: std::cell::Cell::new(i64::MIN),
             provider,
             entries: RefCell::new(HashMap::new()),
@@ -177,17 +247,32 @@ impl LargeOrders {
         let mut entries = self.entries.borrow_mut();
         let entry = entries.entry(key.to_string()).or_insert_with(|| Entry {
             watchers: HashMap::new(),
+            before: HashMap::new(),
             from,
             asked: false,
             books: HashMap::new(),
+            building: BTreeSet::new(),
             tick_size,
             live: None,
         });
-        let new_settings = !entry.watchers.values().any(|had| *had == settings) && !entry.books.contains_key(&settings);
-        entry.watchers.insert(pane, settings);
+        // The settings a chart moves from are kept only if they have a
+        // book: stepped through ten values, it keeps the one it last drew.
+        if let Some(was) = entry.watchers.insert(pane, settings)
+            && was != settings
+            && entry.books.contains_key(&was)
+        {
+            entry.before.insert(pane, was);
+        }
+        entry.prune();
+        self.wants.set(key, entry.wanted());
         if waiting {
             return;
         }
+        // Whether this chart's settings have a book, or one on its way:
+        // asked of the book itself, never of what was asked before, so a
+        // chart that changed them while it waited, or as a change of paint
+        // alone, still gets one.
+        let new_settings = !entry.books.contains_key(&settings) && !entry.building.contains(&settings.key());
         let reach = from < entry.from;
         if !entry.asked || reach {
             entry.asked = true;
@@ -198,11 +283,12 @@ impl LargeOrders {
                 entry.live = self.open(key, symbol, tick_size);
             }
             let wanted: Vec<Settings> = {
-                let mut all: Vec<Settings> = entry.watchers.values().copied().collect();
-                all.sort_by_key(|s| (s.regular, s.extended, s.combine));
+                let mut all: Vec<Settings> = entry.watchers.values().chain(entry.before.values()).copied().collect();
+                all.sort_by_key(Settings::key);
                 all.dedup();
                 all
             };
+            entry.building.extend(entry.watchers.values().map(Settings::key));
             let (from, now) = (entry.from, (self.clock.get())());
             drop(entries);
             self.send(Job::Load {
@@ -216,6 +302,7 @@ impl LargeOrders {
                 settings: wanted,
             });
         } else if new_settings {
+            entry.building.insert(settings.key());
             drop(entries);
             self.send(Job::Build { key: key.to_string(), settings });
         }
@@ -266,6 +353,11 @@ impl LargeOrders {
     pub fn finished(&self, done: Done) -> Vec<u32> {
         let mut entries = self.entries.borrow_mut();
         let Some(entry) = entries.get_mut(&done.key) else { return Vec::new() };
+        entry.building.remove(&done.settings.key());
+        // A book of settings every chart has moved on from is let go.
+        if !entry.kept(&done.settings) {
+            return Vec::new();
+        }
         entry.books.insert(done.settings, done.book);
         entry.watchers.iter().filter(|(_, settings)| **settings == done.settings).map(|(pane, _)| *pane).collect()
     }
@@ -275,11 +367,14 @@ impl LargeOrders {
         let mut entries = self.entries.borrow_mut();
         let empty = entries.get_mut(&key).is_some_and(|entry| {
             entry.watchers.remove(&pane);
-            entry.books.retain(|settings, _| entry.watchers.values().any(|s| s == settings));
+            entry.before.remove(&pane);
+            entry.prune();
+            self.wants.set(&key, entry.wanted());
             entry.watchers.is_empty()
         });
         if empty {
             entries.remove(&key);
+            self.wants.forget(&key);
             drop(entries);
             self.send(Job::Forget { key });
         }
@@ -420,6 +515,7 @@ fn work(
     inbox: &mpsc::Receiver<Job>,
     done: &async_channel::Sender<Done>,
     mailboxes: &Mailboxes,
+    wants: &Wants,
 ) {
     let Ok(store) = Store::open_at(path) else { return };
     let Some(ladders) = provider.ladders() else { return };
@@ -475,6 +571,13 @@ fn work(
             }
             Job::Build { key, settings } => {
                 let Some(contract) = held.get_mut(&key) else { continue };
+                // Stepped past on the way to other settings: a whole history
+                // read for a book nobody draws.
+                let wanted = wants.of(&key);
+                if !wanted.watched.contains(&settings) {
+                    continue;
+                }
+                contract.builders.retain(|s, _| wanted.kept.contains(s));
                 let builder = contract.build(&store, settings);
                 publish(&key, contract, settings, &builder);
                 contract.builders.insert(settings, builder);
@@ -514,6 +617,8 @@ fn work(
                     contract.dirty.insert(day);
                 }
                 if !added.is_empty() {
+                    let wanted = wants.of(&key);
+                    contract.builders.retain(|s, _| wanted.kept.contains(s));
                     feed_builders(contract, &added);
                     for (settings, builder) in &contract.builders {
                         publish(&key, contract, *settings, builder);
@@ -527,6 +632,8 @@ fn work(
                 let Some(contract) = held.get_mut(&key) else { continue };
                 let added = append(contract, fresh);
                 if !added.is_empty() {
+                    let wanted = wants.of(&key);
+                    contract.builders.retain(|s, _| wanted.kept.contains(s));
                     feed_builders(contract, &added);
                     for (settings, builder) in &contract.builders {
                         publish(&key, contract, *settings, builder);
@@ -658,7 +765,7 @@ fn is_weekday(start: i64) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::time::{Duration, Instant};
 
     use omacharts_engine::studies::orders::Aggressor;
@@ -677,7 +784,7 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct Asked {
+    pub(crate) struct Asked {
         spans: Vec<(i64, i64)>,
         sinks: Vec<PrintSink>,
         /// The feed has nothing from before here.
@@ -688,7 +795,9 @@ mod tests {
         source: Option<String>,
     }
 
-    struct Fake(Arc<Mutex<Asked>>);
+    /// A feed of single trades, one an hour: what the window's tests chart
+    /// large orders from too.
+    pub(crate) struct Fake(pub(crate) Arc<Mutex<Asked>>);
 
     struct Open;
     impl Subscription for Open {}
@@ -759,7 +868,7 @@ mod tests {
         }
     }
 
-    fn es() -> Instrument {
+    pub(crate) fn es() -> Instrument {
         Instrument {
             symbol: "ES".into(),
             name: "E-mini S&P 500".into(),
@@ -776,7 +885,7 @@ mod tests {
         }
     }
 
-    fn scratch(name: &str) -> PathBuf {
+    pub(crate) fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("omacharts-large-orders-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -982,5 +1091,112 @@ mod tests {
         large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, SETTINGS, false);
         assert_eq!(settle(&large), vec![1]);
         assert_eq!(sizes(&large), before);
+    }
+
+    fn of(large: &LargeOrders, settings: Settings) -> Option<Vec<(i64, u64)>> {
+        large.book(KEY, settings).map(|(book, _)| book.orders.iter().map(|o| (o.order.ts_nanos, o.order.size)).collect())
+    }
+
+    /// The author's report: bubbles at 5 and 5, none at all with either
+    /// threshold at 6, and none again once the old ones were put back. A
+    /// threshold changed gets its own book, a subset, and the one before
+    /// it is still there to go back to.
+    #[test]
+    fn thresholds_changed_and_changed_back_each_get_their_book() {
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        let large = LargeOrders::new(Arc::new(Fake(asked)), Some(scratch("changed"))).unwrap();
+        large.set_clock(now);
+        let five = Settings { regular: 5, extended: 5, combine: true };
+        let six = Settings { regular: 5, extended: 60, combine: true };
+        large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, five, false);
+        settle(&large);
+        let at_five = of(&large, five).expect("the first book");
+        assert!(!at_five.is_empty());
+
+        large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, six, false);
+        assert_eq!(settle(&large), vec![1], "the chart is told its book came");
+        let at_six = of(&large, six).expect("a book for the new thresholds");
+        assert!(!at_six.is_empty() && at_six.len() < at_five.len(), "a subset, not a cliff: {} of {}", at_six.len(), at_five.len());
+        assert!(at_six.iter().all(|order| at_five.contains(order)));
+
+        // Back: drawn at once from the book kept, nothing to wait for.
+        large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, five, false);
+        assert_eq!(of(&large, five), Some(at_five));
+    }
+
+    /// Changed while the chart waits for its bars or ladders, the chart's
+    /// settings were taken as asked for already, and their book was never
+    /// built when it stopped waiting.
+    #[test]
+    fn thresholds_changed_while_the_chart_waits_still_get_their_book() {
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        let large = LargeOrders::new(Arc::new(Fake(asked)), Some(scratch("waiting"))).unwrap();
+        large.set_clock(now);
+        large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, SETTINGS, false);
+        settle(&large);
+        let lower = Settings { regular: 5, extended: 5, combine: true };
+        large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, lower, true);
+        large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, lower, false);
+        assert_eq!(settle(&large), vec![1]);
+        assert!(of(&large, lower).is_some_and(|book| book.iter().any(|(_, size)| *size == 10)));
+    }
+
+    /// A box stepped through ten values builds the last, keeps the one the
+    /// chart drew before them, and holds no book of the values in between.
+    #[test]
+    fn thresholds_stepped_through_keep_only_the_last_two_books() {
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        let large = LargeOrders::new(Arc::new(Fake(asked)), Some(scratch("stepped"))).unwrap();
+        large.set_clock(now);
+        let at = |regular: u64| Settings { regular, extended: 50, combine: true };
+        large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, at(50), false);
+        settle(&large);
+        for regular in (1..10).rev().map(|n| n * 5) {
+            large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, at(regular), false);
+        }
+        settle(&large);
+        assert!(of(&large, at(5)).is_some(), "the last built");
+        assert!(of(&large, at(50)).is_some(), "the one drawn before kept");
+        assert!((10..50).step_by(5).all(|regular| of(&large, at(regular)).is_none()), "none of those stepped through held");
+    }
+
+    /// Orders by when and how big.
+    type Orders = Vec<(i64, u64)>;
+
+    /// A book's regular hours' orders and its extended hours'.
+    fn split(large: &LargeOrders, settings: Settings) -> (Orders, Orders) {
+        let (book, _) = large.book(KEY, settings).expect("a book");
+        let of = |regular: bool| {
+            book.orders.iter().filter(|o| o.regular == regular).map(|o| (o.order.ts_nanos, o.order.size)).collect::<Vec<_>>()
+        };
+        (of(true), of(false))
+    }
+
+    /// Each threshold answers for its own hours: the author's change of the
+    /// overnight one took the day's bubbles with it.
+    #[test]
+    fn a_threshold_changed_leaves_the_other_sessions_bubbles_as_they_were() {
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        let large = LargeOrders::new(Arc::new(Fake(asked)), Some(scratch("sessions"))).unwrap();
+        large.set_clock(now);
+        let both = Settings { regular: 5, extended: 5, combine: true };
+        large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, both, false);
+        settle(&large);
+        let (day, night) = split(&large, both);
+        assert!(!day.is_empty() && !night.is_empty());
+
+        let overnight = Settings { extended: 50, ..both };
+        large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, overnight, false);
+        settle(&large);
+        let (day_now, night_now) = split(&large, overnight);
+        assert_eq!(day_now, day, "the day's bubbles untouched");
+        assert!(!night_now.is_empty() && night_now.len() < night.len());
+
+        let daytime = Settings { regular: 50, ..both };
+        large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, daytime, false);
+        settle(&large);
+        let (day_now, night_now) = split(&large, daytime);
+        assert_eq!(night_now, night, "the night's bubbles untouched");
+        assert!(!day_now.is_empty() && day_now.len() < day.len());
     }
 }

@@ -629,3 +629,123 @@ fn merged_and_expanded_profiles_outlive_everything_the_chart_goes_through() {
         assert_eq!(held(&pane), ((vec![], vec![]), (vec![], vec![])), "still nothing after a restart");
     });
 }
+
+/// How many bubbles large orders indicator `id` draws over the whole chart.
+fn bubbles(pane: &ChartPane, id: u32) -> Option<Vec<(i64, u64)>> {
+    let shown = pane.view.with_bars(|bars| 0..bars.len());
+    let (orders, _) = pane.view.read_large_orders(id, shown)?;
+    Some(orders.iter().map(|o| (o.order.ts_nanos, o.order.size)).collect())
+}
+
+/// [`bubbles`] once the feed's days have all come in: they come newest
+/// first, a book handed over after each.
+fn all_bubbles(pane: &ChartPane, id: u32) -> Vec<(i64, u64)> {
+    let mut last = None;
+    for _ in 0..100 {
+        assert!(settle(|| bubbles(pane, id).is_some_and(|b| !b.is_empty())), "bubbles on the chart");
+        for _ in 0..60 {
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let now = bubbles(pane, id);
+        if now == last {
+            return now.unwrap();
+        }
+        last = now;
+    }
+    panic!("the bubbles never settled");
+}
+
+fn frozen() -> i64 {
+    super::trade::tests::FROZEN_AT
+}
+
+/// The author's report: the thresholds of a chart's large orders changed in
+/// its settings, every bubble went, and putting the old ones back left none
+/// either. A threshold is paint, so the chart is drawn again and nothing
+/// worked out; it is still asked of the feed's large orders, whose book
+/// comes back and is drawn with no other change to the chart. A change of
+/// resolution, which works the chart out again, used to be the only way.
+#[test]
+fn thresholds_changed_in_the_settings_draw_their_bubbles_once_built() {
+    use crate::large_orders::tests::{es, scratch, Asked, Fake};
+    crate::ui::on_gtk(|| {
+        let store = Rc::new(Store::memory().expect("a store"));
+        let window = window(&store);
+        let pane = window.focused_pane();
+        assert!(settle(|| pane.view.with_bars(|bars| bars.len() > 50)), "bars on the chart");
+        let path = scratch("window-thresholds");
+        let provider: std::sync::Arc<dyn omacharts_engine::Provider> =
+            std::sync::Arc::new(Fake(std::sync::Arc::new(std::sync::Mutex::new(Asked::default()))));
+        let at_price = Rc::new(crate::at_price::AtPrice::new(provider.clone(), Some(path.clone())).unwrap());
+        at_price.set_clock(frozen);
+        let large = Rc::new(crate::large_orders::LargeOrders::new(provider, Some(path)).unwrap());
+        large.set_clock(frozen);
+        window.wire_at_price(at_price.clone());
+        window.wire_large_orders(large.clone());
+        *pane.instrument.borrow_mut() = Some(es());
+        *pane.ladders.borrow_mut() = Some(crate::ui::pane::LadderSource {
+            at_price: at_price.clone(),
+            large_orders: Some(large.clone()),
+            key: "fake:ES".into(),
+            symbol: "ES".into(),
+        });
+        let set = |regular: u64, extended: u64| {
+            move |i: &mut Indicator| {
+                if let Params::LargeOrders { regular: r, extended: e, .. } = &mut i.params {
+                    (*r, *e) = (regular, extended);
+                }
+            }
+        };
+        let mut indicator = Indicator::new(1, IndicatorKind::LargeOrders);
+        set(5, 5)(&mut indicator);
+        window.set_indicators(vec![indicator]);
+        let at_five = all_bubbles(&pane, 1);
+        let computed = pane.computed.get();
+
+        // The overnight threshold up: its book is built and drawn, a
+        // subset, with nothing else done to the chart.
+        edit(&window, 1, set(5, 50));
+        let fewer = all_bubbles(&pane, 1);
+        assert!(!fewer.is_empty() && fewer.len() < at_five.len(), "{} of {}", fewer.len(), at_five.len());
+        assert!(fewer.iter().all(|order| at_five.contains(order)));
+
+        // Back: drawn in the same turn, from the book kept.
+        edit(&window, 1, set(5, 5));
+        assert_eq!(bubbles(&pane, 1), Some(at_five.clone()), "every bubble back at once");
+
+        // The day's threshold up too.
+        edit(&window, 1, set(50, 5));
+        let fewer = all_bubbles(&pane, 1);
+        assert!(fewer.len() < at_five.len() && fewer.iter().all(|order| at_five.contains(order)));
+        assert_eq!(pane.computed.get(), computed, "a repaint each time, nothing worked out");
+        at_price.shutdown();
+        large.shutdown();
+    });
+}
+
+/// A chart draws one footprint. The author's chart had two, the second with
+/// its volume profile on and never drawn: pasting a footprint onto a chart
+/// with one changes the one there, in its place, instead of adding another.
+#[test]
+fn a_footprint_pasted_onto_a_chart_with_one_takes_its_place() {
+    crate::ui::on_gtk(|| {
+        let store = Rc::new(Store::memory().expect("a store"));
+        let window = window(&store);
+        window.set_indicators(vec![Indicator::new(1, IndicatorKind::Footprint), Indicator::new(2, IndicatorKind::Sma)]);
+        let mut copied = Indicator::new(9, IndicatorKind::Footprint);
+        if let Params::Footprint { profile, .. } = &mut copied.params {
+            profile.on = true;
+        }
+        *window.clipboard.borrow_mut() = super::Clipboard::Indicator(copied.clone());
+        assert!(window.paste());
+        let after = window.indicators();
+        assert_eq!(after.iter().map(|i| (i.id, i.kind)).collect::<Vec<_>>(), [(1, IndicatorKind::Footprint), (2, IndicatorKind::Sma)]);
+        assert_eq!(after[0].params, copied.params, "the pasted settings, in the one there");
+
+        // Anything else is added beside what is there, as before.
+        *window.clipboard.borrow_mut() = super::Clipboard::Indicator(Indicator::new(9, IndicatorKind::Sma));
+        assert!(window.paste());
+        assert_eq!(window.indicators().len(), 3);
+    });
+}

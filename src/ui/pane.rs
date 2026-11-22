@@ -50,8 +50,9 @@ impl LadderSource {
     /// Chart `pane`'s large orders indicators, asked of the feed: only once
     /// its bars are drawn and its ladders have come, so the trades are never
     /// in their way. The chart is worked out again when the ladders come,
-    /// and asks then.
-    fn want_large_orders(&self, pane: u32, instrument: &Instrument, bars: &[omacharts_engine::Bar], all: &[Indicator]) {
+    /// and asks then. Asked too when only their settings change, which the
+    /// chart takes as paint: their thresholds pick which book is drawn.
+    pub fn want_large_orders(&self, pane: u32, instrument: &Instrument, bars: &[omacharts_engine::Bar], all: &[Indicator]) {
         let Some(large) = &self.large_orders else { return };
         // Hidden ones too, as their ladders are kept: showing an indicator
         // again only redraws the chart, and asks nothing.
