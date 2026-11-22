@@ -39,7 +39,8 @@ omacharts chart indicator add volume_profile --poc-color Amber
 | `--poc-transparency F` | 0 to 1, or `default` | Volume profile, market profile: its point of control. `default` is its own, 0.1 on a volume profile and 0 on a market profile |
 | `--highlight-value-area B` | `on`, `off` | Volume profile, market profile: whether its value area is set apart from its other rows; on when not given |
 | `--value-area-color C` | A colour, or `none` | Volume profile, market profile: its value area's own colour while it is set apart; `none` gives it back the rows' colour |
-| `--colouring C` | `default`, or `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` (or `monochrome`) for one of its own. `default` is the chart's colouring for volume (`chart` too, as earlier versions spelled it) and the one chosen in Preferences for a volume profile and a cumulative delta | Volume, volume profile, cumulative delta ([Volume](/manual/indicators/volume/)) |
+| `--colouring C` | `default`, or `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` (or `monochrome`) for one of its own, or `custom`. `default` is the chart's colouring for volume (`chart` too, as earlier versions spelled it) and the one chosen in Preferences for a volume profile and a cumulative delta. `custom` keeps each colour its own, starting from the colours drawn a moment before; any other lets the custom colours go |
+| `--buy-color C`, `--sell-color C` | A colour, or `none` to let it go | Volume profile measuring the delta: the colour of rows where more was bought, or sold. Given on a colouring other than `custom`, it makes the colouring `custom`, the other colour kept as drawn | Volume, volume profile, cumulative delta ([Volume](/manual/indicators/volume/)) |
 
 ## Reading its profiles
 

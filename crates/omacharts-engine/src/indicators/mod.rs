@@ -28,7 +28,8 @@ use chrono_tz::Tz;
 use crate::bars::{Bar, Timeframe};
 use crate::ladders::{Days, Held, Ladder};
 use crate::symbols::Instrument;
-use crate::theme::{BarColouring, ColorChoice, Theme, SWATCH_SEQUENCE};
+use crate::colouring::{ColoursMut, Colouring};
+use crate::theme::{ColorChoice, Theme, SWATCH_SEQUENCE};
 
 pub use bands::{Band, BandSeries, Bands, FILL_ALPHA, MAX_FILL_ALPHA, MIN_FILL_ALPHA};
 pub use periods::Reset;
@@ -443,6 +444,8 @@ impl Kind {
                 width: profile::DEFAULT_WIDTH,
                 method: profile::Method::Total,
                 colouring: None,
+                buy_color: None,
+                sell_color: None,
                 merged: Vec::new(),
             },
             // Half-hour TPO periods and a 70% value area: what Steidlmayer
@@ -494,6 +497,8 @@ impl Kind {
                 style: cvd::Style::Candles,
                 height: 0.16,
                 colouring: None,
+                up_color: None,
+                down_color: None,
             },
             Kind::VolumeDelta => {
                 Params::VolumeDelta { height: flow::volume_delta_height(), inks: flow::Inks::default() }
@@ -696,10 +701,16 @@ pub enum Params {
         /// The colouring a delta's bought and sold rows are painted in, as
         /// a chart's rising and falling bars are: unset, the colouring
         /// chosen in Preferences, and following it as it changes; set, one
-        /// of [`profile::DELTA_COLOURINGS`] of its own. A total is in the
-        /// profile's colour and pays this no mind.
+        /// of [`profile::DELTA_COLOURINGS`] of its own, or Custom: see
+        /// [`crate::colouring`]. A total is in the profile's colour and pays
+        /// this no mind.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        colouring: Option<BarColouring>,
+        colouring: Option<Colouring>,
+        /// A delta's bought and sold rows' own colours, while Custom.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        buy_color: Option<ColorChoice>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sell_color: Option<ColorChoice>,
         /// Where each period starts that was merged into the one before it,
         /// as the start of its reset period. Several in a row make one
         /// composite of them all.
@@ -836,9 +847,10 @@ pub enum Params {
         /// How its bars are painted: unset, the way the chart paints its
         /// candles, so volume follows the chart; set, a colouring of its
         /// own, so a quiet volume can sit under loud candles, or the other
-        /// way round.
+        /// way round; or Custom, its own two colours: see
+        /// [`crate::colouring`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        colouring: Option<BarColouring>,
+        colouring: Option<Colouring>,
         /// The bars of a rising and a falling session. Unset is the candles'
         /// own colour, so volume reads as belonging to the bar above it.
         #[serde(default)]
@@ -871,9 +883,15 @@ pub enum Params {
         /// The colouring its rising and falling bars are painted in, as a
         /// delta profile's bought and sold rows are: unset, the colouring
         /// chosen in Preferences, and following it as it changes; set, one
-        /// of [`profile::DELTA_COLOURINGS`] of its own.
+        /// of [`profile::DELTA_COLOURINGS`] of its own, or Custom: see
+        /// [`crate::colouring`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        colouring: Option<BarColouring>,
+        colouring: Option<Colouring>,
+        /// Its rising and falling bars' own colours, while Custom.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up_color: Option<ColorChoice>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        down_color: Option<ColorChoice>,
     },
     /// Each bar's own delta in a strip of its own, as a candle from nought.
     VolumeDelta {
@@ -979,6 +997,11 @@ pub enum Params {
     },
 }
 
+/// The roles of a study painted by rise and fall, and of one painted by
+/// buying and selling: what each colour row of a Custom one is titled.
+pub const VOLUME_ROLES: [&str; 2] = ["Up", "Down"];
+pub const FLOW_ROLES: [&str; 2] = ["Buying", "Selling"];
+
 impl Params {
     /// How solid a volume pane's rising and falling bars are drawn: each
     /// its own strength, or the pane's opacity. `None` for any other kind.
@@ -1032,6 +1055,62 @@ impl Params {
             | Params::Footprint { .. }
             | Params::LargeOrders { .. }
             | Params::SessionTimes { .. } => None,
+        }
+    }
+
+    /// The colours of a study painted in a colouring, to be read and
+    /// changed the one way every study's are: see [`crate::colouring`].
+    /// Every kind is named, so a new one has to say whether it has them.
+    pub fn colours_mut(&mut self) -> Option<ColoursMut<'_>> {
+        match self {
+            Params::Volume { colouring, up_color, down_color, opacity, up_alpha, down_alpha, .. } => Some(ColoursMut {
+                colouring,
+                labels: &VOLUME_ROLES,
+                colours: vec![up_color, down_color],
+                alphas: vec![up_alpha, down_alpha],
+                opacity: Some(opacity),
+            }),
+            Params::Cvd { colouring, up_color, down_color, .. } => Some(ColoursMut {
+                colouring,
+                labels: &VOLUME_ROLES,
+                colours: vec![up_color, down_color],
+                alphas: Vec::new(),
+                opacity: None,
+            }),
+            // A delta's rows; how solid they are is the profile's own rows'.
+            Params::VolumeProfile { colouring, buy_color, sell_color, .. } => Some(ColoursMut {
+                colouring,
+                labels: &FLOW_ROLES,
+                colours: vec![buy_color, sell_color],
+                alphas: Vec::new(),
+                opacity: None,
+            }),
+            Params::VolumeDelta { inks, .. } | Params::Footprint { inks, .. } | Params::LargeOrders { inks, .. } => {
+                Some(inks.colours_mut())
+            }
+            Params::MovingAverage { .. }
+            | Params::Vwap { .. }
+            | Params::Bollinger { .. }
+            | Params::MarketProfile { .. }
+            | Params::Rsi { .. }
+            | Params::Atr { .. }
+            | Params::Macd { .. }
+            | Params::Stochastic { .. }
+            | Params::SessionTimes { .. } => None,
+        }
+    }
+
+    /// The colouring a study is painted in, and the colours it picked for
+    /// its roles, for drawing: `None` for a study without one.
+    pub fn colours(&self) -> Option<(Option<Colouring>, [Option<&ColorChoice>; 2])> {
+        match self {
+            Params::Volume { colouring, up_color, down_color, .. } | Params::Cvd { colouring, up_color, down_color, .. } => {
+                Some((*colouring, [up_color.as_ref(), down_color.as_ref()]))
+            }
+            Params::VolumeProfile { colouring, buy_color, sell_color, .. } => {
+                Some((*colouring, [buy_color.as_ref(), sell_color.as_ref()]))
+            }
+            params => params.inks().map(|inks| (inks.colouring, [inks.buy.as_ref(), inks.sell.as_ref()])),
         }
     }
 
@@ -2248,9 +2327,9 @@ mod tests {
         let read: Indicator = serde_json::from_value(saved.clone()).unwrap();
         assert_eq!(read.kind, Kind::Cvd);
         assert_eq!(read.kind.category(), Category::OrderFlow);
-        let Params::Cvd { reset, style, height, colouring } = read.params else { panic!("{:?}", read.params) };
+        let Params::Cvd { reset, style, height, colouring, .. } = read.params else { panic!("{:?}", read.params) };
         assert_eq!((reset, style, height), (Some(Reset::Week), cvd::Style::Line, 0.25));
-        assert_eq!(colouring, Some(BarColouring::Quiet));
+        assert_eq!(colouring, Some(crate::colouring::Colouring::Scheme(crate::theme::BarColouring::Quiet)));
         assert_eq!(serde_json::to_value(&read).unwrap(), saved, "written back as it was read");
         assert_eq!(Kind::Cvd.key(), "cvd");
     }
@@ -2964,7 +3043,7 @@ mod tests {
 
         let mut picked = older.clone();
         if let Params::VolumeProfile { colouring, .. } = &mut picked.params {
-            *colouring = Some(BarColouring::Quiet);
+            *colouring = Some(crate::colouring::Colouring::Scheme(crate::theme::BarColouring::Quiet));
         }
         let json = serde_json::to_string(&picked).unwrap();
         assert!(json.contains(r#""colouring":"theme-quiet""#), "{json}");
@@ -3644,5 +3723,61 @@ mod tests {
             let waiting = bare.awaiting_ladders(true);
             assert_eq!(span_profile(span, 0, None, 0.70, profile::Method::Total, &waiting), Ok(None));
         }
+    }
+
+    /// Every study painted in a colouring offers Custom, from one model: a
+    /// colour saved on one before Custom was a choice, over a preset or
+    /// not, loads as Custom with that colour, and is drawn in it as before.
+    #[test]
+    fn every_study_with_a_colouring_reads_a_saved_colour_as_custom() {
+        use crate::colouring::{self, Colouring};
+        let hex = "#123456";
+        let cases: [(Kind, serde_json::Value); 6] = [
+            (Kind::Volume, serde_json::json!({"colouring": "theme-soft", "up_color": {"kind": "fixed", "hex": hex}})),
+            (Kind::Cvd, serde_json::json!({"up_color": {"kind": "fixed", "hex": hex}})),
+            (Kind::VolumeProfile, serde_json::json!({"buy_color": {"kind": "fixed", "hex": hex}})),
+            (Kind::VolumeDelta, serde_json::json!({"inks": {"colouring": "theme", "buy": {"kind": "fixed", "hex": hex}}})),
+            (Kind::Footprint, serde_json::json!({"inks": {"buy": {"kind": "fixed", "hex": hex}}})),
+            (Kind::LargeOrders, serde_json::json!({"inks": {"buy": {"kind": "fixed", "hex": hex}}})),
+        ];
+        let theme = crate::theme::builtin_themes().remove(0);
+        for (kind, saved) in cases {
+            let mut stored = serde_json::to_value(Indicator::new(1, kind)).unwrap();
+            for (key, value) in saved.as_object().unwrap() {
+                match (stored["params"].get_mut(key), value) {
+                    (Some(serde_json::Value::Object(held)), serde_json::Value::Object(given)) => {
+                        held.extend(given.clone());
+                    }
+                    _ => stored["params"][key] = value.clone(),
+                }
+            }
+            let mut read: Indicator = serde_json::from_value(stored).unwrap();
+            let (chosen, own) = read.params.colours().unwrap_or_else(|| panic!("{kind:?} has a colouring"));
+            assert!(colouring::is_custom(chosen, &own), "{kind:?}");
+            assert_eq!(colouring::drawn(true, own[0], "#ffffff", &theme), hex, "{kind:?} draws its colour");
+            let mut colours = read.params.colours_mut().unwrap();
+            assert_eq!(colours.shown(), Some(Colouring::Custom), "{kind:?} shows Custom");
+            // Choosing a preset again lets the colour go, and is written so.
+            colours.pick(Some(Colouring::Scheme(crate::theme::BarColouring::Quiet)), &[]);
+            let written = serde_json::to_value(&read).unwrap();
+            assert!(!written.to_string().contains(hex), "{kind:?}: {written}");
+            let back: Indicator = serde_json::from_value(written).unwrap();
+            let (chosen, own) = back.params.colours().unwrap();
+            assert!(!colouring::is_custom(chosen, &own), "{kind:?}");
+            assert_eq!(chosen, Some(Colouring::Scheme(crate::theme::BarColouring::Quiet)), "{kind:?}");
+        }
+    }
+
+    /// Custom is written as `custom`, and read back as it was.
+    #[test]
+    fn custom_is_written_by_name_and_read_back() {
+        use crate::colouring::Colouring;
+        let mut volume = Indicator::new(1, Kind::Volume);
+        volume.params.colours_mut().unwrap().pick(Some(Colouring::Custom), &["#010203".into(), "#040506".into()]);
+        let written = serde_json::to_value(&volume).unwrap();
+        assert_eq!(written["params"]["colouring"], "custom");
+        assert_eq!(written["params"]["up_color"]["hex"], "#010203");
+        let back: Indicator = serde_json::from_value(written).unwrap();
+        assert_eq!(back.params.colours().unwrap().0, Some(Colouring::Custom));
     }
 }

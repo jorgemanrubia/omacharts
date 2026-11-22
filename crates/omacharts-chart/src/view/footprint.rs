@@ -329,12 +329,10 @@ pub(super) fn chosen<'a>(choice: &'a omacharts_engine::theme::ColorChoice, state
     }
 }
 
-/// Buying's and selling's colours for `inks`: its own, or its colouring's.
+/// Buying's and selling's colours for `inks`: its colouring's, or while it
+/// is Custom, its own.
 pub(super) fn inks<'a>(state: &'a State, inks: &'a flow::Inks) -> (Cow<'a, str>, Cow<'a, str>) {
-    let (up, down) = state.delta_pair(inks.colouring);
-    let buy = inks.buy.as_ref().map_or(Cow::Borrowed(up), |c| chosen(c, state));
-    let sell = inks.sell.as_ref().map_or(Cow::Borrowed(down), |c| chosen(c, state));
-    (buy, sell)
+    state.study_pair(inks.colouring, [inks.buy.as_ref(), inks.sell.as_ref()])
 }
 
 /// Draw `drawn`'s footprint over the columns: falls back to the candles

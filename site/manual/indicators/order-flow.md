@@ -21,7 +21,16 @@ What was bought and what was sold is known only on a feed with volume at price, 
 
 ## Colours
 
-Each paints buying and selling in a **Colouring**: **Default**, the colouring chosen in Preferences, followed as it changes, or **Vivid**, **Soft**, **Quiet** or **Monochrome** of its own. **Monochrome** is one colour for buying and selling alike, the ink the chart's Monochrome candles are drawn in, at one opacity: where a thing sits and what it says carry the sign. It is not **Quiet**, which keeps two muted colours. **Buying** and **Selling** set either side's colour apart from the colouring, each with its **Opacity**. **Swap up and down colours** in Preferences swaps them too.
+Each paints buying and selling in a **Colouring**:
+
+| Colouring | Paints |
+|---|---|
+| **Default** | The colouring chosen in Preferences, followed as it changes |
+| **Vivid**, **Soft**, **Quiet** | That colouring's up colour for buying and its down colour for selling |
+| **Monochrome** | One colour for buying and selling alike, the ink the chart's Monochrome candles are drawn in. Where a thing sits and what it says carry the sign. It is not **Quiet**, which keeps two muted colours |
+| **Custom** | A colour of your own for each side |
+
+With any colouring but **Custom**, the dialog shows one **Opacity** row under **Colouring**, how solid buying and selling are both drawn. The cumulative delta has no opacity, so it shows none. With **Custom** it shows a row for each colour the indicator draws instead: **Buying** and **Selling**, each a swatch and its own **Opacity**, or the cumulative delta's **Up** and **Down**, a swatch each. They start at the colours the indicator was drawn in a moment before, so nothing changes until you pick one. Choosing a colouring other than **Custom** again draws that colouring as it is, and lets the custom colours go once the dialog is closed. **Swap up and down colours** in Preferences swaps every colouring but **Custom**.
 
 ## See also
 

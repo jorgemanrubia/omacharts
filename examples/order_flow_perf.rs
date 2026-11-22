@@ -108,6 +108,17 @@ fn frames() {
         });
         rows.borrow_mut().push((format!("{name}, a trade then a frame, 20 bars"), ns, allocs, bytes));
     }
+    // The same stream zoomed out, where a footprint has no room for its
+    // rows: it should cost exactly what no footprint costs.
+    for (name, kinds) in [("indicators off", &["volume"][..]), ("footprint on but zoomed out", &["volume", "footprint"][..])] {
+        let mut scene = FlowScene::new(1_000, 400, kinds, TRADES, 0);
+        let (ns, allocs, bytes) = measure_mut(&mut scene, |scene| {
+            scene.trade();
+            scene.view_frame(&cr, WIDTH, HEIGHT);
+            surface.flush();
+        });
+        rows.borrow_mut().push((format!("{name}, a trade then a frame, 400 bars"), ns, allocs, bytes));
+    }
 
     // A day with many large orders: one trade in forty, all of them on
     // screen.

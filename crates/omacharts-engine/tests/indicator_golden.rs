@@ -222,7 +222,7 @@ fn indicators() -> Vec<(String, Indicator)> {
         let key = reset.map_or("never", Reset::key);
         out.push((
             format!("cvd:{key}"),
-            with(Kind::Cvd, Params::Cvd { reset, style: cvd::Style::Line, height: 0.2, colouring: None }),
+            with(Kind::Cvd, Params::Cvd { reset, style: cvd::Style::Line, height: 0.2, colouring: None, up_color: None, down_color: None }),
         ));
     }
     out

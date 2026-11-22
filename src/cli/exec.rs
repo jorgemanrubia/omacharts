@@ -2601,7 +2601,10 @@ fn chart_indicator(
     let wanted = wanted_indicator(m, Some(selection), pane)?;
     let listed = chart["indicators"].as_array().cloned().unwrap_or_default();
     let kind = wanted_kind(m, action, &listed, wanted, &format!("chart {pane}"))?;
-    let edits = Edits::read(m)?;
+    let mut edits = Edits::read(m)?;
+    if edits.touches_colours() {
+        edits.look = Some(ColourLook::load(store));
+    }
 
     // A chart on a template shows the template's indicators, and changing
     // them from the chart changes the template — and every chart on it — the
@@ -3246,7 +3249,10 @@ fn chart_drawing(
                 .ok_or_else(|| Fault::usage(format!("--config is a number from 1 to {CONFIGURATIONS}, not {text:?}")))?,
         ),
     };
-    let style = StyleEdits::read(m)?;
+    let mut style = StyleEdits::read(m)?;
+    if style.colouring.is_some() {
+        style.look = Some(ColourLook::load(store));
+    }
     let words = TextEdits::read(m)?;
     let scope = match arg(m, "scope") {
         None => None,
@@ -3531,7 +3537,10 @@ fn configurations_verb(
                 .ok()
                 .filter(|n| (1..=CONFIGURATIONS).contains(n))
                 .ok_or_else(|| Fault::usage(format!("--config is a number from 1 to {CONFIGURATIONS}")))?;
-            let edits = StyleEdits::read(m)?;
+            let mut edits = StyleEdits::read(m)?;
+            if edits.colouring.is_some() {
+                edits.look = Some(ColourLook::load(store));
+            }
             if edits.is_empty() {
                 return Err(Fault::usage("nothing to configure: give --color, --width, --arrow, --head, --border, --fill or --alpha".into()));
             }
@@ -4003,9 +4012,12 @@ struct StyleEdits {
     method: Option<omacharts_engine::drawings::ProfileMethod>,
     /// How a delta's sides are painted; `Some(None)` for the colouring
     /// chosen in Preferences.
-    colouring: Option<Option<omacharts_engine::BarColouring>>,
+    colouring: Option<Option<omacharts_engine::colouring::Colouring>>,
     /// The word `--colouring` was given as, for saying why it is refused.
     colouring_word: Option<String>,
+    /// What a delta's colours are worked out from, for `custom` to start
+    /// from what was drawn: loaded only when a colouring is given.
+    look: Option<ColourLook>,
     /// How much of its span a volume profile's longest row reaches.
     profile_width: Option<f64>,
     /// The study's names for a profile's outline: `--outline`,
@@ -4158,7 +4170,7 @@ impl StyleEdits {
             None => None,
             Some("chart" | "default") => Some(None),
             Some(text) => Some(Some(
-                omacharts_engine::BarColouring::from_key(text)
+                omacharts_engine::colouring::Colouring::from_key(text)
                     .ok_or_else(|| Fault::usage(format!("{text:?} is not a bar colouring")))?,
             )),
         };
@@ -4166,6 +4178,7 @@ impl StyleEdits {
             method,
             colouring,
             colouring_word: arg(m, "colouring").cloned(),
+            look: None,
             profile_width: bounded(
                 m,
                 "profile-width",
@@ -4530,7 +4543,8 @@ impl StyleEdits {
             style.profile.method = method;
         }
         if let Some(colouring) = self.colouring {
-            style.profile.colouring = colouring;
+            let drawn = self.look.as_ref().map(|look| look.profile_drawn(&style.profile)).unwrap_or_default();
+            style.profile.colours_mut().pick(colouring, &drawn);
         }
         if let Some(share) = self.profile_width {
             style.profile.width = share;
@@ -4830,6 +4844,52 @@ fn describe_indicator(stored: &Value) -> String {
     text
 }
 
+/// What a study's colours are worked out from on the command line, as the
+/// chart works them out: the theme, the colouring chosen in Preferences
+/// and whether it is worn swapped, and the chart's candles for a volume
+/// pane on Default.
+struct ColourLook {
+    theme: omacharts_engine::theme::Theme,
+    house: omacharts_engine::BarColouring,
+    swapped: bool,
+    scheme: omacharts_engine::BarScheme,
+}
+
+impl ColourLook {
+    fn load(store: &Store) -> ColourLook {
+        let theming = crate::theming::Theming::load(store);
+        ColourLook { theme: theming.theme(), house: theming.colouring(), swapped: theming.swapped(), scheme: theming.bar_scheme() }
+    }
+
+    /// The colours a profile drawing's delta is drawn in now.
+    fn profile_drawn(&self, look: &omacharts_engine::drawings::ProfileLook) -> Vec<String> {
+        use omacharts_engine::colouring;
+        let (up, down) = crate::ui::chart::delta_colours(colouring::base(look.colouring), &self.theme, self.house, self.swapped);
+        let own = [look.buy_color.as_ref(), look.sell_color.as_ref()];
+        let custom = colouring::is_custom(look.colouring, &own);
+        vec![
+            colouring::drawn(custom, own[0], &up, &self.theme).into_owned(),
+            colouring::drawn(custom, own[1], &down, &self.theme).into_owned(),
+        ]
+    }
+
+    /// The colour each of `indicator`'s roles is drawn in now.
+    fn drawn(&self, indicator: &Indicator) -> Vec<String> {
+        use omacharts_engine::colouring;
+        if indicator.kind == IndicatorKind::Volume {
+            let (up, down) = crate::ui::chart::volume_colours(indicator, &self.theme, &self.scheme);
+            return vec![up, down];
+        }
+        let Some((chosen, own)) = indicator.params.colours() else { return Vec::new() };
+        let (up, down) = crate::ui::chart::delta_colours(colouring::base(chosen), &self.theme, self.house, self.swapped);
+        let custom = colouring::is_custom(chosen, &own);
+        vec![
+            colouring::drawn(custom, own[0], &up, &self.theme).into_owned(),
+            colouring::drawn(custom, own[1], &down, &self.theme).into_owned(),
+        ]
+    }
+}
+
 /// Every parameter a command offered, read and checked before one is written.
 struct Edits {
     period: Option<u64>,
@@ -4897,8 +4957,9 @@ struct Edits {
     up_color: Option<ColorChoice>,
     down_color: Option<ColorChoice>,
     /// `Some(None)` puts volume back on the chart's own colouring, and a
-    /// volume profile on the one chosen in Preferences.
-    colouring: Option<Option<omacharts_engine::BarColouring>>,
+    /// volume profile on the one chosen in Preferences; `custom` is each
+    /// colour the study's own.
+    colouring: Option<Option<omacharts_engine::colouring::Colouring>>,
     /// The word `colouring` was given as, since `chart` and `default` are
     /// each one kind's and not the other's.
     colouring_word: Option<String>,
@@ -4927,6 +4988,9 @@ struct Edits {
     /// is `none`, the colouring's own.
     buy_color: Option<Option<ColorChoice>>,
     sell_color: Option<Option<ColorChoice>>,
+    /// The theme and the colourings a study's colours are worked out from,
+    /// for a colour given over a preset: loaded only when one is.
+    look: Option<ColourLook>,
     /// How solid each is drawn, as `Parts` are; `Some(None)` is `default`.
     buy_alpha: Option<Option<f64>>,
     sell_alpha: Option<Option<f64>>,
@@ -5157,7 +5221,7 @@ impl Edits {
             colouring: match arg(m, "colouring").map(String::as_str) {
                 None => None,
                 Some("chart" | "default") => Some(None),
-                Some(text) => Some(Some(omacharts_engine::BarColouring::from_key(text).ok_or_else(
+                Some(text) => Some(Some(omacharts_engine::colouring::Colouring::from_key(text).ok_or_else(
                     || Fault::usage(format!("{text:?} is not a bar colouring")),
                 )?)),
             },
@@ -5237,6 +5301,7 @@ impl Edits {
                 Some("none") => Some(None),
                 _ => colour(m, "sell-color")?.map(Some),
             },
+            look: None,
             buy_alpha: Parts::part(m, "buy-transparency")?,
             sell_alpha: Parts::part(m, "sell-transparency")?,
             intensity: switch(m, "intensity")?,
@@ -5334,26 +5399,100 @@ impl Edits {
             && self.combine.is_none()
     }
 
-    /// The flags only the order flow indicators take: their colours, and
-    /// what each one has of its own.
-    fn apply_flow(&self, params: &mut Value, kind: IndicatorKind) -> Result<(), Fault> {
+    /// Whether a colouring or a colour of a study painted in one was given:
+    /// what needs [`ColourLook`] to be worked out.
+    fn touches_colours(&self) -> bool {
+        self.colouring.is_some()
+            || self.up_color.is_some()
+            || self.down_color.is_some()
+            || self.buy_color.is_some()
+            || self.sell_color.is_some()
+    }
+
+    /// The colouring, and each role's colour, of a study painted in a
+    /// colouring, through the one model the settings dialog uses
+    /// ([`omacharts_engine::colouring`]): a preset lets every colour go and
+    /// is drawn as it is; `custom` starts each colour at the one it was
+    /// drawn in; and a colour given over a preset makes it Custom, the
+    /// other colours kept as they were drawn, so it refines rather than
+    /// starts over. `none` lets a colour's own go, the colouring as it is.
+    fn apply_colours(&self, stored: &mut Value, kind: IndicatorKind) -> Result<(), Fault> {
+        if !self.touches_colours() {
+            return Ok(());
+        }
         let refuse = |what: &str| Fault::usage(format!("{} has no {what}", kind.short_name()));
-        let flow = matches!(kind, IndicatorKind::VolumeDelta | IndicatorKind::Footprint | IndicatorKind::LargeOrders);
-        for (choice, key, what) in [(&self.buy_color, "buy", "buying colour"), (&self.sell_color, "sell", "selling colour")] {
-            if let Some(choice) = choice {
-                if !flow {
-                    return Err(refuse(what));
+        let word = self.colouring_word.as_deref().unwrap_or_default();
+        let ups = matches!(kind, IndicatorKind::Volume | IndicatorKind::Cvd);
+        let sides = matches!(
+            kind,
+            IndicatorKind::VolumeProfile | IndicatorKind::VolumeDelta | IndicatorKind::Footprint | IndicatorKind::LargeOrders
+        );
+        if !ups && !sides {
+            return Err(refuse(match () {
+                _ if self.colouring.is_some() => "colouring",
+                _ if self.up_color.is_some() || self.down_color.is_some() => "rising or falling colour",
+                _ => "buying or selling colour",
+            }));
+        }
+        if word == "chart" && kind != IndicatorKind::Volume {
+            return Err(Fault::usage(format!(
+                "{} follows the colouring chosen in Preferences; use default",
+                kind.short_name()
+            )));
+        }
+        let roles: [Option<Option<ColorChoice>>; 2] = match ups {
+            true => {
+                if self.buy_color.is_some() || self.sell_color.is_some() {
+                    return Err(Fault::usage(format!(
+                        "{} has no buying or selling colour; use --up-color and --down-color",
+                        kind.short_name()
+                    )));
                 }
-                match choice {
-                    Some(choice) => params["inks"][key] = to_value(choice)?,
+                [self.up_color.clone().map(Some), self.down_color.clone().map(Some)]
+            }
+            false => {
+                if self.up_color.is_some() || self.down_color.is_some() {
+                    return Err(Fault::usage(format!(
+                        "{} has no rising or falling colour; use --buy-color and --sell-color",
+                        kind.short_name()
+                    )));
+                }
+                [self.buy_color.clone(), self.sell_color.clone()]
+            }
+        };
+        let look = self.look.as_ref().ok_or_else(|| Fault::new(super::EXIT_ERROR, "no theme to work colours out from".into()))?;
+        let mut indicator: Indicator =
+            serde_json::from_value(stored.clone()).map_err(|e| Fault::new(super::EXIT_ERROR, e.to_string()))?;
+        if let Some(chosen) = self.colouring {
+            let drawn = look.drawn(&indicator);
+            if let Some(mut colours) = indicator.params.colours_mut() {
+                colours.pick(chosen, &drawn);
+            }
+        }
+        for (role, given) in roles.into_iter().enumerate() {
+            let Some(given) = given else { continue };
+            let drawn = look.drawn(&indicator);
+            if let Some(mut colours) = indicator.params.colours_mut() {
+                match given {
+                    Some(choice) => colours.set_colour(role, Some(choice), &drawn),
+                    // The colour's own let go, the colouring left as it is.
                     None => {
-                        if let Some(inks) = params["inks"].as_object_mut() {
-                            inks.remove(key);
+                        if let Some(colour) = colours.colours.get_mut(role) {
+                            **colour = None;
                         }
                     }
                 }
             }
         }
+        *stored = to_value(&indicator)?;
+        Ok(())
+    }
+
+    /// The flags only the order flow indicators take: their colours, and
+    /// what each one has of its own.
+    fn apply_flow(&self, params: &mut Value, kind: IndicatorKind) -> Result<(), Fault> {
+        let refuse = |what: &str| Fault::usage(format!("{} has no {what}", kind.short_name()));
+        let flow = matches!(kind, IndicatorKind::VolumeDelta | IndicatorKind::Footprint | IndicatorKind::LargeOrders);
         for (alpha, key, what) in
             [(self.buy_alpha, "buy_alpha", "buying transparency"), (self.sell_alpha, "sell_alpha", "selling transparency")]
         {
@@ -5727,46 +5866,6 @@ impl Edits {
                 }
             }
         }
-        for (colour, key, what) in [
-            (&self.up_color, "up_color", "rising volume colour"),
-            (&self.down_color, "down_color", "falling volume colour"),
-        ] {
-            if let Some(colour) = colour {
-                match kind == IndicatorKind::Volume {
-                    true => params[key] = to_value(colour)?,
-                    false => return Err(refuse(what)),
-                }
-            }
-        }
-        if let Some(colouring) = &self.colouring {
-            let word = self.colouring_word.as_deref().unwrap_or_default();
-            match kind {
-                IndicatorKind::VolumeProfile | IndicatorKind::Cvd if word == "chart" => {
-                    return Err(Fault::usage(format!(
-                        "{} follows the colouring chosen in Preferences; use default",
-                        kind.short_name()
-                    )));
-                }
-                IndicatorKind::Volume | IndicatorKind::VolumeProfile | IndicatorKind::Cvd => {
-                    params["colouring"] = to_value(colouring)?;
-                }
-                IndicatorKind::VolumeDelta | IndicatorKind::Footprint | IndicatorKind::LargeOrders if word == "chart" => {
-                    return Err(Fault::usage(format!(
-                        "{} follows the colouring chosen in Preferences; use default",
-                        kind.short_name()
-                    )));
-                }
-                IndicatorKind::VolumeDelta | IndicatorKind::Footprint | IndicatorKind::LargeOrders => match colouring {
-                    Some(colouring) => params["inks"]["colouring"] = to_value(colouring)?,
-                    None => {
-                        if let Some(inks) = params["inks"].as_object_mut() {
-                            inks.remove("colouring");
-                        }
-                    }
-                },
-                _ => return Err(refuse("colouring")),
-            }
-        }
         if let Some(opacity) = self.opacity {
             match kind == IndicatorKind::Volume {
                 // Both, so the bars' own strengths go, unless this command
@@ -5870,6 +5969,7 @@ impl Edits {
             }
         }
 
+        self.apply_colours(stored, kind)?;
         self.apply_flow(&mut stored["params"], kind)?;
         self.apply_ranges(stored, kind)?;
 
@@ -6817,7 +6917,10 @@ fn template_indicator(
 
     let wanted = wanted_indicator(m, None, 0)?;
     let kind = wanted_kind(m, action, &list, wanted, &format!("chart template {:?}", template.name))?;
-    let edits = Edits::read(m)?;
+    let mut edits = Edits::read(m)?;
+    if edits.touches_colours() {
+        edits.look = Some(ColourLook::load(store));
+    }
     let text = edit_indicators(wanted, action, kind, &edits, &mut list, "this chart template")?;
     let indicators: Vec<Indicator> = serde_json::from_value(Value::Array(list))
         .map_err(|e| Fault::new(super::EXIT_ERROR, e.to_string()))?;
@@ -10246,6 +10349,64 @@ mod tests {
     /// until a command picks one of the three that tell bought from sold,
     /// and `default` puts it back; the words that are the volume strip's
     /// own, and Monochrome, are refused and leave it as it was.
+    /// Every study painted in a colouring takes `--colouring custom`, each
+    /// colour starting at the one it was drawn in; a colour given over a
+    /// preset makes it Custom, the other colour kept as drawn; and a preset
+    /// lets the colours go. The JSON says `custom` and gives the colours.
+    #[test]
+    fn every_study_with_a_colouring_takes_custom_from_a_command() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        let studies = [
+            ("volume", "", ["up_color", "down_color"], "--up-color"),
+            ("cvd", "", ["up_color", "down_color"], "--up-color"),
+            ("volume_profile", " --profile-method delta", ["buy_color", "sell_color"], "--buy-color"),
+            ("volume_delta", "", ["buy", "sell"], "--buy-color"),
+            ("footprint", "", ["buy", "sell"], "--buy-color"),
+            ("large_orders", "", ["buy", "sell"], "--buy-color"),
+        ];
+        for (key, extra, roles, flag) in studies {
+            let out = run(&format!("chart indicator add {key} --book Macro{extra}"), &store);
+            assert_eq!(out.code, 0, "{key}: {}", out.err);
+            // What a study keeps its colouring and colours in.
+            let held = |store: &Store| {
+                let out = run("chart indicator list --book Macro --json", store);
+                let parsed: serde_json::Value = serde_json::from_str(&out.out).unwrap();
+                let study = parsed["indicators"].as_array().and_then(|all| all.iter().find(|i| i["kind"] == key).cloned()).unwrap();
+                let params = study["params"].clone();
+                match params.get("inks") {
+                    Some(inks) if !inks.is_null() => inks.clone(),
+                    _ if roles[0] == "buy" => serde_json::Value::Null,
+                    _ => params,
+                }
+            };
+            let set = |words: &str| {
+                let out = run(&format!("chart indicator set {key} --book Macro {words}"), &store);
+                assert_eq!(out.code, 0, "{key} {words}: {}", out.err);
+                held(&store)
+            };
+            let hex = |held: &serde_json::Value, role: &str| held[role]["hex"].as_str().map(str::to_string);
+
+            let quiet = set("--colouring theme-quiet");
+            assert_eq!(quiet["colouring"], "theme-quiet", "{key}");
+            assert!(quiet[roles[0]].is_null() && quiet[roles[1]].is_null(), "{key}: a preset has no colours: {quiet}");
+
+            let custom = set("--colouring custom");
+            assert_eq!(custom["colouring"], "custom", "{key}: {custom}");
+            let seeded = (hex(&custom, roles[0]), hex(&custom, roles[1]));
+            assert!(seeded.0.is_some() && seeded.1.is_some(), "{key}: started at what was drawn: {custom}");
+
+            let preset = set("--colouring theme-quiet");
+            assert_eq!(preset["colouring"], "theme-quiet", "{key}");
+            assert!(preset[roles[0]].is_null() && preset[roles[1]].is_null(), "{key}: the preset again lets them go");
+
+            let refined = set(&format!("{flag} #112233"));
+            assert_eq!(refined["colouring"], "custom", "{key}: a colour over a preset is Custom: {refined}");
+            assert_eq!(hex(&refined, roles[0]).as_deref(), Some("#112233"), "{key}");
+            assert_eq!(hex(&refined, roles[1]), seeded.1, "{key}: the other colour as the preset drew it");
+        }
+    }
+
     #[test]
     fn a_volume_profile_takes_a_colouring_of_its_own_and_gives_it_back() {
         let store = bare();
@@ -10376,7 +10537,7 @@ mod tests {
             );
             assert_eq!(out.code, 0, "{key}: {}", out.err);
             let inks = &listed(&store, key)["params"]["inks"];
-            assert_eq!(inks["colouring"], "theme-soft", "{key}: {inks}");
+            assert_eq!(inks["colouring"], "custom", "{key}: a colour over a preset makes it Custom: {inks}");
             assert_eq!(inks["buy"]["name"], "Teal", "{key}: {inks}");
             assert_eq!(inks["sell"]["hex"], "#aa2233", "{key}: {inks}");
             assert_eq!((inks["buy_alpha"].as_f64(), inks["sell_alpha"].as_f64()), (Some(0.75), Some(0.5)));

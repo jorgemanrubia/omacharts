@@ -528,8 +528,8 @@ const COLOURING: &[&str] = &["vivid", "soft", "quiet", "monochrome", "coloured",
 /// four colourings, Monochrome as one colour for both sides (`monochrome`
 /// is `theme-mono`); and a delta volume profile's two sides, a cumulative
 /// delta's and the order flow indicators': the colouring chosen in
-/// Preferences, or one of the same four.
-const VOLUME_COLOURINGS: &[&str] = &["default", "chart", "theme", "theme-soft", "theme-quiet", "theme-mono", "monochrome"];
+/// Preferences, or one of the same four; and `custom`, each colour its own.
+const VOLUME_COLOURINGS: &[&str] = &["default", "chart", "theme", "theme-soft", "theme-quiet", "theme-mono", "monochrome", "custom"];
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 /// The kinds a drawing comes in, plus the one alias.
 ///
@@ -648,11 +648,11 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("poc-transparency", "F", "the same for a volume or market profile's point of control, or `default` for its own"),
     Flag::valued("highlight-value-area", "BOOL", "whether a volume or market profile sets its value area apart from its other rows (on unless set); off draws every row alike").of(SWITCHES),
     Flag::valued("value-area-color", "COLOUR", "a volume or market profile's value area, while it is set apart; none gives it back the rows' own colour"),
-    Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
-    Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
+    Flag::valued("up-color", "COLOUR", "volume bars of a rising session, or a cumulative delta's rises; given over a preset, it makes the colouring custom"),
+    Flag::valued("down-color", "COLOUR", "volume bars of a falling session, or a cumulative delta's falls; given over a preset, it makes the colouring custom"),
     Flag::valued("up-transparency", "F", "how much of the chart shows through volume bars of a rising session, 0-1, or `default` to follow --opacity"),
     Flag::valued("down-transparency", "F", "the same for volume bars of a falling session"),
-    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles (default, or chart), or in theme, theme-soft, theme-quiet or theme-mono (monochrome: one colour for up and down alike); and a delta volume profile's bought and sold rows, a cumulative delta's rises and falls, and the buying and selling of a volume delta, a footprint or large orders: in the colouring chosen in Preferences (default), or theme, theme-soft, theme-quiet or theme-mono").of(VOLUME_COLOURINGS),
+    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles (default, or chart), or in theme, theme-soft, theme-quiet or theme-mono (monochrome: one colour for up and down alike); and a delta volume profile's bought and sold rows, a cumulative delta's rises and falls, and the buying and selling of a volume delta, a footprint or large orders: in the colouring chosen in Preferences (default), or theme, theme-soft, theme-quiet or theme-mono; custom paints each colour its own, starting from what was drawn, and a preset lets those colours go").of(VOLUME_COLOURINGS),
     Flag::valued("opacity", "F", "how solid volume bars are drawn, rising and falling alike, 0-1; 1 is fully opaque"),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
     Flag::valued("d-transparency", "F", "how much of the chart shows through the stochastic's %D line, 0-1, or `default` to follow --transparency"),
@@ -675,8 +675,8 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("to", "TIME", "where a range ends; before --from runs past midnight"),
     Flag::valued("zone", "ZONE", "the clock a range keeps: an IANA name, or `chart` for the chart's own"),
     Flag::valued("shade-alpha", "F", "how solid a range's shading is, 0-1; every range, unless one is named"),
-    Flag::valued("buy-color", "COLOUR", "buying in a volume delta, a footprint or large orders, in place of its colouring's rise; none gives back the colouring's"),
-    Flag::valued("sell-color", "COLOUR", "selling in a volume delta, a footprint or large orders, in place of its colouring's fall; none gives back the colouring's"),
+    Flag::valued("buy-color", "COLOUR", "buying in a delta volume profile, a volume delta, a footprint or large orders; given over a preset, it makes the colouring custom, selling kept as drawn; none lets it go"),
+    Flag::valued("sell-color", "COLOUR", "selling in a delta volume profile, a volume delta, a footprint or large orders; given over a preset, it makes the colouring custom, buying kept as drawn; none lets it go"),
     Flag::valued("buy-transparency", "F", "how much of the chart shows through buying in a volume delta, a footprint or large orders, 0-1, or `default` for its own (0 for a volume delta, 0.15 for a footprint's strongest row, 0.65 for bubbles)"),
     Flag::valued("sell-transparency", "F", "the same for selling"),
     Flag::valued("intensity", "BOOL", "whether a footprint's rows are filled more solidly the bigger their delta against the biggest on screen (on unless set off); off fills every row alike").of(SWITCHES),
@@ -1396,7 +1396,7 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("poc", "BOOL", "whether a volume profile draws its point of control (on unless set)").of(SWITCHES),
                     Flag::valued("rows", "N", "volume profile rows, 4-800, or `auto` to follow the instrument's own increment, as the study does"),
                     Flag::valued("profile-method", "WHAT", "what a volume profile's rows measure: all the volume at each price, or the ask volume less the bid volume, which needs a feed with volume at price").of(PROFILE_METHODS),
-                    Flag::valued("colouring", "COLOURING", "how a delta volume profile's bought and sold rows are painted: in the colouring chosen in Preferences (default), or theme, theme-soft, theme-quiet or theme-mono").of(VOLUME_COLOURINGS),
+                    Flag::valued("colouring", "COLOURING", "how a delta volume profile's bought and sold rows are painted: in the colouring chosen in Preferences (default), or theme, theme-soft, theme-quiet or theme-mono, or custom, each its own, starting from what was drawn").of(VOLUME_COLOURINGS),
                     Flag::valued("profile-width", "F", "how much of its span a volume profile's longest row reaches, 0.1-1 (default 1, the whole span)"),
                     Flag::valued("outline", "BOOL", "whether a filled volume profile wears an outline, as --border").of(SWITCHES),
                     Flag::valued("outline-color", "COLOUR", "a volume profile's outline, as --color: a preset name or #rrggbb"),

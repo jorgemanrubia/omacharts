@@ -16,13 +16,15 @@ The volume delta, the footprint and large orders paint buying and selling, and t
 
 | Flag | Takes | For |
 |---|---|---|
-| `--colouring C` | `default`, the one chosen in Preferences, or `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` (or `monochrome`: one colour for both, the Monochrome candles' ink) | The colouring buying and selling are taken from |
-| `--buy-color C`, `--sell-color C` | A colour, or `none` for the colouring's | Buying's or selling's colour, set apart from the colouring |
+| `--colouring C` | `default`, the one chosen in Preferences, or `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` (or `monochrome`: one colour for both, the Monochrome candles' ink), or `custom` | The colouring buying and selling are taken from. `custom` keeps each colour its own, starting from the colours drawn a moment before; any other lets the custom colours go |
+| `--buy-color C`, `--sell-color C` | A colour, or `none` to let it go | Buying's or selling's colour. Given on a colouring other than `custom`, it makes the colouring `custom`, the other side kept at the colour it was drawn in |
 | `--buy-transparency F`, `--sell-transparency F` | 0 to 1, or `default` for the indicator's own | How much of the chart shows through buying or selling |
 
 ```
 $ omacharts chart indicator set volume_delta --colouring theme-soft --sell-color Rose --sell-transparency 0.2
 ```
+
+The colouring is `theme-soft` for a moment, then `--sell-color` makes it `custom`, buying kept in Soft's up colour.
 
 `list --json` reads them back under `params.inks`, which is left out while every one is its default:
 

@@ -22,7 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::theme::{BarColouring, ContrastBand, Oklch, Theme, contrast_ratio, delta_e, held_to, mix, theme_bars};
+use crate::theme::{ContrastBand, Oklch, Theme, contrast_ratio, delta_e, held_to, mix, theme_bars};
 
 /// One of the nine, in the order the picker shows them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -1508,10 +1508,16 @@ pub struct ProfileLook {
     pub method: ProfileMethod,
     /// The colouring a delta's bought and sold rows are painted in, as the
     /// study's: unset, the colouring chosen in Preferences, following it as
-    /// it changes; set, one of [`DELTA_COLOURINGS`] of its own. A total is
-    /// in the drawing's background and pays this no mind.
+    /// it changes; set, one of [`DELTA_COLOURINGS`] of its own, or Custom
+    /// (see [`crate::colouring`]). A total is in the drawing's background
+    /// and pays this no mind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub colouring: Option<BarColouring>,
+    pub colouring: Option<crate::colouring::Colouring>,
+    /// A delta's bought and sold rows' own colours, while Custom.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buy_color: Option<crate::theme::ColorChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sell_color: Option<crate::theme::ColorChoice>,
     /// How much of the span the longest row reaches, as a share, as the
     /// study's Width is of its period. Missing, the whole span, edge to
     /// edge, as every profile drawing was drawn before it could be chosen.
@@ -1536,6 +1542,18 @@ fn is_total(method: &ProfileMethod) -> bool {
 }
 
 impl ProfileLook {
+    /// A delta's colours, the way every study's are changed: see
+    /// [`crate::colouring`]. How solid they are is the drawing's own.
+    pub fn colours_mut(&mut self) -> crate::colouring::ColoursMut<'_> {
+        crate::colouring::ColoursMut {
+            colouring: &mut self.colouring,
+            labels: &crate::indicators::FLOW_ROLES,
+            colours: vec![&mut self.buy_color, &mut self.sell_color],
+            alphas: Vec::new(),
+            opacity: None,
+        }
+    }
+
     fn opaque() -> f64 {
         1.0
     }
@@ -1583,6 +1601,8 @@ impl Default for ProfileLook {
             poc_style: LineStyle::Solid,
             method: ProfileMethod::Total,
             colouring: None,
+            buy_color: None,
+            sell_color: None,
             width: ProfileLook::whole_span(),
             value_area_alpha: None,
             outside_alpha: None,
@@ -3563,7 +3583,7 @@ mod tests {
 
         let delta = ProfileLook {
             method: ProfileMethod::Delta,
-            colouring: Some(BarColouring::Soft),
+            colouring: Some(crate::colouring::Colouring::Scheme(crate::theme::BarColouring::Soft)),
             width: 0.4,
             ..ProfileLook::default()
         };

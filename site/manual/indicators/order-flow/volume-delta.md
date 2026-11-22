@@ -31,9 +31,10 @@ crop: none
 | Setting | Default | Allowed |
 |---|---|---|
 | **Pane height %** | 16% | 5 to 95% |
-| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet** or **Monochrome** ([Colours](/manual/indicators/order-flow/#colours)) |
-| **Buying** | The colouring's up colour, solid | A palette name, or a custom colour, with its **Opacity** |
-| **Selling** | The colouring's down colour, solid | The same |
+| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet**, **Monochrome** or **Custom** ([Colours](/manual/indicators/order-flow/#colours)) |
+| **Opacity** | 100% | How solid buying and selling are both drawn, 0 to 100%. Shown for every colouring but **Custom** |
+| **Buying** | The colour buying was drawn in before **Custom** was chosen | A palette name, or a custom colour, with its own **Opacity**. Shown only for **Custom** |
+| **Selling** | The same for selling | The same |
 
 A bar with more buying than selling is drawn in the buying colour, one with more selling in the selling colour.
 

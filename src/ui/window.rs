@@ -3297,9 +3297,10 @@ mod outside_change_tests {
         });
     }
 
-    /// The volume pane's Up and Down rows sit right under its Colouring,
-    /// each carrying how solid its bars are, starting at 85%; each slider
-    /// reaches its own bars alone, and a command's --opacity both.
+    /// A volume pane on a preset shows one Opacity row under its Colouring,
+    /// starting at 85%, for both its bars; on Custom, its Up and Down rows
+    /// instead, each carrying how solid its own bars are and reaching them
+    /// alone; and a command's --opacity is both.
     #[test]
     fn the_volume_colours_carry_their_opacity_and_follow_a_command() {
         crate::ui::on_gtk(|| {
@@ -3321,30 +3322,123 @@ mod outside_change_tests {
             let row = |title: &str| {
                 titled::<adw::ActionRow>(&window, title).into_iter().next().unwrap_or_else(|| panic!("an {title} row"))
             };
+            let shown = |row: &adw::ActionRow| row.property::<bool>("visible");
             let (up, down) = (crate::ui::chart_settings::VOLUME_UP, crate::ui::chart_settings::VOLUME_DOWN);
-            assert!(
-                titled::<adw::ActionRow>(&window, "Opacity %").is_empty(),
-                "no opacity row of its own"
-            );
-            let above = row(up).prev_sibling().and_then(|w| w.downcast::<adw::ComboRow>().ok());
-            assert_eq!(above.map(|r| r.title()).as_deref(), Some("Colouring"), "Up is not under Colouring");
+            let opacity = crate::ui::colouring_rows::OPACITY;
+            let above = row(opacity).prev_sibling().and_then(|w| w.downcast::<adw::ComboRow>().ok());
+            assert_eq!(above.map(|r| r.title()).as_deref(), Some("Colouring"), "Opacity is not under Colouring");
+            assert!(shown(&row(opacity)) && !shown(&row(up)) && !shown(&row(down)), "a preset shows no colours");
             let slider = |row: adw::ActionRow| rows::<gtk::Scale>(row.upcast_ref()).into_iter().next().expect("a slider");
-            assert_eq!((slider(row(up)).value(), slider(row(down)).value()), (85.0, 85.0));
+            assert_eq!(slider(row(opacity)).value(), 85.0);
             assert_eq!(alphas(), (0.85, 0.85));
-
-            slider(row(up)).set_value(100.0);
-            assert_eq!(alphas(), (1.0, 0.85), "the Up slider reached its own bars alone");
-            slider(row(down)).set_value(40.0);
-            assert_eq!(alphas(), (1.0, 0.4), "the Down slider reached its own bars alone");
+            slider(row(opacity)).set_value(60.0);
+            assert_eq!(alphas(), (0.6, 0.6), "one Opacity for both");
 
             command(&window, &["chart", "indicator", "set", "volume", "--opacity", "0.5"]);
             assert_eq!(alphas(), (0.5, 0.5), "--opacity is both");
-            assert_eq!((slider(row(up)).value(), slider(row(down)).value()), (50.0, 50.0), "the rows kept the old opacity");
+            assert_eq!(slider(row(opacity)).value(), 50.0, "the row kept the old opacity");
+
+            let colouring = titled::<adw::ComboRow>(&window, "Colouring").pop().expect("the colouring row");
+            colouring.set_selected(colouring.model().map_or(0, |m| m.n_items()) - 1);
+            assert!(!shown(&row(opacity)) && shown(&row(up)) && shown(&row(down)), "Custom shows each colour");
+            assert_eq!((slider(row(up)).value(), slider(row(down)).value()), (50.0, 50.0));
+            slider(row(up)).set_value(100.0);
+            assert_eq!(alphas(), (1.0, 0.5), "the Up slider reached its own bars alone");
 
             command(&window, &["chart", "indicator", "set", "volume", "--down-transparency", "0.75"]);
-            assert_eq!(alphas(), (0.5, 0.25));
+            assert_eq!(alphas(), (1.0, 0.25));
             assert_eq!(slider(row(down)).value(), 25.0);
         });
+    }
+
+    /// Every study painted in a colouring offers Custom last, from the one
+    /// shared set of rows. A preset shows no colour of its own; Custom shows
+    /// a row a colour the study draws with, each starting at the colour it
+    /// was drawn in; a colour picked there refines that one alone; a preset
+    /// chosen again is drawn as it is; and Custom chosen again, while the
+    /// dialog is open, brings back what was picked.
+    #[test]
+    fn every_study_with_a_colouring_offers_custom_with_a_row_a_colour() {
+        use omacharts_engine::colouring::Colouring;
+        use omacharts_engine::theme::ColorChoice;
+        let studies: [(&str, &[&str], [&str; 2], bool); 6] = [
+            ("volume", &[], ["Up", "Down"], true),
+            ("cvd", &[], ["Up", "Down"], false),
+            ("volume_profile", &["--profile-method", "delta"], ["Buying", "Selling"], false),
+            ("volume_delta", &[], ["Buying", "Selling"], true),
+            ("footprint", &[], ["Buying", "Selling"], true),
+            ("large_orders", &[], ["Buying", "Selling"], true),
+        ];
+        for (kind, extra, roles, opacity) in studies {
+            crate::ui::on_gtk(move || {
+                let store = Rc::new(Store::memory().expect("a store"));
+                let window = bare_window(&store);
+                command(&window, &["chart", "set", "--resolution", "5m"]);
+                let mut words = vec!["chart", "indicator", "add", kind];
+                words.extend_from_slice(extra);
+                command(&window, &words);
+                let id = window.indicators().last().map(|i| i.id).expect("added");
+                let study = || window.indicators().into_iter().find(|i| i.id == id).expect("the study");
+                let colours = || {
+                    let params = study().params;
+                    let (colouring, own) = params.colours().expect("a colouring");
+                    (colouring, own.map(|c| c.cloned()))
+                };
+                crate::ui::chart_settings::ChartSettings::present_indicator(&window, id);
+                // Read again after each change: a change can rebuild the page.
+                let colouring = || titled::<adw::ComboRow>(&window, "Colouring").pop().expect("the colouring row");
+                assert_eq!(offered(&colouring()).last().map(String::as_str), Some("Custom"), "{kind}");
+                let role = |at: usize| titled::<adw::ActionRow>(&window, roles[at]).pop().expect("a role row");
+                let shown = |row: &adw::ActionRow| row.property::<bool>("visible");
+                let opacity_row = || titled::<adw::ActionRow>(&window, crate::ui::colouring_rows::OPACITY).pop();
+                assert_eq!(opacity_row().is_some(), opacity, "{kind}: an Opacity row where it has a strength");
+
+                // A preset: its colours, and no swatch.
+                colouring().set_selected(1);
+                assert_eq!(colours().0, Some(Colouring::Scheme(omacharts_engine::BarColouring::Vivid)), "{kind}");
+                assert!(!shown(&role(0)) && !shown(&role(1)), "{kind}: a preset shows no colours");
+                if let Some(row) = &opacity_row() {
+                    assert!(shown(row), "{kind}: one Opacity row under a preset");
+                }
+                let theme = window.theme();
+                let (house, swapped) = window.house_look();
+                let vivid = match kind {
+                    "volume" => crate::ui::chart::volume_colours(&study(), &theme, &window.bar_scheme()),
+                    _ => crate::ui::chart::delta_colours(Some(omacharts_engine::BarColouring::Vivid), &theme, house, swapped),
+                };
+
+                // Custom: each colour as it was drawn a moment ago.
+                let custom = colouring().model().map_or(0, |m| m.n_items()) - 1;
+                colouring().set_selected(custom);
+                let fixed = |hex: &str| Some(ColorChoice::Fixed { hex: hex.to_string() });
+                assert_eq!(colours(), (Some(Colouring::Custom), [fixed(&vivid.0), fixed(&vivid.1)]), "{kind}: seeded");
+                assert!(shown(&role(0)) && shown(&role(1)), "{kind}: Custom shows a row a colour");
+                if let Some(row) = &opacity_row() {
+                    assert!(!shown(row), "{kind}: each colour carries its own under Custom");
+                }
+
+                // A pick refines the one colour.
+                let swatch = theme.swatches[0].name.clone();
+                let button = rows::<gtk::MenuButton>(role(0).upcast_ref()).pop().expect("a swatch");
+                let popover = button.popover().expect("the palette");
+                let cell = rows::<gtk::Button>(popover.upcast_ref())
+                    .into_iter()
+                    .find(|b| b.tooltip_text().as_deref() == Some(swatch.as_str()))
+                    .expect("the swatch in the palette");
+                cell.emit_clicked();
+                let picked = Some(ColorChoice::swatch(&swatch));
+                assert_eq!(colours(), (Some(Colouring::Custom), [picked.clone(), fixed(&vivid.1)]), "{kind}: refined");
+
+                // A preset again is drawn as it is.
+                colouring().set_selected(3);
+                assert_eq!(colours(), (Some(Colouring::Scheme(omacharts_engine::BarColouring::Quiet)), [None, None]), "{kind}");
+                assert!(!shown(&role(0)), "{kind}");
+
+                // Custom again, while the dialog is open, is what was picked.
+                colouring().set_selected(custom);
+                assert_eq!(colours(), (Some(Colouring::Custom), [picked, fixed(&vivid.1)]), "{kind}: kept");
+            });
+        }
     }
 
     /// A volume profile's settings offer a colouring right under its
@@ -3385,13 +3479,13 @@ mod outside_change_tests {
             let names: Vec<String> = (0..row.model().map_or(0, |m| m.n_items()))
                 .filter_map(|at| row.model()?.item(at)?.downcast::<gtk::StringObject>().ok().map(|s| s.string().to_string()))
                 .collect();
-            assert_eq!(names, ["Default", "Vivid", "Soft", "Quiet", "Monochrome"]);
+            assert_eq!(names, ["Default", "Vivid", "Soft", "Quiet", "Monochrome", "Custom"]);
 
             row.set_selected(3);
             let stored = window.indicators();
             let params = &stored.iter().find(|i| i.id == profile).expect("the profile").params;
             assert!(
-                matches!(params, omacharts_engine::indicators::Params::VolumeProfile { colouring: Some(BarColouring::Quiet), .. }),
+                matches!(params, omacharts_engine::indicators::Params::VolumeProfile { colouring: Some(omacharts_engine::colouring::Colouring::Scheme(BarColouring::Quiet)), .. }),
                 "{params:?}"
             );
             let (method, row) = rows();
@@ -3783,7 +3877,7 @@ mod outside_change_tests {
             let shown = window.indicators();
             let params = &shown.iter().find(|i| i.id == volume).expect("the volume pane").params;
             assert!(
-                matches!(params, omacharts_engine::indicators::Params::Volume { colouring: Some(BarColouring::Soft), .. }),
+                matches!(params, omacharts_engine::indicators::Params::Volume { colouring: Some(omacharts_engine::colouring::Colouring::Scheme(BarColouring::Soft)), .. }),
                 "{params:?}"
             );
         });
@@ -3813,7 +3907,7 @@ mod outside_change_tests {
                 .expect("a volume pane added");
             crate::ui::chart_settings::ChartSettings::present_indicator(&window, volume);
             let strip = titled::<adw::ComboRow>(&window, "Colouring").pop().expect("the volume pane's");
-            assert_eq!(offered(&strip), ["Default", "Vivid", "Soft", "Quiet", "Monochrome"]);
+            assert_eq!(offered(&strip), ["Default", "Vivid", "Soft", "Quiet", "Monochrome", "Custom"]);
             assert_eq!(strip.selected(), 0, "the chart's own, to begin with");
         });
     }
@@ -3855,7 +3949,7 @@ mod outside_change_tests {
             assert_eq!(names.last().map(String::as_str), Some(cvd::NEVER));
             assert_eq!(names[reset().selected() as usize], "Session", "the session, to begin with");
             assert_eq!(style().selected(), 0);
-            assert_eq!(offered(&colouring()), ["Default", "Vivid", "Soft", "Quiet", "Monochrome"]);
+            assert_eq!(offered(&colouring()), ["Default", "Vivid", "Soft", "Quiet", "Monochrome", "Custom"]);
 
             let group = reset().ancestor(adw::PreferencesGroup::static_type()).and_downcast::<adw::PreferencesGroup>();
             let said = group.and_then(|g| g.description()).map(|d| d.to_string());
@@ -3877,7 +3971,7 @@ mod outside_change_tests {
             assert!(matches!(params(), Params::Cvd { style: cvd::Style::Line, .. }), "{:?}", params());
             assert!(line_shown(), "a line's own rows");
             colouring().set_selected(2);
-            assert!(matches!(params(), Params::Cvd { colouring: Some(BarColouring::Soft), .. }), "{:?}", params());
+            assert!(matches!(params(), Params::Cvd { colouring: Some(omacharts_engine::colouring::Colouring::Scheme(BarColouring::Soft)), .. }), "{:?}", params());
 
             // The line's rows follow a command that draws it as candles again.
             command(&window, &["chart", "indicator", "set", "cvd", "--cvd-style", "candles"]);

@@ -7,6 +7,7 @@
 
 pub mod bars;
 pub mod clock;
+pub mod colouring;
 pub mod compare;
 pub mod continuous;
 pub mod contracts;

@@ -409,10 +409,13 @@ each order bigger than `--rth-threshold` (50) in regular hours or
 unless `--combine off`. The footprint and large orders need a feed with
 volume at price and say so on any other; the two deltas are estimated
 there and their legends read `≈`. The three new ones are painted by
-`--colouring default|theme|theme-soft|theme-quiet|theme-mono` (Monochrome,
+`--colouring default|theme|theme-soft|theme-quiet|theme-mono|custom` (Monochrome,
 also spelled `monochrome`: one colour for buying and selling alike, the
-Monochrome candles' ink; every colouring flag takes it, Volume's too), with `--buy-color`,
-`--sell-color` (`none` for the colouring's) and `--buy-transparency`,
+Monochrome candles' ink; every colouring flag takes it, Volume's too; `custom`
+is each colour its own, starting from what was drawn), with `--buy-color`,
+`--sell-color` (`none` to let it go; a colour given on a preset makes the
+colouring `custom`, the other side kept as drawn; Volume and CVD take
+`--up-color`/`--down-color` the same way, a delta volume profile `--buy-color`/`--sell-color`) and `--buy-transparency`,
 `--sell-transparency` (`default` for their own); `volume_delta` takes
 `--height`. They have no line, so `--color` and `--transparency` are refused.
 

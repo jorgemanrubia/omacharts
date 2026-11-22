@@ -10,21 +10,23 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::theme::{BarColouring, ColorChoice};
+use crate::colouring::Colouring;
+use crate::theme::ColorChoice;
 
 /// How an order flow indicator paints buying and selling: in a colouring
-/// (unset, the one chosen in Preferences, followed as it changes), with
-/// each side's colour and opacity set apart from it if wanted.
+/// (unset, the one chosen in Preferences, followed as it changes), or in
+/// its own two colours, Custom (see [`crate::colouring`]); each side as
+/// solid as set, whichever.
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub struct Inks {
-    /// One of [`super::profile::DELTA_COLOURINGS`], or unset for the house
-    /// colouring.
+    /// One of [`super::profile::DELTA_COLOURINGS`], Custom, or unset for
+    /// the house colouring.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub colouring: Option<BarColouring>,
-    /// Buying's colour, in place of the colouring's rise.
+    pub colouring: Option<Colouring>,
+    /// Buying's colour, while Custom.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub buy: Option<ColorChoice>,
-    /// Selling's colour, in place of the colouring's fall.
+    /// Selling's colour, while Custom.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sell: Option<ColorChoice>,
     /// How solid buying is drawn, 0 to 1, or unset for the indicator's
@@ -36,6 +38,17 @@ pub struct Inks {
 }
 
 impl Inks {
+    /// Its colours, the way every study's are changed.
+    pub fn colours_mut(&mut self) -> crate::colouring::ColoursMut<'_> {
+        crate::colouring::ColoursMut {
+            colouring: &mut self.colouring,
+            labels: &super::FLOW_ROLES,
+            colours: vec![&mut self.buy, &mut self.sell],
+            alphas: vec![&mut self.buy_alpha, &mut self.sell_alpha],
+            opacity: None,
+        }
+    }
+
     /// Buying's and selling's opacity, each its own or `designed`.
     pub fn alphas(&self, designed: f64) -> (f64, f64) {
         let held = |alpha: Option<f64>| alpha.filter(|a| a.is_finite()).map_or(designed, |a| a.clamp(0.0, 1.0));

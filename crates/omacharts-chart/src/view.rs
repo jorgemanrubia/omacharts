@@ -2816,13 +2816,33 @@ impl State {
     /// The bought and sold colours a delta profile or a cumulative delta is
     /// painted in: its own colouring's, or the house colouring's when it has
     /// none, or one that is not offered to a delta.
-    fn delta_ink(&self, drawn: &Drawn) -> (&str, &str) {
-        let chosen = match &drawn.indicator.params {
-            omacharts_engine::Params::VolumeProfile { colouring, .. }
-            | omacharts_engine::Params::Cvd { colouring, .. } => *colouring,
-            _ => None,
+    fn delta_ink<'a>(&'a self, drawn: &'a Drawn) -> (Cow<'a, str>, Cow<'a, str>) {
+        match drawn.indicator.params.colours() {
+            Some((colouring, own)) => self.study_pair(colouring, own),
+            None => {
+                let (up, down) = self.delta_pair(None);
+                (Cow::Borrowed(up), Cow::Borrowed(down))
+            }
+        }
+    }
+
+    /// The two colours a study painted in a colouring is drawn in: its
+    /// preset's, or the house colouring's, or, while it is Custom, each
+    /// role's own. See [`omacharts_engine::colouring`]. Borrowed, so a
+    /// frame allocates nothing for them.
+    pub(crate) fn study_pair<'a>(
+        &'a self,
+        colouring: Option<omacharts_engine::colouring::Colouring>,
+        own: [Option<&'a omacharts_engine::theme::ColorChoice>; 2],
+    ) -> (Cow<'a, str>, Cow<'a, str>) {
+        use omacharts_engine::colouring;
+        let (up, down) = self.delta_pair(colouring::base(colouring));
+        let custom = colouring::is_custom(colouring, &own);
+        let pick = |own: Option<&'a omacharts_engine::theme::ColorChoice>, base: &'a str| match own.filter(|_| custom) {
+            Some(choice) => footprint::chosen(choice, self),
+            None => Cow::Borrowed(base),
         };
-        self.delta_pair(chosen)
+        (pick(own[0], up), pick(own[1], down))
     }
 
     /// The bought and sold colours of a delta painted in `chosen`, or in
@@ -8479,7 +8499,7 @@ fn draw_pane(
             }
             None => {
                 let (up, down) = state.delta_ink(drawn);
-                (Cow::Borrowed(up), Cow::Borrowed(down), (1.0, 1.0))
+                (up, down, (1.0, 1.0))
             }
         };
         let chip = match line {
@@ -11056,25 +11076,27 @@ pub fn volume_colours(
     theme: &omacharts_engine::Theme,
     scheme: &BarScheme,
 ) -> (String, String) {
+    use omacharts_engine::colouring;
     let omacharts_engine::Params::Volume { colouring, up_color, down_color, .. } = &indicator.params
     else {
         return (scheme.up.clone(), scheme.down.clone());
     };
-    // Its own colouring paints a rise and a fall as a delta does, Monochrome
+    // Its own preset paints a rise and a fall as a delta does, Monochrome
     // in its one ink for both; Default echoes the chart's candles, which in
-    // Monochrome are that one ink too.
+    // Monochrome are that one ink too. Custom is its own two, each.
     let own;
-    let (up, down) = match colouring {
-        Some(colouring) => {
-            own = colouring.signed(theme, false);
+    let (up, down) = match colouring::base(*colouring) {
+        Some(preset) => {
+            own = preset.signed(theme, false);
             (own.0.as_str(), own.1.as_str())
         }
         None => (scheme.up.as_str(), scheme.down.as_str()),
     };
-    let pick = |choice: &Option<omacharts_engine::theme::ColorChoice>, fallback: &str| {
-        choice.as_ref().map_or_else(|| fallback.to_string(), |c| c.resolve(theme))
-    };
-    (pick(up_color, up), pick(down_color, down))
+    let custom = colouring::is_custom(*colouring, &[up_color.as_ref(), down_color.as_ref()]);
+    (
+        colouring::drawn(custom, up_color.as_ref(), up, theme).into_owned(),
+        colouring::drawn(custom, down_color.as_ref(), down, theme).into_owned(),
+    )
 }
 
 /// How solid a volume pane's bars are drawn, kept within what the row offers
@@ -11138,7 +11160,7 @@ fn profile_inks(
         Method::Total => vec![ink(selection::Side::All, &drawn.color)],
         Method::Delta => {
             let (up, down) = state.delta_ink(drawn);
-            vec![ink(selection::Side::Up, up), ink(selection::Side::Down, down)]
+            vec![ink(selection::Side::Up, &up), ink(selection::Side::Down, &down)]
         }
     }
 }
@@ -11434,9 +11456,9 @@ fn draw_profile_drawing(
     let inks = match look.method {
         Method::Total => vec![ProfileInk { side: selection::Side::All, fill, edge: colour.to_string() }],
         Method::Delta => {
-            let (up, down) = state.delta_pair(look.colouring);
+            let (up, down) = state.study_pair(look.colouring, [look.buy_color.as_ref(), look.sell_color.as_ref()]);
             let ink = |side, hex: &str| ProfileInk { side, fill: hex.to_string(), edge: hex.to_string() };
-            vec![ink(selection::Side::Up, up), ink(selection::Side::Down, down)]
+            vec![ink(selection::Side::Up, &up), ink(selection::Side::Down, &down)]
         }
     };
     // The value area in a colour of its own, when it is set apart and has
@@ -13409,7 +13431,7 @@ mod tests {
         assert_eq!(volume_colours(&indicator, &theme, &scheme), (scheme.up.clone(), scheme.down.clone()));
         for own in [BarColouring::Vivid, BarColouring::Soft, BarColouring::Quiet, BarColouring::Monochrome] {
             if let omacharts_engine::Params::Volume { colouring, .. } = &mut indicator.params {
-                *colouring = Some(own);
+                *colouring = Some(own.into());
             }
             assert_eq!(volume_colours(&indicator, &theme, &scheme), own.signed(&theme, false), "{own:?}");
         }

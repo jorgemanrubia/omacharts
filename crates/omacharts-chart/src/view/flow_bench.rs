@@ -194,6 +194,15 @@ impl FlowScene {
         forming.add_trade(tick, price, size, if step >= 0 { Side::Buy } else { Side::Sell }, 1);
     }
 
+    /// Every indicator left out of the legend, so two charts that differ
+    /// only by one indicator draw the same words.
+    pub fn without_legend(mut self) -> FlowScene {
+        for drawn in &mut self.state.indicators {
+            drawn.indicator.in_legend = false;
+        }
+        self
+    }
+
     /// The footprint's figures written in its rows, or left out.
     pub fn footprint_numbers(mut self, on: bool) -> FlowScene {
         for drawn in &mut self.state.indicators {
@@ -217,7 +226,7 @@ impl FlowScene {
     pub fn footprint_colouring(mut self, colouring: omacharts_engine::theme::BarColouring) -> FlowScene {
         for drawn in &mut self.state.indicators {
             if let Params::Footprint { inks, .. } = &mut drawn.indicator.params {
-                inks.colouring = Some(colouring);
+                inks.colouring = Some(colouring.into());
             }
         }
         self

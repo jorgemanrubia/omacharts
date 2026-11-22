@@ -23,6 +23,7 @@ use omacharts_engine::theme::ColorChoice;
 use omacharts_engine::{BarColouring, BarStyle, Indicator, Session};
 
 use crate::ui::colors;
+use crate::ui::colouring_rows;
 use crate::ui::controls;
 use crate::ui::dialogs;
 use crate::ui::drop_line;
@@ -1858,7 +1859,7 @@ fn parameters_group(
         Params::Volume { height, .. } => {
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
-        Params::Cvd { reset, style, height, colouring } => {
+        Params::Cvd { reset, style, height, .. } => {
             // Said once, here, rather than on the chart: the legend's ≈ is
             // the mark there.
             if owner.estimates_delta() {
@@ -1882,7 +1883,7 @@ fn parameters_group(
             let app = owner.app.clone();
             style_row.connect_selected_notify(move |_| app.chart_changed_elsewhere());
             group.add(&style_row);
-            group.add(&colouring_row(owner, refresh, id, *colouring));
+            study_colours(owner, refresh, indicator).add_to(&group);
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
         Params::VolumeDelta { height, .. } => {
@@ -2053,7 +2054,7 @@ fn parameters_group(
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
         Params::VolumeProfile {
-            reset, rows, value_area, method, colouring, last_only, ..
+            reset, rows, value_area, method, last_only, ..
         } => {
             let reset_row = reset_row(owner, refresh, id, *reset);
             // The newest period alone, on either method and either edge.
@@ -2070,18 +2071,8 @@ fn parameters_group(
                     refresh.run();
                 })
             };
-            let (colouring_row, _) = {
-                let owner = owner.clone();
-                let refresh = refresh.clone();
-                profile_rows::colouring_row(*colouring, move |chosen| {
-                    update(&owner, id, |indicator| {
-                        if let Params::VolumeProfile { colouring, .. } = &mut indicator.params {
-                            *colouring = chosen;
-                        }
-                    });
-                    refresh.run();
-                })
-            };
+            let colours = study_colours(owner, refresh, indicator);
+            let colouring_row = colours.colouring();
             let granularity = {
                 let owner = owner.clone();
                 let refresh = refresh.clone();
@@ -2122,7 +2113,7 @@ fn parameters_group(
                 &group,
                 &profile_rows::ParameterRows {
                     leading: vec![reset_row.upcast(), last_row.upcast()],
-                    own: vec![method_row.upcast(), colouring_row.upcast()],
+                    own: std::iter::once(method_row.upcast()).chain(colours.widgets.iter().cloned()).collect(),
                     granularity,
                     value_area: area_row.upcast(),
                 },
@@ -2678,88 +2669,74 @@ fn volume_colours(
 /// The volume pane's palette, its opacity and its two colours, as it is
 /// painted now.
 fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> Vec<gtk::Widget> {
-    let id = indicator.id;
-    let (up, down) =
-        crate::ui::chart::volume_colours(indicator, &owner.theme(), &owner.bar_scheme());
-    let Params::Volume { colouring, up_color, down_color, .. } = &indicator.params else {
-        return Vec::new();
-    };
-    let (up_alpha, down_alpha) = crate::ui::chart::volume_alphas(indicator);
-    let up_strength = indicator_strength(owner, refresh, id, up_alpha, |indicator, alpha| {
-        if let Params::Volume { up_alpha, .. } = &mut indicator.params {
-            *up_alpha = Some(alpha);
-        }
-    });
-    let down_strength = indicator_strength(owner, refresh, id, down_alpha, |indicator, alpha| {
-        if let Params::Volume { down_alpha, .. } = &mut indicator.params {
-            *down_alpha = Some(alpha);
-        }
-    });
-    // The one a delta profile offers. Its Default is what volume always
-    // followed, the chart's own colouring.
-    let choice = colouring_row(owner, refresh, id, *colouring);
-    // Bars have no line to repaint as a sample.
-    let unused = Ink::new(String::new);
-    let up_row = colour_row_with(
-        owner,
-        refresh,
-        &unused,
-        VOLUME_UP,
-        &up,
-        up_color.clone(),
-        move |indicator, choice| {
-            if let Params::Volume { up_color, .. } = &mut indicator.params {
-                *up_color = choice;
-            }
-        },
-        id,
-        Some(up_strength),
-    );
-    let down_row = colour_row_with(
-        owner,
-        refresh,
-        &unused,
-        VOLUME_DOWN,
-        &down,
-        down_color.clone(),
-        move |indicator, choice| {
-            if let Params::Volume { down_color, .. } = &mut indicator.params {
-                *down_color = choice;
-            }
-        },
-        id,
-        Some(down_strength),
-    );
-    vec![choice.upcast(), up_row.upcast(), down_row.upcast()]
+    study_colours(owner, refresh, indicator).widgets
 }
 
 /// The volume pane's colour rows, each with how solid its bars are.
 pub const VOLUME_UP: &str = "Up";
 pub const VOLUME_DOWN: &str = "Down";
 
-/// The colouring row a volume pane, a delta volume profile and a
-/// cumulative delta share: **Default** first, then the colourings that tell
-/// a rise from a fall, [`DELTA_COLOURINGS`]. Default is the colouring
-/// chosen in Preferences for a delta, and the chart's own for volume, which
-/// is what it always followed. A colouring outside those that an indicator
-/// already has is offered last, so the row shows what is drawn.
-fn colouring_row(owner: &Rc<Owner>, refresh: &Refresh, id: u32, current: Option<BarColouring>) -> adw::ComboRow {
-    let owner = owner.clone();
-    let refresh = refresh.clone();
-    profile_rows::colouring_row(current, move |chosen| {
-        update(&owner, id, |indicator| match &mut indicator.params {
-            Params::Volume { colouring, .. }
-            | Params::VolumeProfile { colouring, .. }
-            | Params::Cvd { colouring, .. } => *colouring = chosen,
-            params => {
-                if let Some(inks) = params.inks_mut() {
-                    inks.colouring = chosen;
-                }
+/// The colour each role of `indicator` is drawn in now: a volume pane's
+/// Default is the chart's own candles, every other study's the colouring
+/// chosen in Preferences for a delta.
+fn study_drawn(owner: &Owner, indicator: &Indicator) -> Vec<String> {
+    let theme = owner.theme();
+    if indicator.kind == Kind::Volume {
+        let (up, down) = crate::ui::chart::volume_colours(indicator, &theme, &owner.bar_scheme());
+        return vec![up, down];
+    }
+    let Some((colouring, own)) = indicator.params.colours() else { return Vec::new() };
+    let (house, swapped) = owner.app.house_look();
+    let base = crate::ui::chart::delta_colours(omacharts_engine::colouring::base(colouring), &theme, house, swapped);
+    colouring_rows::drawn_roles(colouring, own, base, &theme)
+}
+
+/// How solid a study's roles are drawn unless told.
+fn designed_alpha(indicator: &Indicator) -> f64 {
+    match indicator.kind {
+        Kind::Volume => crate::ui::chart::volume_alphas(indicator).0,
+        Kind::Footprint => flow::FOOTPRINT_ALPHA,
+        Kind::LargeOrders => flow::LARGE_ORDERS_ALPHA,
+        _ => flow::VOLUME_DELTA_ALPHA,
+    }
+}
+
+/// The Colouring rows every study painted in one shows, from
+/// [`colouring_rows`]: a volume pane, a volume profile, the cumulative
+/// delta, the volume delta, the footprint and large orders.
+fn study_colours(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> colouring_rows::Rows {
+    let id = indicator.id;
+    let read = {
+        let owner = owner.clone();
+        // What the dialog opened on, for one built before it is on a chart.
+        let opened = indicator.clone();
+        move || {
+            let indicators = owner.indicators();
+            let indicator = indicators.iter().find(|i| i.id == id).unwrap_or(&opened);
+            let drawn = study_drawn(&owner, indicator);
+            let designed = designed_alpha(indicator);
+            let mut params = indicator.params.clone();
+            match params.colours_mut() {
+                Some(colours) => colouring_rows::Shown::of(&colours, drawn, designed),
+                None => colouring_rows::Shown::empty(),
             }
-        });
-        refresh.run();
-    })
-    .0
+        }
+    };
+    let edit = {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        move |change: &dyn Fn(&mut omacharts_engine::colouring::ColoursMut, &[String])| {
+            let indicators = owner.indicators();
+            let Some(drawn) = indicators.iter().find(|i| i.id == id).map(|i| study_drawn(&owner, i)) else { return };
+            update(&owner, id, |indicator| {
+                if let Some(mut colours) = indicator.params.colours_mut() {
+                    change(&mut colours, &drawn);
+                }
+            });
+            refresh.run();
+        }
+    };
+    colouring_rows::rows(colouring_rows::Host { theme: owner.theme(), read: Box::new(read), edit: Box::new(edit) })
 }
 
 /// The rows of the order flow indicators' own.
@@ -2795,49 +2772,9 @@ fn flow_switch(
 /// How an order flow indicator paints buying and selling: its colouring,
 /// and each side's colour beside how solid it is, as a volume pane's are.
 fn flow_colours(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> adw::PreferencesGroup {
-    let id = indicator.id;
     let group = adw::PreferencesGroup::new();
     group.set_title("Colours");
-    let Some(inks) = indicator.params.inks() else { return group };
-    let designed = match indicator.kind {
-        Kind::Footprint => flow::FOOTPRINT_ALPHA,
-        Kind::LargeOrders => flow::LARGE_ORDERS_ALPHA,
-        _ => flow::VOLUME_DELTA_ALPHA,
-    };
-    let (buy_alpha, sell_alpha) = inks.alphas(designed);
-    let (house, swapped) = owner.app.house_look();
-    let (up, down) = crate::ui::chart::delta_colours(inks.colouring, &owner.theme(), house, swapped);
-    let theme = owner.theme();
-    let buy = inks.buy.as_ref().map_or(up, |c| c.resolve(&theme));
-    let sell = inks.sell.as_ref().map_or(down, |c| c.resolve(&theme));
-    group.add(&colouring_row(owner, refresh, id, inks.colouring));
-    // Sides have no line to repaint as a sample.
-    let unused = Ink::new(String::new);
-    for (title, current, choice, alpha, buying) in [
-        (FLOW_BUY_LABEL, buy, inks.buy.clone(), buy_alpha, true),
-        (FLOW_SELL_LABEL, sell, inks.sell.clone(), sell_alpha, false),
-    ] {
-        let strength = indicator_strength(owner, refresh, id, alpha, move |indicator, alpha| {
-            if let Some(inks) = indicator.params.inks_mut() {
-                *(if buying { &mut inks.buy_alpha } else { &mut inks.sell_alpha }) = Some(alpha);
-            }
-        });
-        group.add(&colour_row_with(
-            owner,
-            refresh,
-            &unused,
-            title,
-            &current,
-            choice,
-            move |indicator, choice| {
-                if let Some(inks) = indicator.params.inks_mut() {
-                    *(if buying { &mut inks.buy } else { &mut inks.sell }) = choice;
-                }
-            },
-            id,
-            Some(strength),
-        ));
-    }
+    study_colours(owner, refresh, indicator).add_to(&group);
     group
 }
 

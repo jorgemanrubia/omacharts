@@ -79,8 +79,12 @@ impl Params {
                 width,
                 method: _,
                 colouring,
+                buy_color,
+                sell_color,
                 merged: _,
             } => blank!(
+                buy_color,
+                sell_color,
                 poc_color,
                 style,
                 outline,
@@ -167,7 +171,9 @@ impl Params {
             Params::Volume { height, colouring, up_color, down_color, opacity, up_alpha, down_alpha } => {
                 blank!(height, colouring, up_color, down_color, opacity, up_alpha, down_alpha)
             }
-            Params::Cvd { reset: _, style, height, colouring } => blank!(style, height, colouring),
+            Params::Cvd { reset: _, style, height, colouring, up_color, down_color } => {
+                blank!(style, height, colouring, up_color, down_color)
+            }
             Params::VolumeDelta { height, inks } => blank!(height, inks),
             // Read from the ladders and the prints as they are drawn, and
             // nothing of either computed here: every setting is paint. The
@@ -380,7 +386,7 @@ mod tests {
                 *value_area_color = red();
                 *align = profile::Align::Right;
                 *width = 0.7;
-                *colouring = Some(crate::theme::BarColouring::ALL[1]);
+                *colouring = Some(crate::colouring::Colouring::Scheme(crate::theme::BarColouring::ALL[1]));
             }
         });
         change("profile parts' transparency", &|i| {
@@ -440,7 +446,7 @@ mod tests {
         });
         change("volume look", &|i| {
             if let Params::Volume { colouring, up_color, down_color, opacity, .. } = &mut i.params {
-                *colouring = Some(crate::theme::BarColouring::ALL[1]);
+                *colouring = Some(crate::colouring::Colouring::Scheme(crate::theme::BarColouring::ALL[1]));
                 *up_color = red();
                 *down_color = red();
                 *opacity = 0.5;
@@ -468,7 +474,7 @@ mod tests {
         change("cvd as a line", &|i| {
             if let Params::Cvd { style, colouring, .. } = &mut i.params {
                 *style = cvd::Style::Line;
-                *colouring = Some(crate::theme::BarColouring::ALL[1]);
+                *colouring = Some(crate::colouring::Colouring::Scheme(crate::theme::BarColouring::ALL[1]));
             }
         });
         change("shading", &|i| {

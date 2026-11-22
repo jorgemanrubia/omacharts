@@ -12,9 +12,9 @@ The flags `chart indicator add` and `set` take for the [volume](/manual/indicato
 
 | Flag | Takes | For |
 |---|---|---|
-| `--up-color C`, `--down-color C` | A colour | Volume |
+| `--up-color C`, `--down-color C` | A colour. Given on a colouring other than `custom`, it makes the colouring `custom`, the other colour kept as drawn | Volume, cumulative delta |
 | `--up-transparency F`, `--down-transparency F` | 0 to 1, or `default` to follow `--opacity` | Volume: how much of the chart shows through its rising or its falling bars |
-| `--colouring C` | `default`, or `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` (or `monochrome`) for one of its own. `default` is the chart's colouring for volume (`chart` too, as earlier versions spelled it) and the one chosen in Preferences for a volume profile | Volume, volume profile ([Volume](/manual/indicators/volume/)) |
+| `--colouring C` | `default`, or `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` (or `monochrome`) for one of its own, or `custom`. `default` is the chart's colouring for volume (`chart` too, as earlier versions spelled it) and the one chosen in Preferences for a volume profile. `custom` keeps each colour its own, starting from the colours drawn a moment before; any other lets the custom colours go | Volume, volume profile ([Volume](/manual/indicators/volume/)) |
 | `--opacity F` | `0` to `1`, where `1` is fully opaque; 0.85 when not given | Volume: rising and falling bars alike, letting go of either's own transparency |
 | `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, cumulative delta, volume delta, RSI, MACD, ATR, stochastic |
 

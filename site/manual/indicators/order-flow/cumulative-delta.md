@@ -31,7 +31,9 @@ crop: none
 |---|---|---|
 | **Reset every** | Session | Session, Week, Month, Quarter, Year ([Reset periods](/manual/indicators/#reset-periods)), or Never for one running total over the whole chart |
 | **Style** | Candles | Candles, or Line: the running total at each bar's close |
-| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet** or **Monochrome** |
+| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet**, **Monochrome** or **Custom** ([Colours](/manual/indicators/order-flow/#colours)) |
+| **Up** | The colour rising candles were drawn in before **Custom** was chosen | A palette name, or a custom colour. Shown only for **Custom** |
+| **Down** | The same for falling candles | The same |
 | **Pane height %** | 16% | 5 to 95% |
 | **Colour**, **Thickness**, **Line style** | The next free colour, 1 px, solid | Only for the Line style |
 

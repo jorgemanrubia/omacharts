@@ -1962,7 +1962,7 @@ mod tests {
     ) -> omacharts_engine::Params {
         let mut params = params.clone();
         if let omacharts_engine::Params::VolumeProfile { colouring, .. } = &mut params {
-            *colouring = chosen;
+            *colouring = chosen.map(Into::into);
         }
         params
     }

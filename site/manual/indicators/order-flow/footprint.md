@@ -31,13 +31,14 @@ crop: none
 
 | Setting | Default | Allowed |
 |---|---|---|
-| **Shade by delta** | On | Off fills every row alike, at the side's **Opacity** |
-| **Numbers** | On | Off draws the rows alone, with no number in them |
 | **Automatic rows** | On | Off sets **Row height (ticks)** by hand |
 | **Row height (ticks)** | Greyed while automatic, showing the ticks a row holds | 1 to 10000 ticks a row |
-| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet** or **Monochrome** ([Colours](/manual/indicators/order-flow/#colours)) |
-| **Buying** | The colouring's up colour, at 85% opacity | A palette name, or a custom colour, with its **Opacity** |
-| **Selling** | The colouring's down colour, at 85% opacity | The same |
+| **Shade by delta** | On | Off fills every row alike, at its colour's opacity |
+| **Numbers** | On | Off draws the rows alone, with no number in them |
+| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet**, **Monochrome** or **Custom** ([Colours](/manual/indicators/order-flow/#colours)) |
+| **Opacity** | 85% | How solid buying and selling are both drawn, 0 to 100%. Shown for every colouring but **Custom** |
+| **Buying** | The colour buying was drawn in before **Custom** was chosen | A palette name, or a custom colour, with its own **Opacity**. Shown only for **Custom** |
+| **Selling** | The same for selling | The same |
 
 ## Rows
 
@@ -45,7 +46,7 @@ With **Automatic rows** on, a row holds 1, 2, 4, 5, 10, 20, 25, 50 or more ticks
 
 ## Shade by delta
 
-With **Shade by delta** on, a row is filled more solidly the bigger its delta, in five steps from faint up to the side's **Opacity**. The strongest is measured against the biggest delta of any row on screen, so a row's length and its strength say the same thing, and scrolling to a busier stretch makes the rest fainter. Each row keeps a thin outline in its own colour, so a faint row is still seen. In **Monochrome** every row is the one colour, so a strength says only how big a delta is, and the minus sign in a row's number says which way it went.
+With **Shade by delta** on, a row is filled more solidly the bigger its delta, in five steps from faint up to its colour's opacity. The strongest is measured against the biggest delta of any row on screen, so a row's length and its strength say the same thing, and scrolling to a busier stretch makes the rest fainter. Each row keeps a thin outline in its own colour, so a faint row is still seen. In **Monochrome** every row is the one colour, so a strength says only how big a delta is, and the minus sign in a row's number says which way it went.
 
 ## See also
 

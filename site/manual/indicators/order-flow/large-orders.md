@@ -36,9 +36,10 @@ crop: none
 | **ETH threshold** | 20 | The same outside the regular session |
 | **Size against** | Session | **Visible bars**: the large orders on screen, so bubbles change size as the chart scrolls. **Session**: the session's. **RTH or ETH**: the session's regular or extended hours', each against its own |
 | **Combine same-time prints** | On | Off makes every print its own order |
-| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet** or **Monochrome** ([Colours](/manual/indicators/order-flow/#colours)) |
-| **Buying** | The colouring's up colour, at 35% opacity, its rim stronger | A palette name, or a custom colour, with its **Opacity** |
-| **Selling** | The colouring's down colour, at 35% opacity, its rim stronger | The same |
+| **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet**, **Monochrome** or **Custom** ([Colours](/manual/indicators/order-flow/#colours)) |
+| **Opacity** | 35%, a bubble's rim stronger | How solid buying and selling are both drawn, 0 to 100%. Shown for every colouring but **Custom** |
+| **Buying** | The colour buying was drawn in before **Custom** was chosen | A palette name, or a custom colour, with its own **Opacity**. Shown only for **Custom** |
+| **Selling** | The same for selling | The same |
 
 ## Combining prints
 
