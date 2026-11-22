@@ -1891,22 +1891,7 @@ fn parameters_group(
             }
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
-        Params::Footprint { zoom, intensity, numbers, row_ticks, .. } => {
-            group.add(&spin_row(
-                owner,
-                refresh,
-                id,
-                FOOTPRINT_ZOOM_LABEL,
-                *zoom,
-                flow::MIN_FOOTPRINT_ZOOM,
-                flow::MAX_FOOTPRINT_ZOOM,
-                1.0,
-                |indicator, value| {
-                    if let Params::Footprint { zoom, .. } = &mut indicator.params {
-                        *zoom = value;
-                    }
-                },
-            ));
+        Params::Footprint { intensity, numbers, row_ticks, .. } => {
             // Automatic, or so many ticks a row, as a market profile's:
             // greyed while automatic, showing the ticks being drawn.
             let granularity = {
@@ -2778,7 +2763,6 @@ fn colouring_row(owner: &Rc<Owner>, refresh: &Refresh, id: u32, current: Option<
 }
 
 /// The rows of the order flow indicators' own.
-pub const FOOTPRINT_ZOOM_LABEL: &str = "Min bar width px";
 pub const FOOTPRINT_INTENSITY_LABEL: &str = "Shade by delta";
 pub const FOOTPRINT_NUMBERS_LABEL: &str = "Numbers";
 pub const LARGE_RTH_LABEL: &str = "RTH threshold";

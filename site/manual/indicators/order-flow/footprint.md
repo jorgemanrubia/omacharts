@@ -6,7 +6,7 @@ parent: indicators/order-flow
 nav_order: 3
 ---
 
-Each bar's volume at the ask less its volume at the bid, at every price it traded, drawn inside the bar. The chart's own bar narrows to the bar's left edge, in the chart's style and colours: a narrow candle, filled or hollow as the chart's are, a narrow OHLC bar, or no bar at all on a **Line** chart, where the rows take its place. Beside it each price is a row, a line of small type high, its bar as long as its delta and its number written inside it at its left, in the buying colour when more was bought there and the selling colour when more was sold. The footprint's colours are its own: changing them leaves the bars alone, and changing the chart's colours leaves the rows alone. Zoomed out, the chart shows its ordinary bars.
+Each bar's volume at the ask less its volume at the bid, at every price it traded, drawn inside the bar. The chart's own bar narrows to the bar's left edge, in the chart's style and colours: a narrow candle, filled or hollow as the chart's are, a narrow OHLC bar, or no bar at all on a **Line** chart, where the rows take its place. Beside it each price is a row, a line of small type high, its bar as long as its delta and its number written inside it at its left, in the buying colour when more was bought there and the selling colour when more was sold. The footprint's colours are its own: changing them leaves the bars alone, and changing the chart's colours leaves the rows alone. It comes on by itself as you zoom in: once a bar is wide enough for the narrow bar and a row that holds the widest number at the figures' size, about 65 px; with **Numbers** off, once a row has room for a short bar, about 20 px. Zooming back out, it holds on a few pixels past that, so a zoom resting at the edge does not flicker, and then the chart shows its ordinary bars.
 
 | Drawn | Legend | Type to add | CLI |
 |---|---|---|---|
@@ -21,7 +21,7 @@ state:
   omacharts chartbook create "Order flow" --symbol ES --switch
   omacharts chart set --resolution 1m
   omacharts chart indicator add footprint
-  scroll 1000 400 -2, nine times, to zoom in past 64 px a bar
+  scroll 1000 400 -2, nine times, to zoom in until the footprint shows
 capture: bin/headless-window cli chart screenshot --output /tmp/footprint.png; magick /tmp/footprint.png -quality 88 site/assets/manual/indicators/footprint.jpg
 crop: none
 -->
@@ -31,7 +31,6 @@ crop: none
 
 | Setting | Default | Allowed |
 |---|---|---|
-| **Min bar width px** | 64 px | 24 to 400 px. Narrower bars are drawn as candles |
 | **Shade by delta** | On | Off fills every row alike, at the side's **Opacity** |
 | **Numbers** | On | Off draws the rows alone, with no number in them |
 | **Automatic rows** | On | Off sets **Row height (ticks)** by hand |

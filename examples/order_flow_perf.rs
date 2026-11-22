@@ -76,7 +76,7 @@ fn frames() {
         "footprint, numbers off, 20 bars zoomed in",
         &FlowScene::new(400, 20, &["volume", "footprint"], TRADES, 0).footprint_numbers(false),
     );
-    frame("footprint, 24 bars, just under its zoom", &FlowScene::new(400, 24, &["volume", "footprint"], TRADES, 0));
+    frame("footprint, 30 bars, just too narrow for its figures", &FlowScene::new(400, 30, &["volume", "footprint"], TRADES, 0));
     frame("footprint on but zoomed out, 400 bars", &FlowScene::new(1_000, 400, &["volume", "footprint"], TRADES, 0));
     frame("indicators off, 400 bars", &FlowScene::new(1_000, 400, &["volume"], TRADES, 0));
 

@@ -51,11 +51,6 @@ pub const VOLUME_DELTA_ALPHA: f64 = 1.0;
 pub const FOOTPRINT_ALPHA: f64 = 0.85;
 pub const LARGE_ORDERS_ALPHA: f64 = 0.35;
 
-/// The bar width, in pixels, a footprint is drawn from: narrower, the chart
-/// shows its candles.
-pub const FOOTPRINT_ZOOM: f64 = 64.0;
-pub const MIN_FOOTPRINT_ZOOM: f64 = 24.0;
-pub const MAX_FOOTPRINT_ZOOM: f64 = 400.0;
 
 /// What a large order's bubble is sized against: the largest order it is
 /// compared with is the biggest bubble.
@@ -107,10 +102,6 @@ pub(super) fn regular_threshold() -> u64 {
 
 pub(super) fn extended_threshold() -> u64 {
     EXTENDED_THRESHOLD
-}
-
-pub(super) fn footprint_zoom() -> f64 {
-    FOOTPRINT_ZOOM
 }
 
 pub(super) fn yes() -> bool {

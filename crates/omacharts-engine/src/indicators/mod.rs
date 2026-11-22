@@ -499,7 +499,6 @@ impl Kind {
                 Params::VolumeDelta { height: flow::volume_delta_height(), inks: flow::Inks::default() }
             }
             Kind::Footprint => Params::Footprint {
-                zoom: flow::FOOTPRINT_ZOOM,
                 intensity: true,
                 numbers: true,
                 row_ticks: None,
@@ -883,12 +882,11 @@ pub enum Params {
         #[serde(default)]
         inks: flow::Inks,
     },
-    /// Each bar's delta at each price beside a narrow candle, from the bar
-    /// width `zoom` up.
+    /// Each bar's delta at each price beside a narrow bar, once a bar is
+    /// wide enough to show them. A `zoom` stored by an earlier version, the
+    /// width it was drawn from, is read and let go: the width is worked out
+    /// from what a column has to hold.
     Footprint {
-        /// The bar width, in pixels, it is drawn from.
-        #[serde(default = "flow::footprint_zoom")]
-        zoom: f64,
         /// Whether a row is filled more strongly the bigger its delta, or
         /// every row alike.
         #[serde(default = "flow::yes")]
@@ -2305,7 +2303,8 @@ mod tests {
     }
 
     /// A footprint stored before its figures could be turned off or its rows
-    /// set reads with them on and its rows automatic; one turned off reads
+    /// set reads with them on and its rows automatic, and one with the bar
+    /// width it was drawn from reads with it dropped; one turned off reads
     /// back off.
     #[test]
     fn a_stored_footprint_keeps_its_numbers() {
@@ -2315,6 +2314,14 @@ mod tests {
         params.remove("row_ticks");
         let read: Indicator = serde_json::from_value(stored).unwrap();
         assert!(matches!(read.params, Params::Footprint { numbers: true, row_ticks: None, .. }), "{read:?}");
+
+        // The bar width it was once drawn from is read and let go: it is
+        // worked out now, and never written again.
+        let mut zoomed = serde_json::to_value(Indicator::new(1, Kind::Footprint)).unwrap();
+        zoomed["params"]["zoom"] = serde_json::json!(120.0);
+        let read: Indicator = serde_json::from_value(zoomed).expect("a footprint with a zoom");
+        assert!(matches!(read.params, Params::Footprint { numbers: true, .. }), "{read:?}");
+        assert!(serde_json::to_value(&read).unwrap()["params"].get("zoom").is_none(), "the zoom written back");
 
         let mut off = Indicator::new(1, Kind::Footprint);
         if let Params::Footprint { numbers, .. } = &mut off.params {

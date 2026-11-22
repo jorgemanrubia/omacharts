@@ -4931,7 +4931,6 @@ struct Edits {
     buy_alpha: Option<Option<f64>>,
     sell_alpha: Option<Option<f64>>,
     /// The bar width a footprint is drawn from, in pixels.
-    show_from: Option<f64>,
     /// Whether a footprint's rows are filled by their strength.
     intensity: Option<bool>,
     /// Whether a footprint's rows have their figures written in them.
@@ -5240,10 +5239,6 @@ impl Edits {
             },
             buy_alpha: Parts::part(m, "buy-transparency")?,
             sell_alpha: Parts::part(m, "sell-transparency")?,
-            show_from: {
-                use omacharts_engine::indicators::flow::{MAX_FOOTPRINT_ZOOM, MIN_FOOTPRINT_ZOOM};
-                bounded(m, "show-from", MIN_FOOTPRINT_ZOOM, MAX_FOOTPRINT_ZOOM)?
-            },
             intensity: switch(m, "intensity")?,
             numbers: switch(m, "numbers")?,
             rth_threshold: threshold(m, "rth-threshold")?,
@@ -5331,7 +5326,6 @@ impl Edits {
             && self.sell_color.is_none()
             && self.buy_alpha.is_none()
             && self.sell_alpha.is_none()
-            && self.show_from.is_none()
             && self.intensity.is_none()
             && self.numbers.is_none()
             && self.rth_threshold.is_none()
@@ -5375,12 +5369,6 @@ impl Edits {
                         }
                     }
                 }
-            }
-        }
-        if let Some(zoom) = self.show_from {
-            match kind == IndicatorKind::Footprint {
-                true => params["zoom"] = json!(zoom),
-                false => return Err(refuse("bar width to show from")),
             }
         }
         if let Some(on) = self.intensity {
@@ -10368,7 +10356,7 @@ mod tests {
             assert_eq!(listed(&store, key)["kind"], key);
         }
         let fp = listed(&store, "footprint");
-        assert_eq!(fp["params"]["zoom"], 64.0);
+        assert!(fp["params"].get("zoom").is_none(), "shown once its rows fit, never from a set width");
         assert_eq!(fp["params"]["intensity"], true);
         assert_eq!(fp["params"]["numbers"], true);
         assert!(fp["params"]["row_ticks"].is_null(), "automatic rows unless set");
@@ -10418,10 +10406,11 @@ mod tests {
         assert_eq!(out.code, 0, "{}", out.err);
         assert_eq!(listed(&store, "volume_delta")["params"]["height"], 0.3);
 
-        let out = run("chart indicator set footprint --book Macro --show-from 120 --intensity off", &store);
+        let out = run("chart indicator set footprint --book Macro --intensity off", &store);
         assert_eq!(out.code, 0, "{}", out.err);
         let fp = listed(&store, "footprint");
-        assert_eq!((fp["params"]["zoom"].as_f64(), fp["params"]["intensity"].as_bool()), (Some(120.0), Some(false)));
+        assert_eq!(fp["params"]["intensity"].as_bool(), Some(false));
+        assert!(fp["params"].get("zoom").is_none(), "no width to show from: it is worked out");
         for (ticks, read) in [("4", Some(4)), ("auto", None)] {
             let out = run(&format!("chart indicator set footprint --book Macro --row-ticks {ticks}"), &store);
             assert_eq!(out.code, 0, "{}", out.err);

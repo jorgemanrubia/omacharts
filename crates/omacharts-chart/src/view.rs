@@ -264,6 +264,10 @@ struct State {
     large_orders: Option<LargeOrderBooks>,
     /// What a footprint has read of each bar's ladder.
     footprint: RefCell<footprint::Cache>,
+    /// Whether the footprint was shown last asked: the width it goes at is
+    /// a few pixels less than the width it comes at, so a zoom resting on
+    /// the edge does not flicker between the two.
+    footprint_on: std::cell::Cell<bool>,
     /// The lines the anchored VWAP drawings show, kept for the same reason:
     /// asked on every motion, changed only by the anchor or the bars.
     vwap_cache: RefCell<Vec<(VwapKey, Rc<Vec<omacharts_engine::indicators::vwap::Anchored>>)>>,
@@ -1536,6 +1540,7 @@ impl State {
             volume_at_price: None,
             large_orders: None,
             footprint: RefCell::default(),
+            footprint_on: std::cell::Cell::new(false),
             vwap_cache: RefCell::new(Vec::new()),
             timeframe: Timeframe::days(1),
             first: 0,

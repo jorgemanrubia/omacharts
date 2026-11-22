@@ -679,7 +679,6 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("sell-color", "COLOUR", "selling in a volume delta, a footprint or large orders, in place of its colouring's fall; none gives back the colouring's"),
     Flag::valued("buy-transparency", "F", "how much of the chart shows through buying in a volume delta, a footprint or large orders, 0-1, or `default` for its own (0 for a volume delta, 0.15 for a footprint's strongest row, 0.65 for bubbles)"),
     Flag::valued("sell-transparency", "F", "the same for selling"),
-    Flag::valued("show-from", "PX", "the bar width, 24-400 pixels, a footprint is drawn from in place of the candles (default 64)"),
     Flag::valued("intensity", "BOOL", "whether a footprint's rows are filled more solidly the bigger their delta against the biggest on screen (on unless set off); off fills every row alike").of(SWITCHES),
     Flag::valued("numbers", "BOOL", "whether a footprint writes each row's delta in it (on unless set off); off draws the rows alone").of(SWITCHES),
     Flag::valued("rth-threshold", "N", "the size, in contracts, an order in regular hours has to be bigger than to be a large order (default 50)"),

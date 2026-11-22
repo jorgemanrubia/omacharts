@@ -230,18 +230,90 @@ impl Cache {
     }
 }
 
-/// The footprint a chart draws in place of its candles at this zoom: the
-/// first one shown whose bar width it is zoomed to.
+/// The footprint a chart draws in place of its bars at this zoom: the first
+/// one shown, once a column holds the narrow bar and a row that reads.
+///
+/// A row reads when the widest figure fits in it, or, with the numbers off,
+/// when it is a short bar. It comes at that width and goes [`HYSTERESIS`]
+/// pixels under it, so zooming across the edge never flickers.
 pub(super) fn shown<'a>(state: &'a State, columns: &Columns) -> Option<&'a Drawn> {
-    if columns.sub_pixel() || state.volume_at_price.is_none() {
+    let found = match columns.sub_pixel() || state.volume_at_price.is_none() {
+        true => None,
+        false => state.shown_indicators().find(|drawn| {
+            matches!(drawn.indicator.params, Params::Footprint { .. })
+                && matches!(drawn.output, omacharts_engine::Output::Footprint)
+        }),
+    };
+    let Some(drawn) = found else {
+        state.footprint_on.set(false);
         return None;
+    };
+    let numbers = matches!(drawn.indicator.params, Params::Footprint { numbers: true, .. });
+    let on = fits(columns.bar_px, bar_drawn(state), numbers, state.footprint_on.get());
+    state.footprint_on.set(on);
+    on.then_some(drawn)
+}
+
+/// Do a footprint's rows fit a column `bar_px` wide, the narrow bar
+/// beside them or not, with their figures or not? A little less room will
+/// do for one shown already.
+fn fits(bar_px: f64, with_bar: bool, numbers: bool, shown: bool) -> bool {
+    let slack = if shown { HYSTERESIS } else { 0.0 };
+    rows_room(bar_px, with_bar) >= room_needed(numbers) - slack
+}
+
+/// How many pixels under the width it comes at a footprint goes.
+const HYSTERESIS: f64 = 4.0;
+/// The room a row needs with its numbers off: a bar long enough to tell
+/// a big delta from a small one.
+const BARS_ONLY: f64 = 12.0;
+/// The widest figure written: [`rows::short`] makes nothing longer than
+/// six characters, such as `-12.5K`, for any delta a row of a contract
+/// trades.
+const WIDEST_FIGURE: &str = "-88.8K";
+
+thread_local! {
+    /// [`WIDEST_FIGURE`]'s width in [`FACE`] at [`FIGURE_SIZE`], measured
+    /// once: the face and the size never change, and a width in logical
+    /// pixels does not change with the display's scale.
+    static WIDEST: Cell<Option<f64>> = const { Cell::new(None) };
+}
+
+/// The room a row needs: the widest figure inside it, or with the numbers
+/// off, a short bar.
+fn room_needed(numbers: bool) -> f64 {
+    match numbers {
+        true => widest() + 2.0 * INSIDE,
+        false => BARS_ONLY,
     }
-    state.shown_indicators().find(|drawn| match &drawn.indicator.params {
-        Params::Footprint { zoom, .. } => {
-            matches!(drawn.output, omacharts_engine::Output::Footprint) && columns.bar_px >= *zoom
-        }
-        _ => false,
-    })
+}
+
+fn widest() -> f64 {
+    if let Some(known) = WIDEST.get() {
+        return known;
+    }
+    let measured = cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1)
+        .ok()
+        .and_then(|surface| cairo::Context::new(&surface).ok())
+        .and_then(|cr| {
+            cr.select_font_face(FACE, cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+            cr.set_font_size(FIGURE_SIZE);
+            cr.text_extents(WIDEST_FIGURE).ok().map(|extents| extents.x_advance())
+        })
+        .filter(|width| *width > 0.0)
+        .unwrap_or(FIGURE_SIZE * 0.6 * WIDEST_FIGURE.len() as f64);
+    WIDEST.set(Some(measured));
+    measured
+}
+
+/// The room a column `bar_px` wide leaves its rows: past the narrow bar
+/// and the gaps round it, or with no bar, all but the gaps.
+fn rows_room(bar_px: f64, with_bar: bool) -> f64 {
+    let (gap, body_w) = narrow(bar_px);
+    match with_bar {
+        true => bar_px - 3.0 * gap - body_w,
+        false => bar_px - 2.0 * gap,
+    }
 }
 
 /// A colour of an order flow indicator's, as chosen, borrowed where it can
@@ -657,6 +729,53 @@ mod tests {
         // Nothing but the bars is in the chart's colours: with no bar, the
         // rows are the footprint's Monochrome ink alone.
         assert!(line.chunks(4).all(|p| !(p[2] > 200 && p[1] < 60 && p[0] > 200)), "no magenta in the rows");
+    }
+
+    /// The first bar width, a pixel at a time, a footprint comes at.
+    fn comes_at(with_bar: bool, numbers: bool) -> f64 {
+        (1..400).map(f64::from).find(|px| fits(*px, with_bar, numbers, false)).unwrap()
+    }
+
+    /// A footprint comes once a column holds the narrow bar and a row the
+    /// widest figure reads in, and goes only a few pixels under that, so a
+    /// zoom resting at the edge does not flicker; coming back, it waits for
+    /// the whole width again.
+    #[test]
+    fn a_footprint_comes_once_its_figures_fit_and_goes_a_little_under() {
+        let edge = comes_at(true, true);
+        let (gap, body) = narrow(edge);
+        assert!(edge - 3.0 * gap - body >= widest() + 2.0 * INSIDE, "the widest figure fits at {edge}");
+        assert!((40.0..80.0).contains(&edge), "a readable column: {edge}");
+        assert!(fits(edge, true, true, false));
+        assert!(!fits(edge - 1.0, true, true, false), "narrower, not yet");
+        assert!(fits(edge - 2.0, true, true, true), "shown, it stays a little under");
+        assert!(!fits(edge - HYSTERESIS - 2.0, true, true, true), "and goes past that");
+        assert!(!fits(edge - 2.0, true, true, false), "coming back, the whole width again");
+    }
+
+    /// Without its figures a row needs only to be a short bar, and without
+    /// the chart's bar beside it a column has that much more for its rows.
+    #[test]
+    fn rows_alone_and_rows_without_a_bar_come_sooner() {
+        let (figures, alone, no_bar) = (comes_at(true, true), comes_at(true, false), comes_at(false, true));
+        assert!(alone < figures / 2.0, "rows alone at {alone}, with figures at {figures}");
+        assert!(rows_room(alone, true) >= BARS_ONLY);
+        assert!(no_bar < figures, "a line chart's at {no_bar}");
+    }
+
+    /// The widest figure is measured once, in the face and size figures are
+    /// written in, and at least as wide as any figure [`rows::short`] makes.
+    #[test]
+    fn the_widest_figure_is_measured_once() {
+        let first = widest();
+        assert_eq!(WIDEST.get(), Some(first), "kept");
+        assert_eq!(widest(), first);
+        assert!(first > FIGURE_SIZE * 2.0 && first < FIGURE_SIZE * 6.0, "{first}");
+        let mut buf = [0u8; 12];
+        for magnitude in (0..8).flat_map(|power| [1_i64, 5, 9, 99, 999, 9_999].map(|m| m * 10_i64.pow(power))) {
+            let delta = -magnitude.min(99_949_999);
+            assert!(rows::short(delta, &mut buf).len() <= WIDEST_FIGURE.len(), "{delta} wider than {WIDEST_FIGURE}");
+        }
     }
 
     #[test]

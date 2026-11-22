@@ -398,7 +398,7 @@ omacharts chart indicator set market_profile --tpo-style blocks --poc-color Ambe
 family. `cvd` (Cumulative Delta) is buying less selling added up over a
 period, in a strip; `volume_delta` (VD) is the same delta bar by bar, one
 candle per bar from nought, in a strip; `footprint` (FP) replaces each candle,
-once bars are `--show-from` pixels wide (64 unless set), with a narrow bar of the chart's own style (none on a line chart)
+once a bar is wide enough for its rows to read (worked out from the figures' width; narrower with `--numbers off`), with a narrow bar of the chart's own style (none on a line chart)
 and each price's delta beside it, rows filled more solidly the bigger the
 delta unless `--intensity off`, the figures written in them unless
 `--numbers off`, `--row-ticks N` ticks a row or `auto` (the default: a
@@ -417,7 +417,7 @@ Monochrome candles' ink; every colouring flag takes it, Volume's too), with `--b
 `--height`. They have no line, so `--color` and `--transparency` are refused.
 
 ```
-omacharts chart indicator add footprint --show-from 80
+omacharts chart indicator add footprint --row-ticks 4
 omacharts chart indicator add large_orders --rth-threshold 100 --size-against visible
 omacharts chart indicator add volume_delta --colouring monochrome --sell-transparency 0.3
 ```
