@@ -849,4 +849,20 @@ mod tests {
         let (book, _) = large.book(KEY, lower).unwrap();
         assert!(book.orders.iter().any(|o| o.order.size == 10));
     }
+
+    #[test]
+    fn hidden_and_shown_again_a_chart_gets_its_bubbles_back() {
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(scratch("again"))).unwrap();
+        large.set_clock(now);
+        large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, SETTINGS, false);
+        settle(&large);
+        let before = sizes(&large);
+        assert!(!before.is_empty());
+        large.unwatch(1);
+        assert!(large.book(KEY, SETTINGS).is_none());
+        large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, SETTINGS, false);
+        assert_eq!(settle(&large), vec![1]);
+        assert_eq!(sizes(&large), before);
+    }
 }

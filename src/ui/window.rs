@@ -11226,9 +11226,10 @@ impl Window {
         all: &[Indicator],
     ) {
         let Some(large) = &source.large_orders else { return };
+        // Hidden ones too, as their ladders are kept: showing an indicator
+        // again only redraws the chart, and asks nothing.
         let settings: Vec<crate::large_orders::Settings> = all
             .iter()
-            .filter(|indicator| indicator.visible)
             .filter_map(|indicator| match indicator.params {
                 omacharts_engine::Params::LargeOrders { regular, extended, combine, .. } => {
                     Some(crate::large_orders::Settings { regular, extended, combine })
