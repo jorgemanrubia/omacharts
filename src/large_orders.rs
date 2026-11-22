@@ -31,7 +31,8 @@
 //! it as they come, and a new book is handed over each drain.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::time::{Duration, Instant};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -336,8 +337,15 @@ struct Held {
     instrument: Instrument,
     tick_size: f64,
     days: Days,
-    /// Each day's trades, oldest first.
-    kept: BTreeMap<i64, PrintDay>,
+    /// The days kept whole in the store, read from it a day at a time when
+    /// a book is built: a quarter of ES is a quarter of a billion trades,
+    /// and none of them is held here.
+    whole: BTreeSet<i64>,
+    /// The days still trading, or not read to their end: today, mostly.
+    open: BTreeMap<i64, PrintDay>,
+    /// Open days with trades the store has not had yet.
+    dirty: BTreeSet<i64>,
+    saved_at: Instant,
     builders: HashMap<Settings, Builder>,
 }
 
@@ -345,27 +353,61 @@ impl Held {
     /// What the hours say of a moment: its trading day, and whether it is
     /// in regular hours. An instrument with no regular hours is all of one
     /// kind, taken as regular.
-    fn hours(&self) -> impl FnMut(i64) -> (i64, bool) + '_ {
+    fn hours(&self) -> impl FnMut(i64) -> (i64, bool) + use<> {
         let schedule = omacharts_engine::indicators::time::schedule_for(Some(&self.instrument));
         let regular = schedule.filter(|s| s.has_regular());
-        move |seconds| (self.days.of(seconds), regular.as_ref().is_none_or(|s| s.is_regular(seconds)))
+        let days = self.days.clone();
+        move |seconds| (days.of(seconds), regular.as_ref().is_none_or(|s| s.is_regular(seconds)))
     }
 
-    fn build(&self, settings: Settings) -> Builder {
+    /// A book of `settings` from every day held, oldest first, the whole
+    /// days read from the store one at a time.
+    fn build(&self, store: &Store, settings: Settings) -> Builder {
         let mut builder = Builder::new(settings.combine, settings.thresholds());
         let mut hours = self.hours();
-        for day in self.kept.values() {
-            for print in &day.prints {
-                builder.push(*print, &mut hours);
+        let mut every: Vec<i64> = self.whole.iter().chain(self.open.keys()).copied().collect();
+        every.sort_unstable();
+        every.dedup();
+        for day in every {
+            match self.open.get(&day) {
+                Some(open) => open.prints.iter().for_each(|print| builder.push(*print, &mut hours)),
+                None => {
+                    if let Some(kept) = store.load_print_day(&self.stored, day, self.tick_size) {
+                        kept.prints.iter().for_each(|print| builder.push(*print, &mut hours));
+                    }
+                }
             }
         }
         builder
     }
 
     fn newest_upto(&self) -> i64 {
-        self.kept.values().next_back().map_or(i64::MIN, |day| day.upto)
+        self.open.values().next_back().map_or(i64::MIN, |day| day.upto)
+    }
+
+    /// Write the open days down, if they have changed and it has been a
+    /// while, or `now` when told: a day is one blob, and a busy one is tens
+    /// of megabytes, too much to write on every trade. What a crash loses is
+    /// asked for again, from where the store has the day to.
+    fn save(&mut self, store: &Store, now: bool) {
+        if self.dirty.is_empty() || (!now && self.saved_at.elapsed() < SAVE_EVERY) {
+            return;
+        }
+        for day in std::mem::take(&mut self.dirty) {
+            if let Some(open) = self.open.get(&day) {
+                let _ = store.save_print_day(&self.stored, day, open);
+            }
+        }
+        self.saved_at = Instant::now();
     }
 }
+
+/// How often a live day is written down at most.
+const SAVE_EVERY: Duration = Duration::from_secs(60);
+
+/// The days a chart's first book reads before the rest: the trades of the
+/// day it is most likely looking at come first, and the walk back after.
+const FIRST_DAYS: i64 = 2;
 
 fn work(
     path: &std::path::Path,
@@ -378,9 +420,16 @@ fn work(
     let Some(ladders) = provider.ladders() else { return };
     let mut held: HashMap<String, Held> = HashMap::new();
     let publish = |key: &str, held: &Held, settings: Settings, builder: &Builder| {
-        let mut hours = held.hours();
-        let book = builder.book(&mut hours);
+        let book = builder.book(&mut held.hours());
         let _ = done.send_blocking(Done { key: key.to_string(), settings, book: Arc::new(book) });
+    };
+    let rebuild = |key: &str, contract: &mut Held, settings: &[Settings]| {
+        contract.builders.clear();
+        for settings in settings {
+            let builder = contract.build(&store, *settings);
+            publish(key, contract, *settings, &builder);
+            contract.builders.insert(*settings, builder);
+        }
     };
     while let Ok(job) = inbox.recv() {
         match job {
@@ -393,25 +442,31 @@ fn work(
                     instrument: instrument.clone(),
                     tick_size,
                     days: days.clone(),
-                    kept: BTreeMap::new(),
+                    whole: BTreeSet::new(),
+                    open: BTreeMap::new(),
+                    dirty: BTreeSet::new(),
+                    saved_at: Instant::now(),
                     builders: HashMap::new(),
                 });
-                read_days(&store, ladders, &mut contract, from, now);
-                // Live trades waiting from before the history was read are in
-                // it already; the rest go in after.
+                // The last days first, and a book of them straight away; then
+                // back to the chart's first bar, and the book again.
+                let near = days.start(days.of(now) - (FIRST_DAYS - 1)).max(from);
+                let walked = read_days(&store, ladders, &mut contract, near, now);
                 let fresh = mailboxes.take(&key);
-                append(&mut contract, fresh, &store);
-                contract.builders.clear();
-                for settings in settings {
-                    let builder = contract.build(settings);
-                    publish(&key, &contract, settings, &builder);
-                    contract.builders.insert(settings, builder);
+                append(&mut contract, fresh);
+                rebuild(&key, &mut contract, &settings);
+                if walked && from < near {
+                    read_days(&store, ladders, &mut contract, from, days.start(days.of(near)) - 1);
+                    let fresh = mailboxes.take(&key);
+                    append(&mut contract, fresh);
+                    rebuild(&key, &mut contract, &settings);
                 }
+                contract.save(&store, true);
                 held.insert(key, contract);
             }
             Job::Build { key, settings } => {
                 let Some(contract) = held.get_mut(&key) else { continue };
-                let builder = contract.build(settings);
+                let builder = contract.build(&store, settings);
                 publish(&key, contract, settings, &builder);
                 contract.builders.insert(settings, builder);
             }
@@ -425,14 +480,12 @@ fn work(
                     continue;
                 }
                 let Ok(fresh) = ladders.prints(&contract.symbol, contract.tick_size, since, to) else { continue };
-                let fresh: Vec<Print> = fresh.into_iter().filter(|p| p.ts_nanos >= since * 1_000_000_000).collect();
-                let to_nanos = to * 1_000_000_000;
-                let added = append(contract, fresh, &store);
+                let added = append(contract, fresh);
                 // Known to here now, whatever came.
                 let day = contract.days.of(to - 1);
-                if let Some(kept) = contract.kept.get_mut(&day) {
-                    kept.upto = kept.upto.max(to_nanos);
-                    let _ = store.save_print_day(&contract.stored, day, kept);
+                if let Some(open) = contract.open.get_mut(&day) {
+                    open.upto = open.upto.max(to * 1_000_000_000);
+                    contract.dirty.insert(day);
                 }
                 if !added.is_empty() {
                     feed_builders(contract, &added);
@@ -440,33 +493,38 @@ fn work(
                         publish(&key, contract, *settings, builder);
                     }
                 }
+                contract.save(&store, false);
             }
             Job::Live { key } => {
                 // Every wake that queued up behind this one is this drain's.
                 let fresh = mailboxes.take(&key);
                 let Some(contract) = held.get_mut(&key) else { continue };
-                let added = append(contract, fresh, &store);
+                let added = append(contract, fresh);
                 if !added.is_empty() {
                     feed_builders(contract, &added);
                     for (settings, builder) in &contract.builders {
                         publish(&key, contract, *settings, builder);
                     }
                 }
+                contract.save(&store, false);
             }
             Job::Forget { key } => {
-                held.remove(&key);
+                if let Some(mut contract) = held.remove(&key) {
+                    contract.save(&store, true);
+                }
                 mailboxes.forget(&key);
             }
         }
+    }
+    // The window is closing: what the live feeds brought is kept.
+    for contract in held.values_mut() {
+        contract.save(&store, true);
     }
 }
 
 /// Fold `added` into every book of `contract`.
 fn feed_builders(contract: &mut Held, added: &[Print]) {
-    let schedule = omacharts_engine::indicators::time::schedule_for(Some(&contract.instrument));
-    let regular = schedule.filter(|s| s.has_regular());
-    let days = contract.days.clone();
-    let mut hours = |seconds: i64| (days.of(seconds), regular.as_ref().is_none_or(|s| s.is_regular(seconds)));
+    let mut hours = contract.hours();
     for builder in contract.builders.values_mut() {
         for print in added {
             builder.push(*print, &mut hours);
@@ -475,85 +533,82 @@ fn feed_builders(contract: &mut Held, added: &[Print]) {
 }
 
 /// Put `fresh` trades into their days, leaving out any from before what a
-/// day is known to — already counted — and keep each day touched. The
+/// day is known to — already counted — and any of a day kept whole. The
 /// trades that went in, oldest first.
-fn append(contract: &mut Held, mut fresh: Vec<Print>, store: &Store) -> Vec<Print> {
+fn append(contract: &mut Held, mut fresh: Vec<Print>) -> Vec<Print> {
     fresh.sort_by_key(|p| p.ts_nanos);
     let mut added = Vec::with_capacity(fresh.len());
-    let mut touched: Vec<i64> = Vec::new();
     for print in fresh {
         let day = contract.days.of(print.ts_nanos.div_euclid(1_000_000_000));
-        let kept = contract.kept.entry(day).or_insert_with(|| PrintDay {
+        if contract.whole.contains(&day) {
+            continue;
+        }
+        let open = contract.open.entry(day).or_insert_with(|| PrintDay {
             tick_size: contract.tick_size,
             upto: i64::MIN,
             complete: false,
             prints: Vec::new(),
         });
-        if print.ts_nanos < kept.upto {
+        if print.ts_nanos < open.upto {
             continue;
         }
-        kept.prints.push(print);
+        open.prints.push(print);
+        open.upto = print.ts_nanos + 1;
+        contract.dirty.insert(day);
         added.push(print);
-        if touched.last() != Some(&day) {
-            touched.push(day);
-        }
-    }
-    for day in touched {
-        if let Some(kept) = contract.kept.get_mut(&day) {
-            kept.upto = kept.upto.max(kept.prints.last().map_or(i64::MIN, |p| p.ts_nanos + 1));
-            let _ = store.save_print_day(&contract.stored, day, kept);
-        }
     }
     added
 }
 
-/// Read `contract`'s days from `from` to `now` into it: from the store
-/// where it has them whole, the rest from the provider, newest first,
-/// stopping at the first weekday the provider has nothing of.
-fn read_days(store: &Store, ladders: &dyn omacharts_engine::Ladders, contract: &mut Held, from: i64, now: i64) {
+/// Read `contract`'s days from `from` to `now`, newest first: a day the
+/// store has whole is only noted; any other is asked of the provider from
+/// where it is known to. Stops at the first weekday the provider has
+/// nothing of, answering false: there is nothing further back.
+fn read_days(store: &Store, ladders: &dyn omacharts_engine::Ladders, contract: &mut Held, from: i64, now: i64) -> bool {
     let days = contract.days.clone();
-    let (first, today) = (days.of(from), days.of(now));
+    let (first, last) = (days.of(from), days.of(now));
     let settled = (now - SETTLED).div_euclid(60) * 60;
-    let mut day = today;
-    while day >= first && today - day <= DEEPEST {
+    let mut day = last;
+    while day >= first && last - day <= DEEPEST {
         let (start, end) = (days.start(day), days.start(day + 1));
-        if contract.kept.get(&day).is_some_and(|kept| kept.complete) {
+        if contract.whole.contains(&day) || store.print_day_complete(&contract.stored, day, contract.tick_size) {
+            contract.whole.insert(day);
             day -= 1;
             continue;
         }
-        let kept = store.load_print_day(&contract.stored, day, contract.tick_size);
-        if let Some(kept) = kept.filter(|kept| kept.complete) {
-            contract.kept.insert(day, kept);
-            day -= 1;
-            continue;
-        }
-        let mut kept = contract.kept.remove(&day).or_else(|| store.load_print_day(&contract.stored, day, contract.tick_size)).unwrap_or(PrintDay {
-            tick_size: contract.tick_size,
-            upto: start * 1_000_000_000,
-            complete: false,
-            prints: Vec::new(),
-        });
-        let since = kept.upto.div_euclid(1_000_000_000).max(start);
+        let mut open = contract
+            .open
+            .remove(&day)
+            .or_else(|| store.load_print_day(&contract.stored, day, contract.tick_size))
+            .unwrap_or(PrintDay { tick_size: contract.tick_size, upto: i64::MIN, complete: false, prints: Vec::new() });
+        let since = open.upto.div_euclid(1_000_000_000).max(start);
         let to = end.min(settled);
         if since < to {
-            let Ok(fresh) = ladders.prints(&contract.symbol, contract.tick_size, since, to) else { break };
-            let floor = kept.upto;
-            kept.prints.extend(fresh.into_iter().filter(|p| p.ts_nanos >= floor && p.ts_nanos < to * 1_000_000_000));
-            kept.prints.sort_by_key(|p| p.ts_nanos);
-            kept.upto = kept.upto.max(to * 1_000_000_000);
+            let Ok(fresh) = ladders.prints(&contract.symbol, contract.tick_size, since, to) else { return false };
+            let floor = open.upto;
+            open.prints.extend(fresh.into_iter().filter(|p| p.ts_nanos >= floor && p.ts_nanos < to * 1_000_000_000));
+            open.prints.sort_by_key(|p| p.ts_nanos);
+            open.upto = open.upto.max(to * 1_000_000_000);
         }
-        kept.complete = end <= settled;
-        let empty = kept.prints.is_empty();
-        let _ = store.save_print_day(&contract.stored, day, &kept);
-        contract.kept.insert(day, kept);
-        // A weekday with nothing is past what the feed keeps.
-        if empty && day < today && is_weekday(start) {
-            contract.kept.remove(&day);
-            break;
+        open.complete = end <= settled;
+        let empty = open.prints.is_empty();
+        // A weekday with nothing, before today, is past what the feed keeps:
+        // not written down, so a feed that later keeps more is asked again.
+        if empty && open.complete && is_weekday(start) {
+            return false;
+        }
+        let _ = store.save_print_day(&contract.stored, day, &open);
+        match open.complete {
+            true => {
+                contract.whole.insert(day);
+            }
+            false => {
+                contract.open.insert(day, open);
+            }
         }
         day -= 1;
     }
-    contract.kept.retain(|day, _| *day >= first);
+    true
 }
 
 /// Does a trading day beginning at `start` fall on a weekday? A day that
@@ -699,6 +754,19 @@ mod tests {
         }
     }
 
+    /// Every book handed back until the thread goes quiet.
+    fn settle(large: &LargeOrders) -> Vec<u32> {
+        let mut panes = next(large);
+        loop {
+            std::thread::sleep(Duration::from_millis(100));
+            let Ok(done) = large.done().try_recv() else { break };
+            panes.extend(large.finished(done));
+        }
+        panes.sort_unstable();
+        panes.dedup();
+        panes
+    }
+
     fn sizes(large: &LargeOrders) -> Vec<u64> {
         large.book(KEY, SETTINGS).map(|(book, _)| book.orders.iter().map(|o| o.order.size).collect()).unwrap_or_default()
     }
@@ -714,7 +782,7 @@ mod tests {
         assert!(asked.lock().unwrap().sinks.is_empty());
 
         large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, SETTINGS, false);
-        assert_eq!(next(&large), vec![1]);
+        assert_eq!(settle(&large), vec![1]);
         let spans = asked.lock().unwrap().spans.clone();
         assert!(spans.len() >= 2 && spans.windows(2).all(|w| w[0].0 > w[1].0), "newest first: {spans:?}");
         let (book, tick) = large.book(KEY, SETTINGS).unwrap();
@@ -731,14 +799,14 @@ mod tests {
             let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(path.clone())).unwrap();
             large.set_clock(now);
             large.want(1, KEY, KEY, "ES", &es(), NOW - 2 * DAY, SETTINGS, false);
-            next(&large);
+            settle(&large);
             large.shutdown();
         }
         asked.lock().unwrap().spans.clear();
         let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(path)).unwrap();
         large.set_clock(now);
         large.want(1, KEY, KEY, "ES", &es(), NOW - 2 * DAY, SETTINGS, false);
-        next(&large);
+        settle(&large);
         let had = sizes(&large).len();
         let spans = asked.lock().unwrap().spans.clone();
         assert!(spans.iter().all(|(from, _)| *from >= NOW - DAY), "only today's tail is asked again: {spans:?}");
@@ -749,7 +817,7 @@ mod tests {
         let old = hourly(NOW - 2 * HOUR, NOW - 2 * HOUR + 1);
         let fresh = Print::new((NOW + 10) * 1_000_000_000, 30_000, 500, Aggressor::Sell, false);
         sink(&[old[0], fresh]);
-        next(&large);
+        settle(&large);
         let now_sizes = sizes(&large);
         assert_eq!(now_sizes.len(), had + 1);
         assert_eq!(now_sizes.last(), Some(&500));
@@ -761,7 +829,7 @@ mod tests {
         let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(scratch("depth"))).unwrap();
         large.set_clock(now);
         large.want(1, KEY, KEY, "ES", &es(), NOW - 60 * DAY, SETTINGS, false);
-        next(&large);
+        settle(&large);
         let spans = asked.lock().unwrap().spans.clone();
         assert!(spans.len() <= 6, "stopped near the feed's depth, not sixty days back: {}", spans.len());
     }
@@ -772,11 +840,11 @@ mod tests {
         let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(scratch("rebuild"))).unwrap();
         large.set_clock(now);
         large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, SETTINGS, false);
-        next(&large);
+        settle(&large);
         let spans = asked.lock().unwrap().spans.len();
         let lower = Settings { regular: 5, extended: 5, combine: true };
         large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, lower, false);
-        assert_eq!(next(&large), vec![1]);
+        assert_eq!(settle(&large), vec![1]);
         assert_eq!(asked.lock().unwrap().spans.len(), spans, "nothing asked of the feed");
         let (book, _) = large.book(KEY, lower).unwrap();
         assert!(book.orders.iter().any(|o| o.order.size == 10));

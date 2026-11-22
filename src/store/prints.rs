@@ -73,6 +73,15 @@ impl Store {
         (kept_tick == tick_size).then(|| PrintDay { tick_size, upto, complete, prints: decode_prints(&data) })
     }
 
+    /// Is day `day` of `key`'s trades kept whole, in `tick_size`'s ticks?
+    /// Asked without reading the day.
+    pub fn print_day_complete(&self, key: &str, day: i64, tick_size: f64) -> bool {
+        self.conn
+            .prepare_cached("SELECT 1 FROM print_days WHERE key = ?1 AND day = ?2 AND tick_size = ?3 AND complete")
+            .and_then(|mut s| s.exists(params![key, day, tick_size]))
+            .unwrap_or(false)
+    }
+
     /// Keep day `day` of `key`'s trades, in place of what was kept.
     pub fn save_print_day(&self, key: &str, day: i64, held: &PrintDay) -> rusqlite::Result<()> {
         self.conn.execute(
@@ -115,6 +124,10 @@ mod tests {
         let day = PrintDay { tick_size: 0.25, upto: 99, complete: false, prints: vec![Print::new(5, 1, 2, Aggressor::Buy, false)] };
         store.save_print_day("ES", 3, &day).expect("kept");
         assert_eq!(store.load_print_day("ES", 3, 0.25), Some(day.clone()));
+        assert!(!store.print_day_complete("ES", 3, 0.25), "still trading");
+        store.save_print_day("ES", 3, &PrintDay { complete: true, ..day.clone() }).expect("kept");
+        assert!(store.print_day_complete("ES", 3, 0.25));
+        assert!(!store.print_day_complete("ES", 3, 0.5));
         assert_eq!(store.load_print_day("ES", 3, 0.5), None, "another tick is another ladder");
         assert_eq!(store.load_print_day("ES", 4, 0.25), None);
         assert_eq!(store.forget_print_days("ES", 4).expect("forgotten"), 1);
