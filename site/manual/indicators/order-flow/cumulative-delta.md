@@ -41,7 +41,7 @@ crop: none
 
 Each candle opens where the total stood at the previous close and closes where it stands at its own. Its wicks are the highest and lowest the total reached inside the bar, minute by minute, so a 1-minute chart and a daily or longer one have no wicks.
 
-A bar that added to the total is drawn in the up colour of its **Colouring**, one that took from it in the down colour. **Default** is the colouring set in Preferences for new charts, as for a delta volume profile, and is swapped when Preferences' **Swap up and down colours** is on.
+A bar that added to the total is drawn in the up colour of its **Colouring**, one that took from it in the down colour. **Default** paints it as the chart's bars, and every choice is worked out as for every other study ([Colours](/manual/indicators/order-flow/#colours)).
 
 ## Estimated delta
 

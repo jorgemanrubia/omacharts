@@ -74,7 +74,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     }
     let Some(drawing) = view.selected_drawing() else { return };
     let theme = window.theme();
-    HOUSE_LOOK.set(window.house_look());
+    HOUSE_LOOK.set((pane.colouring.get(), pane.swapped.get()));
     let kind = drawing.kind;
     let configs_now = window.drawing_configurations();
 
@@ -391,7 +391,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
 /// and a way back to the defaults.
 pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind) {
     let theme = window.theme();
-    HOUSE_LOOK.set(window.house_look());
+    HOUSE_LOOK.set(window.chart_look());
     let dialog = adw::Dialog::new();
     dialog.set_title(&format!("{} configurations", kind.label()));
     // It opens on the properties' own rows, so at their width.
@@ -2036,9 +2036,9 @@ fn size_row(current: f64, on_pick: impl Fn(f64) + 'static) -> (adw::ActionRow, R
 }
 
 thread_local! {
-    /// The colouring chosen in Preferences, and whether it is swapped, as
-    /// the window that opened the dialog last had it: what a delta's
-    /// Default colouring paints its sample in.
+    /// The chart's colouring, and whether it is swapped, as the chart the
+    /// dialog was opened from has it: what a delta's Default colouring
+    /// paints its sample in.
     static HOUSE_LOOK: Cell<(omacharts_engine::BarColouring, bool)> =
         const { Cell::new((omacharts_engine::BarColouring::Vivid, false)) };
 }

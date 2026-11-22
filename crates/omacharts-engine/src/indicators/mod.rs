@@ -700,7 +700,7 @@ pub enum Params {
         method: profile::Method,
         /// The colouring a delta's bought and sold rows are painted in, as
         /// a chart's rising and falling bars are: unset, the colouring
-        /// chosen in Preferences, and following it as it changes; set, one
+        /// the chart's bars wear, and following it as it changes; set, one
         /// of [`profile::DELTA_COLOURINGS`] of its own, or Custom: see
         /// [`crate::colouring`]. A total is in the profile's colour and pays
         /// this no mind.
@@ -882,7 +882,7 @@ pub enum Params {
         height: f64,
         /// The colouring its rising and falling bars are painted in, as a
         /// delta profile's bought and sold rows are: unset, the colouring
-        /// chosen in Preferences, and following it as it changes; set, one
+        /// the chart's bars wear, and following it as it changes; set, one
         /// of [`profile::DELTA_COLOURINGS`] of its own, or Custom: see
         /// [`crate::colouring`].
         #[serde(default, skip_serializing_if = "Option::is_none")]

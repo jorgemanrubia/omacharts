@@ -21,16 +21,16 @@ What was bought and what was sold is known only on a feed with volume at price, 
 
 ## Colours
 
-Each paints buying and selling in a **Colouring**:
+Every study whose colours say up or down, bought or sold, offers the same **Colouring** list, worked out the same way: the order flow indicators here, and [Volume](/manual/indicators/volume/volume/), a [volume profile](/manual/indicators/volume/volume-profile/)'s Ask volume - bid volume and its [drawing](/manual/drawings/volume-profile/). Each preset paints a study exactly as it paints the chart's bars on the same theme:
 
 | Colouring | Paints |
 |---|---|
-| **Default** | The colouring chosen in Preferences, followed as it changes |
-| **Vivid**, **Soft**, **Quiet** | That colouring's up colour for buying and its down colour for selling |
+| **Default** | As the chart's own bars, in the colouring set in its settings, followed as it changes |
+| **Vivid**, **Soft**, **Quiet** | That colouring's up colour for buying, or a rise, and its down colour for selling, or a fall |
 | **Monochrome** | One colour for buying and selling alike, the ink the chart's Monochrome candles are drawn in. Where a thing sits and what it says carry the sign. It is not **Quiet**, which keeps two muted colours |
 | **Custom** | A colour of your own for each side |
 
-With any colouring but **Custom**, the dialog shows one **Opacity** row under **Colouring**, how solid buying and selling are both drawn. The cumulative delta has no opacity, so it shows none. With **Custom** it shows a row for each colour the indicator draws instead: **Buying** and **Selling**, each a swatch and its own **Opacity**, or the cumulative delta's **Up** and **Down**, a swatch each. They start at the colours the indicator was drawn in a moment before, so nothing changes until you pick one. Choosing a colouring other than **Custom** again draws that colouring as it is, and lets the custom colours go once the dialog is closed. **Swap up and down colours** in Preferences swaps every colouring but **Custom**.
+With any colouring but **Custom**, the dialog shows one **Opacity** row under **Colouring**, how solid both colours are drawn. The cumulative delta and the volume profiles have no opacity there, so they show none. With **Custom** it shows a row for each colour the indicator draws instead: **Buying** and **Selling**, each a swatch and its own **Opacity**, or the cumulative delta's **Up** and **Down**, a swatch each. They start at the colours the indicator was drawn in a moment before, so nothing changes until you pick one. Choosing a colouring other than **Custom** again draws that colouring as it is, and lets the custom colours go once the dialog is closed. A chart whose bars are swapped (**Swap up and down colours** in its settings) wears every colouring but **Custom** swapped, on its studies too.
 
 ## See also
 

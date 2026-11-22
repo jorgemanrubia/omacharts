@@ -2,8 +2,8 @@
 //! a volume pane, a volume profile and its drawing, the cumulative delta,
 //! the volume delta, the footprint and large orders.
 //!
-//! A study's **Colouring** is either unset, the house colouring (a volume
-//! pane's, the chart's candles), one of the presets, or **Custom**. With a
+//! A study's **Colouring** is either unset, the house colouring (the
+//! chart's own bars, swapped or not), one of the presets, or **Custom**. With a
 //! preset its colours are the preset's, and nothing of the study's own
 //! stands over them. With Custom each colour the study paints with — its
 //! *roles*, a rise and a fall, a buy and a sell — is its own, picked one by

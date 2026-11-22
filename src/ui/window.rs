@@ -3401,9 +3401,9 @@ mod outside_change_tests {
                     assert!(shown(row), "{kind}: one Opacity row under a preset");
                 }
                 let theme = window.theme();
-                let (house, swapped) = window.house_look();
+                let (house, swapped) = window.chart_look();
                 let vivid = match kind {
-                    "volume" => crate::ui::chart::volume_colours(&study(), &theme, &window.bar_scheme()),
+                    "volume" => crate::ui::chart::volume_colours(&study(), &theme, &window.bar_scheme(), swapped),
                     _ => crate::ui::chart::delta_colours(Some(omacharts_engine::BarColouring::Vivid), &theme, house, swapped),
                 };
 
@@ -5866,8 +5866,7 @@ impl Window {
         pane.colouring.set(look.colouring);
         pane.swapped.set(look.swapped);
         pane.hollow_up.set(look.hollow_up);
-        let (house, swapped) = self.house_look();
-        pane.view.set_house_look(house, swapped);
+        pane.view.set_house_look(look.colouring, look.swapped);
         pane.view.set_bar_style(bar_style);
         pane.view.set_show_grid(show_grid);
 
@@ -7559,12 +7558,12 @@ impl Window {
         self.focused_pane().ladders.borrow().is_some()
     }
 
-    /// The colouring chosen in Preferences, and whether it is worn the other
-    /// way round: what a delta profile or a cumulative delta with no
-    /// colouring of its own is painted in, on every chart.
-    pub fn house_look(&self) -> (BarColouring, bool) {
-        let theming = self.theming.borrow();
-        (theming.colouring(), theming.swapped())
+    /// The focused chart's colouring, and whether it is worn the other way
+    /// round: what every study with no colouring of its own is painted in,
+    /// as the bars under it are, and how its presets are worn.
+    pub fn chart_look(&self) -> (BarColouring, bool) {
+        let pane = self.focused_pane();
+        (pane.colouring.get(), pane.swapped.get())
     }
 
     /// Adopt a theme or bar scheme chosen outside this window, and repaint.
@@ -9731,10 +9730,8 @@ impl Window {
         if let Some(bar) = self.drawing_bar.borrow().as_ref() {
             bar.restyle();
         }
-        let (house, swapped) = self.house_look();
         for pane in self.panes.borrow().iter() {
-            pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
-            pane.view.set_house_look(house, swapped);
+            pane.view.restyle(theme.clone(), pane_scheme(pane, &theme), (pane.colouring.get(), pane.swapped.get()));
             self.apply_marks_to(pane);
             // The colour is the theme's answer about the mode, which has just
             // changed.
@@ -13456,7 +13453,7 @@ impl Window {
         pane.view.set_bars_hidden(false);
         self.sync_chart_actions(&pane);
         let theme = self.theme();
-        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
+        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme), (pane.colouring.get(), pane.swapped.get()));
         self.save_workspace();
     }
 
@@ -13468,7 +13465,7 @@ impl Window {
         let pane = self.focused_pane();
         pane.colouring.set(colouring);
         let theme = self.theme();
-        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
+        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme), (pane.colouring.get(), pane.swapped.get()));
         self.save_workspace();
     }
 
@@ -13481,7 +13478,7 @@ impl Window {
         let pane = self.focused_pane();
         pane.swapped.set(swapped);
         let theme = self.theme();
-        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
+        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme), (pane.colouring.get(), pane.swapped.get()));
         // Profit and loss turn round with the candles.
         self.apply_marks_to(&pane);
         self.save_workspace();
@@ -13563,7 +13560,7 @@ impl Window {
         let pane = self.focused_pane();
         pane.hollow_up.set(hollow_up);
         let theme = self.theme();
-        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
+        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme), (pane.colouring.get(), pane.swapped.get()));
         self.save_workspace();
     }
 
@@ -13655,7 +13652,7 @@ impl Window {
         pane.hollow_up.set(defaults.hollow_up);
         pane.set_ohlc_thickness(defaults.ohlc_thickness);
         let theme = self.theme();
-        pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
+        pane.view.restyle(theme.clone(), pane_scheme(pane, &theme), (pane.colouring.get(), pane.swapped.get()));
         self.apply_marks_to(pane);
         pane.session.set(defaults.session);
         pane.continuous.set(defaults.continuous);

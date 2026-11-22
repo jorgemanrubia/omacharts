@@ -2603,7 +2603,7 @@ fn chart_indicator(
     let kind = wanted_kind(m, action, &listed, wanted, &format!("chart {pane}"))?;
     let mut edits = Edits::read(m)?;
     if edits.touches_colours() {
-        edits.look = Some(ColourLook::load(store));
+        edits.look = Some(ColourLook::load(store).worn_by(&chart));
     }
 
     // A chart on a template shows the template's indicators, and changing
@@ -3738,7 +3738,7 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
             // Null while automatic, as the study's.
             "rows": style.profile.rows,
             "method": style.profile.method.key(),
-            // Null while it follows the colouring chosen in Preferences.
+            // Null while it follows the chart's bars.
             "colouring": style.profile.colouring.map(|c| c.key()),
             "width": style.profile.drawn_width(),
         });
@@ -4010,8 +4010,7 @@ struct StyleEdits {
     poc_style: Option<LineStyle>,
     /// What a volume profile's rows measure.
     method: Option<omacharts_engine::drawings::ProfileMethod>,
-    /// How a delta's sides are painted; `Some(None)` for the colouring
-    /// chosen in Preferences.
+    /// How a delta's sides are painted; `Some(None)` for the chart's bars'.
     colouring: Option<Option<omacharts_engine::colouring::Colouring>>,
     /// The word `--colouring` was given as, for saying why it is refused.
     colouring_word: Option<String>,
@@ -4400,11 +4399,6 @@ impl StyleEdits {
                 "--profile-method, --colouring, --profile-width and the --outline flags are a volume profile's; a {} has none",
                 kind.label().to_lowercase()
             )));
-        }
-        // A delta follows the colouring chosen in Preferences, never the
-        // chart's own: the study's refusal too.
-        if self.colouring.is_some() && self.colouring_word.as_deref() == Some("chart") {
-            return Err(Fault::usage("a volume profile follows the colouring chosen in Preferences; use default".into()));
         }
         // Two names for one thing, given two answers.
         for (study, given, drawing, other) in [
@@ -4845,9 +4839,8 @@ fn describe_indicator(stored: &Value) -> String {
 }
 
 /// What a study's colours are worked out from on the command line, as the
-/// chart works them out: the theme, the colouring chosen in Preferences
-/// and whether it is worn swapped, and the chart's candles for a volume
-/// pane on Default.
+/// chart works them out: the theme, the chart's colouring and whether
+/// it is worn swapped, and the chart's bars for Default.
 struct ColourLook {
     theme: omacharts_engine::theme::Theme,
     house: omacharts_engine::BarColouring,
@@ -4859,6 +4852,16 @@ impl ColourLook {
     fn load(store: &Store) -> ColourLook {
         let theming = crate::theming::Theming::load(store);
         ColourLook { theme: theming.theme(), house: theming.colouring(), swapped: theming.swapped(), scheme: theming.bar_scheme() }
+    }
+
+    /// As `chart` wears its bars: its own colouring, swapped or not, which
+    /// its studies' Default and presets follow.
+    fn worn_by(mut self, chart: &Value) -> ColourLook {
+        let look = stored_look(chart);
+        self.house = look.colouring;
+        self.swapped = look.swapped;
+        self.scheme = look.colouring.scheme(&self.theme).worn(look.swapped, look.hollow_up);
+        self
     }
 
     /// The colours a profile drawing's delta is drawn in now.
@@ -4877,7 +4880,7 @@ impl ColourLook {
     fn drawn(&self, indicator: &Indicator) -> Vec<String> {
         use omacharts_engine::colouring;
         if indicator.kind == IndicatorKind::Volume {
-            let (up, down) = crate::ui::chart::volume_colours(indicator, &self.theme, &self.scheme);
+            let (up, down) = crate::ui::chart::volume_colours(indicator, &self.theme, &self.scheme, self.swapped);
             return vec![up, down];
         }
         let Some((chosen, own)) = indicator.params.colours() else { return Vec::new() };
@@ -4956,12 +4959,10 @@ struct Edits {
     down_alpha: Option<Option<f64>>,
     up_color: Option<ColorChoice>,
     down_color: Option<ColorChoice>,
-    /// `Some(None)` puts volume back on the chart's own colouring, and a
-    /// volume profile on the one chosen in Preferences; `custom` is each
+    /// `Some(None)` puts a study back on the chart's own colouring; `custom` is each
     /// colour the study's own.
     colouring: Option<Option<omacharts_engine::colouring::Colouring>>,
-    /// The word `colouring` was given as, since `chart` and `default` are
-    /// each one kind's and not the other's.
+    /// The word `colouring` was given as, for saying why it is refused.
     colouring_word: Option<String>,
     opacity: Option<f64>,
     color: Option<ColorChoice>,
@@ -5433,12 +5434,6 @@ impl Edits {
                 _ if self.up_color.is_some() || self.down_color.is_some() => "rising or falling colour",
                 _ => "buying or selling colour",
             }));
-        }
-        if word == "chart" && kind != IndicatorKind::Volume {
-            return Err(Fault::usage(format!(
-                "{} follows the colouring chosen in Preferences; use default",
-                kind.short_name()
-            )));
         }
         let roles: [Option<Option<ColorChoice>>; 2] = match ups {
             true => {
@@ -10345,10 +10340,9 @@ mod tests {
         assert_ne!(out.code, 0, "an RSI has no periods");
     }
 
-    /// A volume profile's delta follows the colouring chosen in Preferences
-    /// until a command picks one of the three that tell bought from sold,
-    /// and `default` puts it back; the words that are the volume strip's
-    /// own, and Monochrome, are refused and leave it as it was.
+    /// A volume profile's delta follows the chart's bars until a command
+    /// picks a preset, and `default` or `chart` puts it back; a word that
+    /// is no colouring is refused and leaves it as it was.
     /// Every study painted in a colouring takes `--colouring custom`, each
     /// colour starting at the one it was drawn in; a colour given over a
     /// preset makes it Custom, the other colour kept as drawn; and a preset
@@ -10417,21 +10411,23 @@ mod tests {
             let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
             parsed["indicators"][0]["params"]["colouring"].as_str().map(str::to_string)
         };
-        assert_eq!(colouring(&store), None, "Preferences' to begin with");
+        assert_eq!(colouring(&store), None, "the chart's bars' to begin with");
 
         let out = run("chart indicator set volume_profile --book Macro --colouring theme-quiet", &store);
         assert_eq!(out.code, 0, "{}", out.err);
         assert_eq!(colouring(&store).as_deref(), Some("theme-quiet"));
 
-        for refused in ["chart", "loud"] {
-            let out = run(&format!("chart indicator set volume_profile --book Macro --colouring {refused}"), &store);
-            assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
-        }
+        let out = run("chart indicator set volume_profile --book Macro --colouring loud", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
         assert_eq!(colouring(&store).as_deref(), Some("theme-quiet"), "a refusal leaves it as it was");
 
-        let out = run("chart indicator set volume_profile --book Macro --colouring default", &store);
-        assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(colouring(&store), None);
+        // Default, or chart: the one value set every study takes.
+        for back in ["default", "chart"] {
+            run("chart indicator set volume_profile --book Macro --colouring theme-quiet", &store);
+            let out = run(&format!("chart indicator set volume_profile --book Macro --colouring {back}"), &store);
+            assert_eq!(out.code, 0, "{}", out.err);
+            assert_eq!(colouring(&store), None, "{back}");
+        }
 
     }
 
@@ -10551,8 +10547,7 @@ mod tests {
             assert_eq!(out.code, 0, "{key}: {}", out.err);
             assert!(listed(&store, key)["params"]["inks"].is_null(), "{key}: back to nothing written");
             for refused in [
-                "--colouring chart",
-                "--colouring vivid",
+                                "--colouring vivid",
                 "--color Teal",
                 "--transparency 0.3",
                 "--width 2",
@@ -10633,7 +10628,7 @@ mod tests {
     }
 
     /// A cumulative delta starts on the session, as candles, in the
-    /// colouring chosen in Preferences, and every one of those is a flag:
+    /// chart's bars' colouring, and every one of those is a flag:
     /// `never` makes it one running sum, which nothing else takes.
     #[test]
     fn a_cumulative_delta_is_set_up_from_a_command() {
@@ -10667,7 +10662,7 @@ mod tests {
         assert_eq!(out.code, 0, "{}", out.err);
         assert_eq!(params(&store)["reset"], "week");
 
-        for refused in ["--colouring chart", "--colouring loud", "--rows 20", "--period 9"] {
+        for refused in ["--colouring loud", "--rows 20", "--period 9"] {
             let out = run(&format!("chart indicator set cvd --book Macro {refused}"), &store);
             assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
         }
@@ -12250,7 +12245,6 @@ mod tests {
 
         for bad in [
             "profile --profile-method both",
-            "profile --colouring chart",
             "profile --colouring vivid",
             "profile --profile-width 2",
             "profile --outline-color amber --color ink",

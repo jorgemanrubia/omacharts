@@ -2677,16 +2677,15 @@ pub const VOLUME_UP: &str = "Up";
 pub const VOLUME_DOWN: &str = "Down";
 
 /// The colour each role of `indicator` is drawn in now: a volume pane's
-/// Default is the chart's own candles, every other study's the colouring
-/// chosen in Preferences for a delta.
+/// Default is the chart's own bars, as every study's is.
 fn study_drawn(owner: &Owner, indicator: &Indicator) -> Vec<String> {
     let theme = owner.theme();
     if indicator.kind == Kind::Volume {
-        let (up, down) = crate::ui::chart::volume_colours(indicator, &theme, &owner.bar_scheme());
+        let (up, down) = crate::ui::chart::volume_colours(indicator, &theme, &owner.bar_scheme(), owner.app.chart_look().1);
         return vec![up, down];
     }
     let Some((colouring, own)) = indicator.params.colours() else { return Vec::new() };
-    let (house, swapped) = owner.app.house_look();
+    let (house, swapped) = owner.app.chart_look();
     let base = crate::ui::chart::delta_colours(omacharts_engine::colouring::base(colouring), &theme, house, swapped);
     colouring_rows::drawn_roles(colouring, own, base, &theme)
 }

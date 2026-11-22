@@ -1235,12 +1235,17 @@ once — the charts in every chartbook and the ones made next — the way Apply 
 all charts does in the preferences. One chart on its own is
 `chart set --colouring theme|theme-soft|theme-quiet|theme-mono`, and
 `theme-hollow` or `theme-red-up` from an earlier version is `theme` with the
-switch on for that chart. A volume pane follows the chart's colouring, swapped
-or not, unless given one of its own: `chart indicator set volume --colouring
-theme-soft`, which is painted its own way round whatever the chart's switch
-says, and `--colouring default` (or `chart`) to follow the chart again.
-`custom` paints a volume pane or a delta in colours of its own, each starting at the colour it was drawn in; a colour flag given on a preset makes it `custom`, and any other `--colouring` lets the custom colours go. In `list --json` the colouring reads `custom`, beside the colours. `theme-mono` (or `monochrome`) is taken by a volume pane and by every delta:
-one ink, solid for a rise or buying and faint for a fall or selling. A hollow rise never
+switch on for that chart. Every study painted in a colouring — a volume pane,
+a volume profile's delta and its drawing, the cumulative delta, the volume
+delta, the footprint and large orders — takes the one `--colouring` value set:
+`default` (or `chart`) paints it as the chart's bars, and `theme`,
+`theme-soft`, `theme-quiet` and `theme-mono` (or `monochrome`) paint it
+exactly as the chart's bars would be in that preset, swapped when the chart's
+bars are. `custom` paints it in colours of its own, each starting at the
+colour it was drawn in; a colour flag given on a preset makes it `custom`,
+and any other `--colouring` lets the custom colours go. In `list --json` the
+colouring reads `custom`, beside the colours. `theme-mono` is one ink for a
+rise and a fall, buying and selling alike. A hollow rise never
 reaches the volume: its bars are solid, with no body to leave open. They are
 the candles' own colours, drawn at `--opacity`, 0 to 1 and 0.85 unless set;
 `--up-transparency` and `--down-transparency` set each apart.

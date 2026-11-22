@@ -1902,9 +1902,10 @@ mod tests {
     }
 
     /// Bought rows are drawn in the colour bars rise in and sold rows in the
-    /// colour they fall in: of the colouring chosen in Preferences, swapped
-    /// with it, whatever this chart's candles wear, until the profile picks
-    /// a colouring of its own; and as the house colouring changes.
+    /// colour they fall in: of the house colouring, the chart's own bars',
+    /// swapped with them, until the profile picks a colouring of its own,
+    /// which is worn swapped with the chart's too; and as the chart's
+    /// colouring changes.
     #[test]
     fn a_delta_profile_is_drawn_in_the_colours_bars_rise_and_fall_in() {
         use omacharts_engine::BarColouring;
@@ -1924,10 +1925,6 @@ mod tests {
         };
         assert_ne!(state.scheme.up, state.scheme.down);
         assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Vivid, false), "the house's Vivid to begin with");
-
-        // The chart's own candles are not what it follows.
-        state.scheme = BarColouring::Quiet.scheme(&state.theme).worn(true, false);
-        assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Vivid, false), "not the chart's");
 
         for theme in omacharts_engine::theme::builtin_themes() {
             state.theme = theme;

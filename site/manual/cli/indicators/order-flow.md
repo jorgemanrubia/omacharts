@@ -16,7 +16,7 @@ The volume delta, the footprint and large orders paint buying and selling, and t
 
 | Flag | Takes | For |
 |---|---|---|
-| `--colouring C` | `default`, the one chosen in Preferences, or `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` (or `monochrome`: one colour for both, the Monochrome candles' ink), or `custom` | The colouring buying and selling are taken from. `custom` keeps each colour its own, starting from the colours drawn a moment before; any other lets the custom colours go |
+| `--colouring C` | `default` (or `chart`), as the chart's bars, or `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` (or `monochrome`: one colour for both, the Monochrome candles' ink), or `custom` | The colouring buying and selling are taken from. `custom` keeps each colour its own, starting from the colours drawn a moment before; any other lets the custom colours go |
 | `--buy-color C`, `--sell-color C` | A colour, or `none` to let it go | Buying's or selling's colour. Given on a colouring other than `custom`, it makes the colouring `custom`, the other side kept at the colour it was drawn in |
 | `--buy-transparency F`, `--sell-transparency F` | 0 to 1, or `default` for the indicator's own | How much of the chart shows through buying or selling |
 

@@ -231,9 +231,9 @@ struct State {
     echo: Option<Echo>,
     theme: Theme,
     scheme: BarScheme,
-    /// The colouring chosen in Preferences, and whether it is worn the
-    /// other way round: what a delta profile with no colouring of its own
-    /// is painted in, rather than this chart's.
+    /// The chart's colouring, and whether it is worn the other way round:
+    /// what a study with no colouring of its own is painted in, and how
+    /// every preset is worn — the house colouring.
     house: (BarColouring, bool),
     /// A delta profile's bought and sold colours, for the house colouring
     /// and then each of [`DELTA_COLOURINGS`] in turn, worked out when the
@@ -5710,10 +5710,15 @@ impl ChartView {
         });
     }
 
-    pub fn restyle(&self, theme: Theme, scheme: BarScheme) {
+    /// Paint in `theme`, the bars in `scheme`, worn from `look`: the
+    /// chart's colouring and whether it is swapped, which every study's
+    /// Default and presets follow, so a study and the bars it sits on say
+    /// a rise in the same colour.
+    pub fn restyle(&self, theme: Theme, scheme: BarScheme, look: (BarColouring, bool)) {
         {
             let mut state = self.state.borrow_mut();
             state.last_ink = LastInk::of(&theme);
+            state.house = look;
             state.delta_inks = delta_inks(&theme, state.house);
             state.tpo_ends = (theme.tpo_open(), theme.tpo_close());
             state.theme = theme;
@@ -5723,8 +5728,8 @@ impl ChartView {
         self.redraw();
     }
 
-    /// The colouring chosen in Preferences and whether it is worn swapped,
-    /// which a delta profile with no colouring of its own is painted in.
+    /// The chart's colouring and whether it is worn swapped, which a study
+    /// with no colouring of its own is painted in, and its presets swapped.
     pub fn set_house_look(&self, colouring: BarColouring, swapped: bool) {
         {
             let mut state = self.state.borrow_mut();
@@ -8093,7 +8098,7 @@ fn draw_volume(
     let inner_h = height * 0.9;
     let to_y = |volume: f64| inner_top + inner_h * (high - volume) / (high - low).max(f64::EPSILON);
     let base = to_y(0.0);
-    let (up, down) = volume_colours(indicator, &state.theme, &state.scheme);
+    let (up, down) = volume_colours(indicator, &state.theme, &state.scheme, state.house.1);
     let (up_alpha, down_alpha) = volume_alphas(indicator);
     let lit = state.picked == Some(indicator.id);
     // Lit, the glow goes down first, under every bar, and the bars over it
@@ -11070,11 +11075,13 @@ fn time_at_column(state: &State, index: i64) -> Option<i64> {
 
 /// The colours a volume pane paints a rising and a falling bar: the
 /// indicator's own when somebody chose them, otherwise the candles' own —
-/// the chart's candles, or the colouring the indicator chose for itself.
+/// the chart's candles, or the colouring the indicator chose for itself,
+/// worn swapped when the chart's are, as every study's preset is.
 pub fn volume_colours(
     indicator: &Indicator,
     theme: &omacharts_engine::Theme,
     scheme: &BarScheme,
+    swapped: bool,
 ) -> (String, String) {
     use omacharts_engine::colouring;
     let omacharts_engine::Params::Volume { colouring, up_color, down_color, .. } = &indicator.params
@@ -11087,7 +11094,7 @@ pub fn volume_colours(
     let own;
     let (up, down) = match colouring::base(*colouring) {
         Some(preset) => {
-            own = preset.signed(theme, false);
+            own = preset.signed(theme, swapped);
             (own.0.as_str(), own.1.as_str())
         }
         None => (scheme.up.as_str(), scheme.down.as_str()),
@@ -11165,8 +11172,8 @@ fn profile_inks(
     }
 }
 
-/// What a chart is told the house colouring is until it is told otherwise:
-/// the one Preferences opens with.
+/// What a chart is told the house colouring is until it is told its own:
+/// the one a new chart opens with.
 const HOUSE_LOOK: (BarColouring, bool) = (BarColouring::Vivid, false);
 
 /// A delta profile's bought and sold colours, for the house colouring and
@@ -13428,12 +13435,12 @@ mod tests {
         let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
         let scheme = BarColouring::Quiet.scheme(&theme);
         let mut indicator = Indicator::new(1, indicators::Kind::Volume);
-        assert_eq!(volume_colours(&indicator, &theme, &scheme), (scheme.up.clone(), scheme.down.clone()));
+        assert_eq!(volume_colours(&indicator, &theme, &scheme, false), (scheme.up.clone(), scheme.down.clone()));
         for own in [BarColouring::Vivid, BarColouring::Soft, BarColouring::Quiet, BarColouring::Monochrome] {
             if let omacharts_engine::Params::Volume { colouring, .. } = &mut indicator.params {
                 *colouring = Some(own.into());
             }
-            assert_eq!(volume_colours(&indicator, &theme, &scheme), own.signed(&theme, false), "{own:?}");
+            assert_eq!(volume_colours(&indicator, &theme, &scheme, false), own.signed(&theme, false), "{own:?}");
         }
         // Monochrome is one colour at one strength, as its candles are, and
         // so is a chart in Monochrome left on Default.
@@ -13443,7 +13450,69 @@ mod tests {
         if let omacharts_engine::Params::Volume { colouring, .. } = &mut indicator.params {
             *colouring = None;
         }
-        assert_eq!(volume_colours(&indicator, &theme, &mono), (mono.mono.clone(), mono.mono.clone()));
+        assert_eq!(volume_colours(&indicator, &theme, &mono, false), (mono.mono.clone(), mono.mono.clone()));
+    }
+
+    /// Every study painted in a colouring offers one list, from one table,
+    /// and resolves each choice through one function: on Default, each
+    /// paints a rise and a fall as the chart's bars under it do; on a
+    /// preset, as the chart's bars would in that preset, swapped when the
+    /// chart's are. A study left out of this loop is a study whose colours
+    /// can drift.
+    #[test]
+    fn every_study_in_a_colouring_paints_each_choice_as_the_chart_s_bars_do() {
+        use omacharts_engine::colouring::Colouring;
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
+        let painted: Vec<indicators::Kind> = indicators::Kind::ALL
+            .into_iter()
+            .filter(|kind| Indicator::new(1, *kind).params.colours().is_some())
+            .collect();
+        assert_eq!(
+            painted.iter().map(|kind| kind.key()).collect::<Vec<_>>(),
+            ["volume", "volume_profile", "cvd", "volume_delta", "footprint", "large_orders"],
+            "the studies painted in a colouring"
+        );
+        for chart in DELTA_COLOURINGS {
+            for swapped in [false, true] {
+                let mut state = State::blank(theme.clone(), chart.scheme(&theme).worn(swapped, false));
+                state.house = (chart, swapped);
+                state.delta_inks = delta_inks(&theme, state.house);
+                for kind in &painted {
+                    for choice in std::iter::once(None).chain(DELTA_COLOURINGS.into_iter().map(Some)) {
+                        let mut indicator = Indicator::new(1, *kind);
+                        if let Some(mut colours) = indicator.params.colours_mut() {
+                            colours.pick(choice.map(Colouring::Scheme), &[]);
+                        }
+                        let drawn = match kind {
+                            indicators::Kind::Volume => volume_colours(&indicator, &theme, &state.scheme, swapped),
+                            _ => {
+                                let (colouring, own) = indicator.params.colours().unwrap();
+                                let (up, down) = state.study_pair(colouring, own);
+                                (up.into_owned(), down.into_owned())
+                            }
+                        };
+                        let bars = choice.unwrap_or(chart).signed(&theme, swapped);
+                        assert_eq!(drawn, bars, "{} on {choice:?}, the chart in {chart:?} swapped {swapped}", kind.key());
+                    }
+                }
+                // A profile drawing's delta, too.
+                for choice in std::iter::once(None).chain(DELTA_COLOURINGS.into_iter().map(Some)) {
+                    let mut look = omacharts_engine::drawings::ProfileLook::default();
+                    look.colours_mut().pick(choice.map(Colouring::Scheme), &[]);
+                    let (up, down) = state.study_pair(look.colouring, [look.buy_color.as_ref(), look.sell_color.as_ref()]);
+                    assert_eq!((up.into_owned(), down.into_owned()), choice.unwrap_or(chart).signed(&theme, swapped), "a profile drawing on {choice:?}");
+                }
+            }
+        }
+        // And a chart restyled in a look takes it as its studies' house.
+        crate::on_gtk(move || {
+            let view = ChartView::new(theme.clone(), BarColouring::Vivid.scheme(&theme));
+            view.restyle(theme.clone(), BarColouring::Quiet.scheme(&theme).worn(true, false), (BarColouring::Quiet, true));
+            let state = view.state.borrow();
+            assert_eq!(state.house, (BarColouring::Quiet, true));
+            let (up, down) = state.study_pair(None, [None, None]);
+            assert_eq!((up.into_owned(), down.into_owned()), BarColouring::Quiet.signed(&theme, true));
+        });
     }
 
     /// A chart of the regular session out of hours: the last price is the

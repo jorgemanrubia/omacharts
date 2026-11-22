@@ -14,7 +14,7 @@ use crate::colouring::Colouring;
 use crate::theme::ColorChoice;
 
 /// How an order flow indicator paints buying and selling: in a colouring
-/// (unset, the one chosen in Preferences, followed as it changes), or in
+/// (unset, the chart's bars', followed as they change), or in
 /// its own two colours, Custom (see [`crate::colouring`]); each side as
 /// solid as set, whichever.
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]

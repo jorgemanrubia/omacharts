@@ -1507,8 +1507,8 @@ pub struct ProfileLook {
     #[serde(default, skip_serializing_if = "is_total")]
     pub method: ProfileMethod,
     /// The colouring a delta's bought and sold rows are painted in, as the
-    /// study's: unset, the colouring chosen in Preferences, following it as
-    /// it changes; set, one of [`DELTA_COLOURINGS`] of its own, or Custom
+    /// study's: unset, the chart's bars' colouring, following it as it
+    /// changes; set, one of [`DELTA_COLOURINGS`] of its own, or Custom
     /// (see [`crate::colouring`]). A total is in the drawing's background
     /// and pays this no mind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
