@@ -10818,14 +10818,18 @@ pub fn volume_colours(
     };
     // Its own colouring paints a rise and a fall as a delta does, Monochrome
     // in one ink at two strengths; Default echoes the chart's candles.
+    let own;
     let (up, down) = match colouring {
-        Some(colouring) => colouring.signed(theme, false),
-        None => (scheme.up.clone(), scheme.down.clone()),
+        Some(colouring) => {
+            own = colouring.signed(theme, false);
+            (own.0.as_str(), own.1.as_str())
+        }
+        None => (scheme.up.as_str(), scheme.down.as_str()),
     };
     let pick = |choice: &Option<omacharts_engine::theme::ColorChoice>, fallback: &str| {
         choice.as_ref().map_or_else(|| fallback.to_string(), |c| c.resolve(theme))
     };
-    (pick(up_color, &up), pick(down_color, &down))
+    (pick(up_color, up), pick(down_color, down))
 }
 
 /// How solid a volume pane's bars are drawn, kept within what the row offers
