@@ -17,6 +17,7 @@ use omacharts_engine::indicators::{
 };
 use omacharts_engine::indicators::cvd::Style;
 use omacharts_engine::indicators::market;
+use omacharts_engine::indicators::flow;
 use omacharts_engine::indicators::profile::{Align, Style as ProfileStyle};
 use omacharts_engine::theme::ColorChoice;
 use omacharts_engine::{BarColouring, BarStyle, Indicator, Session};
@@ -1437,6 +1438,7 @@ fn appearance_groups(
     match indicator.kind {
         Kind::VolumeProfile => profile_style(owner, refresh, colour, indicator),
         Kind::MarketProfile => market_style(owner, refresh, colour, indicator),
+        Kind::VolumeDelta | Kind::Footprint | Kind::LargeOrders => vec![flow_colours(owner, refresh, indicator)],
         _ => appearance_group(owner, refresh, colour, indicator).into_iter().collect(),
     }
 }
@@ -1882,6 +1884,73 @@ fn parameters_group(
             group.add(&style_row);
             group.add(&colouring_row(owner, refresh, id, *colouring));
             group.add(&pane_height_row(owner, refresh, id, *height));
+        }
+        Params::VolumeDelta { height, .. } => {
+            if owner.estimates_delta() {
+                group.set_description(Some(CVD_ESTIMATED));
+            }
+            group.add(&pane_height_row(owner, refresh, id, *height));
+        }
+        Params::Footprint { zoom, intensity, .. } => {
+            group.add(&spin_row(
+                owner,
+                refresh,
+                id,
+                FOOTPRINT_ZOOM_LABEL,
+                *zoom,
+                flow::MIN_FOOTPRINT_ZOOM,
+                flow::MAX_FOOTPRINT_ZOOM,
+                1.0,
+                |indicator, value| {
+                    if let Params::Footprint { zoom, .. } = &mut indicator.params {
+                        *zoom = value;
+                    }
+                },
+            ));
+            group.add(&flow_switch(owner, refresh, id, FOOTPRINT_INTENSITY_LABEL, *intensity, |params, on| {
+                if let Params::Footprint { intensity, .. } = params {
+                    *intensity = on;
+                }
+            }));
+        }
+        Params::LargeOrders { regular, extended, compare, combine, .. } => {
+            for (title, value, regular_hours) in
+                [(LARGE_RTH_LABEL, *regular, true), (LARGE_ETH_LABEL, *extended, false)]
+            {
+                group.add(&spin_row(
+                    owner,
+                    refresh,
+                    id,
+                    title,
+                    value as f64,
+                    0.0,
+                    LARGE_MAX_THRESHOLD as f64,
+                    1.0,
+                    move |indicator, value| {
+                        if let Params::LargeOrders { regular, extended, .. } = &mut indicator.params {
+                            *(if regular_hours { regular } else { extended }) = value.max(0.0) as u64;
+                        }
+                    },
+                ));
+            }
+            group.add(&choice_row(
+                owner,
+                refresh,
+                id,
+                LARGE_COMPARE_LABEL,
+                &flow::Compare::ALL.map(flow::Compare::label),
+                flow::Compare::ALL.iter().position(|c| c == compare),
+                |indicator, at| {
+                    if let Params::LargeOrders { compare, .. } = &mut indicator.params {
+                        *compare = flow::Compare::ALL.get(at).copied().unwrap_or_default();
+                    }
+                },
+            ));
+            group.add(&flow_switch(owner, refresh, id, LARGE_COMBINE_LABEL, *combine, |params, on| {
+                if let Params::LargeOrders { combine, .. } = params {
+                    *combine = on;
+                }
+            }));
         }
         Params::Rsi { period, height, overbought, oversold } => {
             group.add(&spin_row(
@@ -2670,11 +2739,94 @@ fn colouring_row(owner: &Rc<Owner>, refresh: &Refresh, id: u32, current: Option<
             Params::Volume { colouring, .. }
             | Params::VolumeProfile { colouring, .. }
             | Params::Cvd { colouring, .. } => *colouring = chosen,
-            _ => {}
+            params => {
+                if let Some(inks) = params.inks_mut() {
+                    inks.colouring = chosen;
+                }
+            }
         });
         refresh.run();
     })
     .0
+}
+
+/// The rows of the order flow indicators' own.
+pub const FOOTPRINT_ZOOM_LABEL: &str = "Show from bar width";
+pub const FOOTPRINT_INTENSITY_LABEL: &str = "Intensity";
+pub const LARGE_RTH_LABEL: &str = "RTH threshold";
+pub const LARGE_ETH_LABEL: &str = "ETH threshold";
+pub const LARGE_COMPARE_LABEL: &str = "Size against";
+pub const LARGE_COMBINE_LABEL: &str = "Combine same-time prints";
+pub const FLOW_BUY_LABEL: &str = "Buying";
+pub const FLOW_SELL_LABEL: &str = "Selling";
+/// The biggest threshold the box takes: past any single order's size.
+pub const LARGE_MAX_THRESHOLD: u64 = 1_000_000;
+
+/// A switch of an order flow indicator's.
+fn flow_switch(
+    owner: &Rc<Owner>,
+    refresh: &Refresh,
+    id: u32,
+    title: &str,
+    on: bool,
+    write: impl Fn(&mut Params, bool) + 'static,
+) -> adw::SwitchRow {
+    let owner = owner.clone();
+    let refresh = refresh.clone();
+    property_rows::switch_row(title, on, move |on| {
+        update(&owner, id, |indicator| write(&mut indicator.params, on));
+        refresh.run();
+    })
+    .0
+}
+
+/// How an order flow indicator paints buying and selling: its colouring,
+/// and each side's colour beside how solid it is, as a volume pane's are.
+fn flow_colours(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> adw::PreferencesGroup {
+    let id = indicator.id;
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Colours");
+    let Some(inks) = indicator.params.inks() else { return group };
+    let designed = match indicator.kind {
+        Kind::Footprint => flow::FOOTPRINT_ALPHA,
+        Kind::LargeOrders => flow::LARGE_ORDERS_ALPHA,
+        _ => flow::VOLUME_DELTA_ALPHA,
+    };
+    let (buy_alpha, sell_alpha) = inks.alphas(designed);
+    let (house, swapped) = owner.app.house_look();
+    let (up, down) = crate::ui::chart::delta_colours(inks.colouring, &owner.theme(), house, swapped);
+    let theme = owner.theme();
+    let buy = inks.buy.as_ref().map_or(up, |c| c.resolve(&theme));
+    let sell = inks.sell.as_ref().map_or(down, |c| c.resolve(&theme));
+    group.add(&colouring_row(owner, refresh, id, inks.colouring));
+    // Sides have no line to repaint as a sample.
+    let unused = Ink::new(String::new);
+    for (title, current, choice, alpha, buying) in [
+        (FLOW_BUY_LABEL, buy, inks.buy.clone(), buy_alpha, true),
+        (FLOW_SELL_LABEL, sell, inks.sell.clone(), sell_alpha, false),
+    ] {
+        let strength = indicator_strength(owner, refresh, id, alpha, move |indicator, alpha| {
+            if let Some(inks) = indicator.params.inks_mut() {
+                *(if buying { &mut inks.buy_alpha } else { &mut inks.sell_alpha }) = Some(alpha);
+            }
+        });
+        group.add(&colour_row_with(
+            owner,
+            refresh,
+            &unused,
+            title,
+            &current,
+            choice,
+            move |indicator, choice| {
+                if let Some(inks) = indicator.params.inks_mut() {
+                    *(if buying { &mut inks.buy } else { &mut inks.sell }) = choice;
+                }
+            },
+            id,
+            Some(strength),
+        ));
+    }
+    group
 }
 
 /// The cumulative delta row that picks candles or a line.
@@ -3458,6 +3610,9 @@ fn reset_row_of(
             Params::MovingAverage { .. }
             | Params::Bollinger { .. }
             | Params::Volume { .. }
+            | Params::VolumeDelta { .. }
+            | Params::Footprint { .. }
+            | Params::LargeOrders { .. }
             | Params::Rsi { .. }
             | Params::Macd { .. }
             | Params::Atr { .. }

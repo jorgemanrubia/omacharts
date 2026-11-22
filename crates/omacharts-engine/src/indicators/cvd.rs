@@ -105,11 +105,20 @@ pub struct Memo {
 /// Everything besides the bars that the bars' deltas depend on.
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct Key {
-    reset: Option<Reset>,
+    cut: Cut,
     timeframe: Timeframe,
     session_origin: i64,
     /// The held ladders' generation, or `None` for a chart with none.
     generation: Option<u64>,
+}
+
+/// Where the running delta starts again from nought.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Cut {
+    /// At each period, or never for `None`: the cumulative delta.
+    Period(Option<Reset>),
+    /// At every bar: each bar's own delta, the volume delta.
+    Bar,
 }
 
 /// Each chart's memos, by the indicator's id.
@@ -152,7 +161,32 @@ pub fn compute(
     source: Option<&Source>,
     memo: Option<&mut Memo>,
 ) -> Vec<DeltaBar> {
-    let key = Key { reset, timeframe, session_origin, generation: source.map(|s| s.held.generation) };
+    run(bars, Cut::Period(reset), session_origin, timeframe, source, memo)
+}
+
+/// Each bar's own delta, from nought at its open to what was bought less
+/// what was sold in it at its close, with the furthest it went either way
+/// in between where the ladders say: the volume delta. Read and estimated,
+/// and kept from one tick to the next, as [`compute`] is.
+pub fn per_bar(
+    bars: &[Bar],
+    session_origin: i64,
+    timeframe: Timeframe,
+    source: Option<&Source>,
+    memo: Option<&mut Memo>,
+) -> Vec<DeltaBar> {
+    run(bars, Cut::Bar, session_origin, timeframe, source, memo)
+}
+
+fn run(
+    bars: &[Bar],
+    cut: Cut,
+    session_origin: i64,
+    timeframe: Timeframe,
+    source: Option<&Source>,
+    memo: Option<&mut Memo>,
+) -> Vec<DeltaBar> {
+    let key = Key { cut, timeframe, session_origin, generation: source.map(|s| s.held.generation) };
     let mut scratch = Memo::default();
     let memo = memo.unwrap_or(&mut scratch);
     let start = match memo.key {
@@ -171,7 +205,10 @@ pub fn compute(
     memo.bars.extend_from_slice(&bars[start..]);
     memo.out.truncate(start);
 
-    let period = |ts: i64| reset.map_or(0, |reset| reset.bucket(ts, session_origin));
+    let period = |ts: i64| match cut {
+        Cut::Period(reset) => reset.map_or(0, |reset| reset.bucket(ts, session_origin)),
+        Cut::Bar => ts,
+    };
     let mut running = start.checked_sub(1).map_or(0.0, |at| memo.out[at].close);
     for at in start..bars.len() {
         let bar = &bars[at];

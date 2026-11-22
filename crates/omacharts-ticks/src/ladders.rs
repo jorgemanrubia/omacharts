@@ -1122,6 +1122,54 @@ impl Held {
         Some(sum(&parts))
     }
 
+    /// Hand each ladder that makes up `from..to` to `each`, as
+    /// [`Self::between`] would sum them, without summing or allocating: what
+    /// a footprint folds into rows of its own. `false`, with whatever was
+    /// handed already to be thrown away, when [`Self::between`] would answer
+    /// `None`, the pieces it lacks asked for as it asks for them.
+    pub fn visit_between(&self, from: i64, to: i64, mut each: impl FnMut(&Ladder)) -> bool {
+        if from < self.floor {
+            return false;
+        }
+        let mut short = false;
+        for held in self.span(from, to) {
+            if held.inside(from, to) {
+                if !short {
+                    each(&held.day.total);
+                }
+            } else if held.whole {
+                let (i, j) = held.day.span(from, to);
+                if !short {
+                    held.day.minutes[i..j].iter().for_each(|m| each(&m.ladder));
+                }
+            } else {
+                let piece = Piece::of(held, from, to);
+                match self.pieces.get(&piece) {
+                    Some(ladder) => {
+                        if !short {
+                            each(ladder);
+                        }
+                        self.used.borrow_mut().insert(piece);
+                    }
+                    None => {
+                        let mut wanted = self.wanted.borrow_mut();
+                        if !wanted.contains(&piece) {
+                            wanted.push(piece);
+                        }
+                        short = true;
+                    }
+                }
+            }
+        }
+        if short {
+            return false;
+        }
+        if let Some(forming) = self.forming.as_ref().filter(|m| (from..to).contains(&m.ts)) {
+            each(&forming.ladder);
+        }
+        true
+    }
+
     /// Whether [`Self::between`] cannot answer `from..to` only because a
     /// piece of it is still to be read: the span is not before
     /// [`Self::floor`], and some day it cuts has neither its minutes nor
@@ -1706,5 +1754,48 @@ mod day_minutes_tests {
             assert_eq!(reader.read_into(&mut read).unwrap(), Err(DecodeError::Corrupt), "first at {first}");
             assert!(reader.read_into(&mut read).is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod visit_tests {
+    use super::*;
+
+    /// Visiting a span's parts and adding them up is the span's ladder,
+    /// whether its days are whole, known by their totals with a piece read,
+    /// or short of a piece, which both ask for.
+    #[test]
+    fn the_parts_visited_add_up_to_the_span() {
+        let mut day = Day::new(10);
+        for i in 0..120i64 {
+            let ts = 864_000 + i * 60;
+            let tick = 400 + (i % 9) as i32;
+            let mut minute = Minute::opening(ts, to_price(tick, 0.25));
+            minute.add_trade(tick, to_price(tick, 0.25), 1 + (i as u64 % 4), [Side::Buy, Side::Sell][i as usize % 2], 1);
+            day.insert(minute);
+        }
+        day.resum();
+        let whole = HeldDay::whole(day.clone()).unwrap();
+        let mut held = Held::new(0.25);
+        held.floor = 0;
+        held.days.push(whole.clone());
+        let (from, to) = (864_000 + 600, 864_000 + 1_800);
+        let summed = |held: &Held| {
+            let mut out = Ladder::new();
+            let ok = held.visit_between(from, to, |part| out.add_ladder(part));
+            ok.then_some(out)
+        };
+        assert_eq!(summed(&held), held.between(from, to));
+        assert!(summed(&held).is_some());
+
+        let mut totals = Held::new(0.25);
+        totals.floor = 0;
+        totals.days.push(HeldDay::total(10, whole.first_ts, whole.last_ts, day.total.clone()));
+        assert_eq!(summed(&totals), None, "short of the piece");
+        assert_eq!(totals.take_wanted().len(), 1, "and asked for it");
+        let piece = Piece::of(&totals.days[0], from, to);
+        totals.put_piece(piece, day.piece(from, to));
+        assert_eq!(summed(&totals), totals.between(from, to));
+        assert!(summed(&totals).is_some());
     }
 }

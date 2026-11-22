@@ -3,7 +3,7 @@ title: "Momentum and volatility"
 description: "The RSI, MACD, ATR and stochastic, with every setting."
 section: charting
 parent: indicators
-nav_order: 3
+nav_order: 4
 moved:
   relative-strength-index: /manual/indicators/momentum-and-volatility/rsi/
   moving-average-convergence-divergence: /manual/indicators/momentum-and-volatility/macd/

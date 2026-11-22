@@ -306,6 +306,14 @@ fn live() -> BTreeMap<String, String> {
                     });
                     let _ = write!(texts.entry(format!("{label}:memo")).or_default(), "{delta:?}");
                 }
+                // The volume delta through the same memos, under an id of
+                // its own, as a chart keeps it.
+                if indicator.kind == Kind::VolumeDelta {
+                    let delta = memos.with(2, |memo| {
+                        cvd::per_bar(&bars, 79_200, Timeframe::minutes(1), None, Some(memo))
+                    });
+                    let _ = write!(texts.entry(format!("{label}:memo")).or_default(), "{delta:?}");
+                }
             }
         }
         // Sealed: the bar as it closed.

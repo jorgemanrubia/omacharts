@@ -80,3 +80,51 @@ impl Study for CvdEstimate {
         Vec::new()
     }
 }
+
+/// Each bar's own delta estimated from its direction, starting from nought
+/// at every bar: the volume delta where no side is known. Where it is, the
+/// bar's delta is [`crate::VolumeDelta`]'s reading.
+#[derive(Clone, Debug, Default)]
+pub struct BarDeltaEstimate {
+    previous: Option<f64>,
+}
+
+impl BarDeltaEstimate {
+    pub fn new() -> BarDeltaEstimate {
+        BarDeltaEstimate::default()
+    }
+
+    #[inline(always)]
+    fn next<B: Ohlcv>(&self, bar: &B) -> Delta {
+        let close = estimate(bar, self.previous);
+        Delta { open: 0.0, high: close.max(0.0), low: close.min(0.0), close }
+    }
+}
+
+impl Study for BarDeltaEstimate {
+    type Value = Delta;
+
+    #[inline]
+    fn step<B: Ohlcv>(&mut self, bar: &B, _new_period: bool) -> Option<Delta> {
+        let delta = self.next(bar);
+        self.previous = Some(bar.close());
+        Some(delta)
+    }
+
+    #[inline]
+    fn peek<B: Ohlcv>(&self, bar: &B, _new_period: bool) -> Option<Delta> {
+        Some(self.next(bar))
+    }
+
+    fn warmup(&self) -> usize {
+        0
+    }
+
+    fn key(&self) -> &'static str {
+        "volume_delta"
+    }
+
+    fn params(&self) -> Vec<(&'static str, f64)> {
+        Vec::new()
+    }
+}

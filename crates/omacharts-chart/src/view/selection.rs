@@ -159,9 +159,13 @@ fn on_overlay_line(state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl 
             }
         }
         // A market profile has no line: its point of control is a row.
-        Output::MarketProfiles(_) | Output::Volume { .. } | Output::Pane(_) | Output::Time(_) | Output::Unmet(_) => {
-            false
-        }
+        Output::MarketProfiles(_)
+        | Output::Volume { .. }
+        | Output::Pane(_)
+        | Output::Time(_)
+        | Output::Unmet(_)
+        | Output::Footprint
+        | Output::LargeOrders => false,
     }
 }
 

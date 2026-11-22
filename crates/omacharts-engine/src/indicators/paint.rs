@@ -168,6 +168,15 @@ impl Params {
                 blank!(height, colouring, up_color, down_color, opacity, up_alpha, down_alpha)
             }
             Params::Cvd { reset: _, style, height, colouring } => blank!(style, height, colouring),
+            Params::VolumeDelta { height, inks } => blank!(height, inks),
+            // Read from the ladders and the prints as they are drawn, and
+            // nothing of either computed here: every setting is paint. The
+            // large orders' thresholds sort the prints, but in the chart's
+            // registry of them, not in this output.
+            Params::Footprint { zoom, intensity, inks } => blank!(zoom, intensity, inks),
+            Params::LargeOrders { regular, extended, compare, combine, inks } => {
+                blank!(regular, extended, compare, combine, inks)
+            }
             // The levels are in what an RSI or a stochastic computes: its
             // guides and the band between them.
             Params::Rsi { period: _, height, overbought: _, oversold: _ } => blank!(height),
@@ -220,7 +229,12 @@ impl Output {
             return false;
         }
         match self {
-            Output::Line(_) | Output::Profiles(_) | Output::MarketProfiles(_) | Output::Unmet(_) => true,
+            Output::Line(_)
+            | Output::Profiles(_)
+            | Output::MarketProfiles(_)
+            | Output::Unmet(_)
+            | Output::Footprint
+            | Output::LargeOrders => true,
             Output::Bands(computed) => {
                 let Some(bands) = now.params.bands() else { return false };
                 if bands.len() != computed.bands.len() {

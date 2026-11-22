@@ -9,7 +9,8 @@ description: >-
   open", "a 2x2 of the majors with RSI on each, linked", "put a 200-day
   average on this", "add AMD to my semis list", "what have I got open". Also
   for indicators (moving average, VWAP, Bollinger bands, volume profile,
-  market profile or TPO, RSI, MACD, ATR), for session times — "shade the overnight", "shade
+  market profile or TPO, cumulative delta, volume delta, footprint, large
+  orders, RSI, MACD, ATR), for session times — "shade the overnight", "shade
   the London session", "show RTH", "a lunch hour background" — and for
   which time zone and 12 or 24 hours the charts show, resolutions and sessions, bar styles and colours, watchlists and their
   sections, chartbooks, link modes, the instrument search, and the cached
@@ -380,6 +381,30 @@ omacharts chart indicator set market_profile --expand-last on
 
 # Its look
 omacharts chart indicator set market_profile --tpo-style blocks --poc-color Amber --value-area-color Teal
+```
+
+**Order flow: who took liquidity.** Four indicators in the Order flow
+family. `cvd` (Cumulative Delta) is buying less selling added up over a
+period, in a strip; `volume_delta` (VD) is the same delta bar by bar, one
+candle per bar from nought, in a strip; `footprint` (FP) replaces each candle,
+once bars are `--show-from` pixels wide (64 unless set), with a narrow candle
+and each price's delta beside it, rows filled more solidly the bigger the
+delta unless `--intensity off`; `large_orders` draws a bubble at the price of
+each order bigger than `--rth-threshold` (50) in regular hours or
+`--eth-threshold` (20) outside them, sized against `--size-against visible`,
+`session` or `hours`, prints of one moment and side counted as one order
+unless `--combine off`. The footprint and large orders need a feed with
+volume at price and say so on any other; the two deltas are estimated
+there and their legends read `≈`. The three new ones are painted by
+`--colouring default|theme|theme-soft|theme-quiet`, with `--buy-color`,
+`--sell-color` (`none` for the colouring's) and `--buy-transparency`,
+`--sell-transparency` (`default` for their own); `volume_delta` takes
+`--height`. They have no line, so `--color` and `--transparency` are refused.
+
+```
+omacharts chart indicator add footprint --show-from 80
+omacharts chart indicator add large_orders --rth-threshold 100 --size-against visible
+omacharts chart indicator set volume_delta --colouring theme-quiet --sell-transparency 0.3
 ```
 
 **A volume profile of any span is a drawing.** `profile` (or `vp`) profiles

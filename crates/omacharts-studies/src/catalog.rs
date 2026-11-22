@@ -15,6 +15,12 @@ pub enum Form {
     /// a span and has no study. What can be known so far is a different
     /// indicator, and gets its own entry when it exists.
     WholePeriod,
+    /// Read from what traded at each price of each bar, which no bar alone
+    /// says: drawn from volume at price, with nothing to step.
+    Ladders,
+    /// Read from the trades themselves, one at a time, which no bar or
+    /// ladder keeps: see [`crate::orders`].
+    Prints,
     /// Not arithmetic on bars at all: which stretches of the day are which,
     /// which whoever supplies the bars already knows.
     Calendar,
@@ -35,6 +41,15 @@ pub const INDICATORS: &[(&str, Form)] = &[
     // Estimated from each bar's direction. Read from volume at price where
     // there is some: that reading is `volume_delta`, in [`AT_PRICE`].
     ("cvd", Form::Stepped),
+    // Each bar's own delta, estimated from its direction; read from volume
+    // at price where there is some, as `volume_delta` in [`AT_PRICE`] does.
+    ("volume_delta", Form::Stepped),
+    // Bought less sold at each price inside each bar, rows of
+    // [`crate::footprint`].
+    ("footprint", Form::Ladders),
+    // Single orders past a size, folded from the prints by
+    // [`crate::orders::Combiner`].
+    ("large_orders", Form::Prints),
     ("rsi", Form::Stepped),
     ("atr", Form::Stepped),
     ("stochastic", Form::Stepped),

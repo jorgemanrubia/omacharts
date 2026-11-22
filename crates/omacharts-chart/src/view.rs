@@ -22,6 +22,7 @@
 pub mod bench;
 mod compare;
 mod executions;
+mod footprint;
 mod market;
 mod pulse;
 mod selection;
@@ -251,6 +252,8 @@ struct State {
     /// Where the volume profile drawings read what traded at each price,
     /// as the study's periods do. `None` on a chart of a feed without it.
     volume_at_price: Option<VolumeAtPrice>,
+    /// What a footprint has read of each bar's ladder.
+    footprint: RefCell<footprint::Cache>,
     /// The lines the anchored VWAP drawings show, kept for the same reason:
     /// asked on every motion, changed only by the anchor or the bars.
     vwap_cache: RefCell<Vec<(VwapKey, Rc<Vec<omacharts_engine::indicators::vwap::Anchored>>)>>,
@@ -1454,6 +1457,7 @@ impl State {
             instrument: None,
             profile_cache: RefCell::new(Vec::new()),
             volume_at_price: None,
+            footprint: RefCell::default(),
             vwap_cache: RefCell::new(Vec::new()),
             timeframe: Timeframe::days(1),
             first: 0,
@@ -7605,6 +7609,11 @@ fn draw_candles(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &im
         compare::draw_own_line(cr, state, columns, to_y);
         return;
     }
+    // Zoomed in far enough, a footprint takes the candles' place.
+    if let Some(drawn) = footprint::shown(state, columns) {
+        footprint::draw(cr, state, drawn, columns, to_y);
+        return;
+    }
     candles(cr, state.bar_style, state.ohlc_thickness, &state.scheme, columns, to_y);
 }
 
@@ -8197,17 +8206,29 @@ fn draw_pane(
             drawn.indicator.params,
             omacharts_engine::Params::Cvd { style: omacharts_engine::indicators::cvd::Style::Line, .. }
         );
-        let (up, down) = state.delta_ink(drawn);
+        // A volume delta is painted as the other order flow indicators
+        // are, in its own colours and opacities if it has them.
+        let per_bar = matches!(drawn.indicator.params, omacharts_engine::Params::VolumeDelta { .. });
+        let (up, down, alphas) = match drawn.indicator.params.inks() {
+            Some(inks) => {
+                let (buy, sell) = footprint::inks(state, inks);
+                (buy, sell, inks.alphas(indicators::flow::VOLUME_DELTA_ALPHA))
+            }
+            None => {
+                let (up, down) = state.delta_ink(drawn);
+                (Cow::Borrowed(up), Cow::Borrowed(down), (1.0, 1.0))
+            }
+        };
         let chip = match line {
             true => {
                 draw_delta_line(cr, state, drawn, shown, columns, &strip, lit);
                 drawn.color.as_str()
             }
             false => {
-                draw_delta_candles(cr, state, shown, columns, &strip, (up, down), lit);
+                draw_delta_candles(cr, state, shown, columns, &strip, (&up, &down), alphas, per_bar, lit);
                 match delta.last() {
-                    Some(last) if last.close < last.open => down,
-                    _ => up,
+                    Some(last) if last.close < last.open => &*down,
+                    _ => &*up,
                 }
             }
         };
@@ -8285,13 +8306,33 @@ fn draw_pane(
 
 /// The bars of a cumulative delta a column stands for, as one: from the
 /// first one's open to the last one's close, as far as any went either way.
-fn delta_column(bars: &[indicators::cvd::DeltaBar]) -> Option<indicators::cvd::DeltaBar> {
+fn delta_column(bars: &[indicators::cvd::DeltaBar], per_bar: bool) -> Option<indicators::cvd::DeltaBar> {
+    if per_bar {
+        return bar_delta_column(bars);
+    }
     let (first, last) = (bars.first()?, bars.last()?);
     let mut column = indicators::cvd::DeltaBar { close: last.close, starts: bars.iter().any(|b| b.starts), ..*first };
     for bar in bars {
         column.high = column.high.max(bar.high);
         column.low = column.low.min(bar.low);
     }
+    Some(column)
+}
+
+/// The bars of a volume delta a column stands for, as one: each starts
+/// from nought, so the column's runs on from one to the next, from nought
+/// to their sum, as far as it went either way on the way.
+fn bar_delta_column(bars: &[indicators::cvd::DeltaBar]) -> Option<indicators::cvd::DeltaBar> {
+    let first = bars.first()?;
+    let mut column = indicators::cvd::DeltaBar { open: 0.0, high: 0.0, low: 0.0, close: 0.0, ..*first };
+    let mut running = 0.0;
+    for bar in bars {
+        column.high = column.high.max(running + bar.high);
+        column.low = column.low.min(running + bar.low);
+        running += bar.close;
+        column.estimated |= bar.estimated;
+    }
+    column.close = running;
     Some(column)
 }
 
@@ -8306,6 +8347,8 @@ fn draw_delta_candles(
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
     (up, down): (&str, &str),
+    (up_alpha, down_alpha): (f64, f64),
+    per_bar: bool,
     lit: bool,
 ) {
     cr.save().ok();
@@ -8315,7 +8358,7 @@ fn draw_delta_candles(
         for rising in [false, true] {
             let mut any = false;
             for at in 0..columns.len() {
-                let Some(bar) = bars.get(columns.span(at)).and_then(delta_column) else { continue };
+                let Some(bar) = bars.get(columns.span(at)).and_then(|run| delta_column(run, per_bar)) else { continue };
                 if (bar.close >= bar.open) != rising || !bar.close.is_finite() {
                     continue;
                 }
@@ -8339,7 +8382,11 @@ fn draw_delta_candles(
                 }
             }
             if any {
-                let alpha = if glow { selection::glow_alpha(&state.theme) } else { 1.0 };
+                let alpha = match glow {
+                    true => selection::glow_alpha(&state.theme),
+                    false if rising => up_alpha,
+                    false => down_alpha,
+                };
                 colors::set_source_alpha(cr, if rising { up } else { down }, alpha);
                 let _ = cr.fill();
             }
@@ -8365,7 +8412,7 @@ fn draw_delta_line(
         return;
     }
     let point = |at: usize| {
-        let bar = bars.get(columns.span(at)).and_then(delta_column)?;
+        let bar = bars.get(columns.span(at)).and_then(|run| delta_column(run, false))?;
         Some((columns.x(at), to_y(bar.close), bar.starts))
     };
     if lit {
@@ -10548,7 +10595,13 @@ fn draw_indicator_fills(
             // These draw in a strip of their own, where the price scale does
             // not reach, so there is nothing to do over the candles; and time
             // has its own ground beneath everything.
-            Output::Volume { .. } | Output::Pane(_) | Output::Line(_) | Output::Time(_) | Output::Unmet(_) => {}
+            Output::Volume { .. }
+            | Output::Pane(_)
+            | Output::Line(_)
+            | Output::Time(_)
+            | Output::Unmet(_)
+            | Output::Footprint
+            | Output::LargeOrders => {}
         }
     }
 }
@@ -10649,7 +10702,9 @@ fn draw_indicator_lines(
             | Output::Volume { .. }
             | Output::Pane(_)
             | Output::Time(_)
-            | Output::Unmet(_) => {}
+            | Output::Unmet(_)
+            | Output::Footprint => {}
+            Output::LargeOrders => {}
         }
     }
 }

@@ -12,6 +12,7 @@
 pub mod bands;
 pub mod bollinger;
 pub mod cvd;
+pub mod flow;
 pub mod market;
 pub mod oscillators;
 mod paint;
@@ -128,6 +129,9 @@ pub enum Kind {
     MarketProfile,
     Volume,
     Cvd,
+    VolumeDelta,
+    Footprint,
+    LargeOrders,
     Rsi,
     Macd,
     Atr,
@@ -164,18 +168,20 @@ pub fn unmet(needs: Needs, context: &Context) -> Option<Output> {
 pub enum Category {
     Averages,
     Volume,
+    OrderFlow,
     Momentum,
     Time,
 }
 
 impl Category {
-    pub const ALL: [Category; 4] =
-        [Category::Averages, Category::Volume, Category::Momentum, Category::Time];
+    pub const ALL: [Category; 5] =
+        [Category::Averages, Category::Volume, Category::OrderFlow, Category::Momentum, Category::Time];
 
     pub fn label(self) -> &'static str {
         match self {
             Category::Averages => "Averages and bands",
             Category::Volume => "Volume",
+            Category::OrderFlow => "Order flow",
             Category::Momentum => "Momentum and volatility",
             Category::Time => "Sessions and time",
         }
@@ -186,6 +192,7 @@ impl Category {
         match self {
             Category::Averages => &["average", "averages", "bands", "trend", "overlay"],
             Category::Volume => &["volume"],
+            Category::OrderFlow => &["order flow", "orderflow", "delta", "aggressor", "bid ask", "tape"],
             Category::Momentum => &["momentum", "volatility", "oscillator", "oscillators"],
             Category::Time => &["session", "sessions", "time", "hours", "rth", "eth"],
         }
@@ -198,7 +205,7 @@ impl Category {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 13] = [
+    pub const ALL: [Kind; 16] = [
         Kind::Volume,
         Kind::Sma,
         Kind::Ema,
@@ -210,7 +217,13 @@ impl Kind {
         // Beside the volume profile: the same picture of a period, by time
         // rather than volume, and the two are drawn side by side.
         Kind::MarketProfile,
+        // Order flow, from the whole session down to the single trade: the
+        // running delta, each bar's delta, each price's inside the bar, and
+        // the orders big enough to stand out on their own.
         Kind::Cvd,
+        Kind::VolumeDelta,
+        Kind::Footprint,
+        Kind::LargeOrders,
         Kind::Rsi,
         Kind::Macd,
         Kind::Atr,
@@ -221,18 +234,22 @@ impl Kind {
     pub fn category(self) -> Category {
         match self {
             Kind::Sma | Kind::Ema | Kind::Vwap | Kind::Bollinger => Category::Averages,
-            Kind::Volume | Kind::VolumeProfile | Kind::MarketProfile | Kind::Cvd => Category::Volume,
+            Kind::Volume | Kind::VolumeProfile | Kind::MarketProfile => Category::Volume,
+            Kind::Cvd | Kind::VolumeDelta | Kind::Footprint | Kind::LargeOrders => Category::OrderFlow,
             Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic => Category::Momentum,
             Kind::SessionTimes => Category::Time,
         }
     }
 
-    /// What it cannot be computed without. Every indicator there is needs
-    /// bars and nothing more; one that needs volume at price — a footprint,
-    /// delta — is shown on a chart whose source has none as one line saying
-    /// so, never as an estimate.
+    /// What it cannot be computed without. Most need bars and nothing more;
+    /// one that needs volume at price — the footprint, the large orders — is
+    /// shown on a chart whose source has none as one line saying so, never
+    /// as an estimate.
     pub fn needs(self) -> Needs {
-        Needs::Bars
+        match self {
+            Kind::Footprint | Kind::LargeOrders => Needs::VolumeAtPrice,
+            _ => Needs::Bars,
+        }
     }
 
     /// Whether it draws more exactly from volume at price when the chart's
@@ -242,7 +259,7 @@ impl Kind {
     /// ladders only while one of its indicators says yes here or needs them
     /// outright.
     pub fn uses_volume_at_price(self) -> bool {
-        matches!(self, Kind::VolumeProfile | Kind::Cvd) || self.needs() == Needs::VolumeAtPrice
+        matches!(self, Kind::VolumeProfile | Kind::Cvd | Kind::VolumeDelta) || self.needs() == Needs::VolumeAtPrice
     }
 
     /// Whether a new one is named in the chart's legend. Session shading is
@@ -281,6 +298,9 @@ impl Kind {
             Kind::MarketProfile => "Market Profile",
             Kind::Volume => "Volume",
             Kind::Cvd => "Cumulative Delta",
+            Kind::VolumeDelta => "Volume Delta",
+            Kind::Footprint => "Footprint",
+            Kind::LargeOrders => "Large Orders",
             Kind::Rsi => "Relative Strength Index",
             Kind::Atr => "Average True Range",
             Kind::Stochastic => "Stochastic",
@@ -302,6 +322,9 @@ impl Kind {
             Kind::MarketProfile => "TPO",
             Kind::Volume => "Vol",
             Kind::Cvd => "CVD",
+            Kind::VolumeDelta => "VD",
+            Kind::Footprint => "FP",
+            Kind::LargeOrders => "Large",
             Kind::Rsi => "RSI",
             Kind::Atr => "ATR",
             Kind::Stochastic => "Stoch",
@@ -332,6 +355,16 @@ impl Kind {
                 "cumulative delta", "cvd", "delta", "order flow", "cumulative volume delta", "volume delta",
                 "aggressor", "bid ask",
             ],
+            Kind::VolumeDelta => &[
+                "volume delta", "vd", "delta", "bar delta", "order flow", "aggressor", "bid ask",
+            ],
+            Kind::Footprint => &[
+                "footprint", "fp", "delta", "order flow", "bid ask", "numbers bars", "cluster", "volume at price",
+            ],
+            Kind::LargeOrders => &[
+                "large orders", "large trades", "big trades", "bubbles", "block trades", "whales", "tape",
+                "order flow", "large volume",
+            ],
             Kind::Rsi => &["rsi", "relative strength", "oscillator", "momentum", "overbought"],
             Kind::Atr => &["atr", "average true range", "volatility", "range", "stop"],
             Kind::Stochastic => &["stochastic", "stoch", "kd", "%k", "oscillator", "momentum", "overbought"],
@@ -354,6 +387,9 @@ impl Kind {
             Kind::MarketProfile => "market_profile",
             Kind::Volume => "volume",
             Kind::Cvd => "cvd",
+            Kind::VolumeDelta => "volume_delta",
+            Kind::Footprint => "footprint",
+            Kind::LargeOrders => "large_orders",
             Kind::Rsi => "rsi",
             Kind::Atr => "atr",
             Kind::Stochastic => "stochastic",
@@ -367,7 +403,7 @@ impl Kind {
     /// the order of the strips is edited where nothing has been computed: the
     /// settings list, and the command line.
     pub fn in_own_pane(self) -> bool {
-        matches!(self, Kind::Volume | Kind::Cvd | Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic)
+        matches!(self, Kind::Volume | Kind::Cvd | Kind::VolumeDelta | Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic)
     }
 
     pub fn default_params(self) -> Params {
@@ -458,6 +494,21 @@ impl Kind {
                 style: cvd::Style::Candles,
                 height: 0.16,
                 colouring: None,
+            },
+            Kind::VolumeDelta => {
+                Params::VolumeDelta { height: flow::volume_delta_height(), inks: flow::Inks::default() }
+            }
+            Kind::Footprint => Params::Footprint {
+                zoom: flow::FOOTPRINT_ZOOM,
+                intensity: true,
+                inks: flow::Inks::default(),
+            },
+            Kind::LargeOrders => Params::LargeOrders {
+                regular: flow::REGULAR_THRESHOLD,
+                extended: flow::EXTENDED_THRESHOLD,
+                compare: flow::Compare::default(),
+                combine: true,
+                inks: flow::Inks::default(),
             },
             // Fourteen bars, overbought at seventy, oversold at thirty: the
             // numbers Wilder published and the ones every other chart shows,
@@ -823,6 +874,41 @@ pub enum Params {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         colouring: Option<BarColouring>,
     },
+    /// Each bar's own delta in a strip of its own, as a candle from nought.
+    VolumeDelta {
+        #[serde(default = "flow::volume_delta_height")]
+        height: f64,
+        #[serde(default)]
+        inks: flow::Inks,
+    },
+    /// Each bar's delta at each price beside a narrow candle, from the bar
+    /// width `zoom` up.
+    Footprint {
+        /// The bar width, in pixels, it is drawn from.
+        #[serde(default = "flow::footprint_zoom")]
+        zoom: f64,
+        /// Whether a row is filled more strongly the bigger its delta, or
+        /// every row alike.
+        #[serde(default = "flow::yes")]
+        intensity: bool,
+        #[serde(default)]
+        inks: flow::Inks,
+    },
+    /// A bubble at each order bigger than the threshold of the hours it
+    /// traded in.
+    LargeOrders {
+        #[serde(default = "flow::regular_threshold")]
+        regular: u64,
+        #[serde(default = "flow::extended_threshold")]
+        extended: u64,
+        #[serde(default)]
+        compare: flow::Compare,
+        /// Whether prints of one moment and one side are one order.
+        #[serde(default = "flow::yes")]
+        combine: bool,
+        #[serde(default)]
+        inks: flow::Inks,
+    },
     Rsi {
         period: usize,
         height: f64,
@@ -925,6 +1011,7 @@ impl Params {
         match self {
             Params::Volume { height, .. }
             | Params::Cvd { height, .. }
+            | Params::VolumeDelta { height, .. }
             | Params::Rsi { height, .. }
             | Params::Atr { height, .. }
             | Params::Macd { height, .. }
@@ -934,7 +1021,28 @@ impl Params {
             | Params::Bollinger { .. }
             | Params::VolumeProfile { .. }
             | Params::MarketProfile { .. }
+            | Params::Footprint { .. }
+            | Params::LargeOrders { .. }
             | Params::SessionTimes { .. } => None,
+        }
+    }
+
+    /// How an order flow indicator paints buying and selling.
+    pub fn inks(&self) -> Option<&flow::Inks> {
+        match self {
+            Params::VolumeDelta { inks, .. } | Params::Footprint { inks, .. } | Params::LargeOrders { inks, .. } => {
+                Some(inks)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn inks_mut(&mut self) -> Option<&mut flow::Inks> {
+        match self {
+            Params::VolumeDelta { inks, .. } | Params::Footprint { inks, .. } | Params::LargeOrders { inks, .. } => {
+                Some(inks)
+            }
+            _ => None,
         }
     }
 
@@ -950,6 +1058,9 @@ impl Params {
             | Params::Bollinger { .. }
             | Params::Volume { .. }
             | Params::Cvd { .. }
+            | Params::VolumeDelta { .. }
+            | Params::Footprint { .. }
+            | Params::LargeOrders { .. }
             | Params::Rsi { .. }
             | Params::Atr { .. }
             | Params::Macd { .. }
@@ -1224,9 +1335,10 @@ impl Indicator {
     /// after its name, "CVD ≈ · Session". See [`Output::is_estimated`].
     pub fn legend_for(&self, timeframe: Timeframe, estimated: bool) -> String {
         let label = self.label_for(timeframe);
-        match estimated && self.kind == Kind::Cvd {
-            true => label.replacen("CVD", "CVD ≈", 1),
-            false => label,
+        match (estimated, self.kind) {
+            (true, Kind::Cvd) => label.replacen("CVD", "CVD ≈", 1),
+            (true, Kind::VolumeDelta) => label.replacen("VD", "VD ≈", 1),
+            _ => label,
         }
     }
 
@@ -1260,6 +1372,13 @@ impl Indicator {
             Params::Cvd { reset, .. } => match reset {
                 Some(reset) => format!("CVD · {}", effective(*reset).label()),
                 None => "CVD".to_string(),
+            },
+            Params::VolumeDelta { .. } => "VD".to_string(),
+            Params::Footprint { .. } => "FP".to_string(),
+            // The thresholds are what tell two of these apart.
+            Params::LargeOrders { regular, extended, .. } => match regular == extended {
+                true => format!("Large > {regular}"),
+                false => format!("Large > {regular} · {extended}"),
             },
             Params::Rsi { period, .. } | Params::Atr { period, .. } => {
                 format!("{} {period}", self.kind.short_name())
@@ -1355,6 +1474,11 @@ pub enum Output {
     Pane(Pane),
     /// Stretches of time shaded behind the bars.
     Time(Time),
+    /// A footprint in place of the candles, from the bar width its settings
+    /// say, read from the chart's ladders as it is drawn.
+    Footprint,
+    /// A bubble at each large order, from the chart's prints.
+    LargeOrders,
     /// Nothing to draw, and the one line that says why: what it needs, this
     /// chart's source does not have. See [`unmet`].
     Unmet(&'static str),
@@ -1892,6 +2016,32 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 delta: Some(delta),
             })
         }
+        (Kind::VolumeDelta, Params::VolumeDelta { height, .. }) => {
+            let days = context.ladders.and(context.instrument).map(Days::new);
+            let source = match (context.ladders, &days) {
+                (Some(held), Some(days)) => Some(cvd::Source { held, days }),
+                _ => None,
+            };
+            let work = |memo: Option<&mut cvd::Memo>| cvd::per_bar(bars, session_origin, timeframe, source.as_ref(), memo);
+            let delta = match context.memos {
+                Some(memos) => memos.cvd.with(indicator.id, |memo| work(Some(memo))),
+                None => work(None),
+            };
+            Output::Pane(Pane {
+                values: delta.iter().map(|bar| Some(bar.close)).collect(),
+                signal: None,
+                histogram: None,
+                height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
+                bounds: None,
+                guides: vec![0.0],
+                band: None,
+                delta: Some(delta),
+            })
+        }
+        // Drawn from the chart's ladders and its prints as they stand when
+        // it is drawn, which is no series to compute here.
+        (Kind::Footprint, Params::Footprint { .. }) => Output::Footprint,
+        (Kind::LargeOrders, Params::LargeOrders { .. }) => Output::LargeOrders,
         (Kind::Volume, Params::Volume { height, .. }) => Output::Volume {
             values: bars.iter().map(|bar| bar.volume).collect(),
             height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
@@ -2071,6 +2221,31 @@ mod tests {
     }
 
     use super::*;
+
+    /// A cumulative delta saved before it moved into Order flow reads back
+    /// as the same indicator and writes back the same bytes: only its family
+    /// changed, never its name in a workspace.
+    #[test]
+    fn a_cumulative_delta_saved_under_volume_loads_unchanged() {
+        let saved = serde_json::json!({
+            "id": 4,
+            "kind": "cvd",
+            "params": { "kind": "cvd", "reset": "week", "style": "line", "height": 0.25, "colouring": "theme-quiet" },
+            "color": { "kind": "swatch", "name": "Teal" },
+            "stroke": { "width": 1.5, "style": "solid" },
+            "visible": true,
+            "above_price": false,
+            "in_legend": true
+        });
+        let read: Indicator = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(read.kind, Kind::Cvd);
+        assert_eq!(read.kind.category(), Category::OrderFlow);
+        let Params::Cvd { reset, style, height, colouring } = read.params else { panic!("{:?}", read.params) };
+        assert_eq!((reset, style, height), (Some(Reset::Week), cvd::Style::Line, 0.25));
+        assert_eq!(colouring, Some(BarColouring::Quiet));
+        assert_eq!(serde_json::to_value(&read).unwrap(), saved, "written back as it was read");
+        assert_eq!(Kind::Cvd.key(), "cvd");
+    }
 
     /// Every indicator and band stored before its colours carried an
     /// opacity reads back with none set, drawn as it always was; one nobody
@@ -3368,17 +3543,23 @@ mod tests {
             let bare = Context::of(&instrument, Timeframe::minutes(1), chrono_tz::UTC);
             let rich = bare.with_ladders(Some(&held));
 
-            // What a footprint would declare.
-            let footprint = Needs::VolumeAtPrice;
+            // What a footprint declares.
+            let footprint = Kind::Footprint.needs();
+            assert_eq!(footprint, Needs::VolumeAtPrice);
             assert_eq!(unmet(footprint, &bare), Some(Output::Unmet("Needs a data feed with volume at price")));
             assert_eq!(unmet(footprint, &rich), None);
 
+            // Only the two that read single trades or prices need them;
+            // everything else, the deltas included, falls back to bars.
             for kind in Kind::ALL {
-                assert_eq!(kind.needs(), Needs::Bars, "{kind:?}");
-                assert_eq!(unmet(kind.needs(), &bare), None);
+                let wants = matches!(kind, Kind::Footprint | Kind::LargeOrders);
+                assert_eq!(kind.needs() == Needs::VolumeAtPrice, wants, "{kind:?}");
+                if !wants {
+                    assert_eq!(unmet(kind.needs(), &bare), None);
+                }
             }
             let users: Vec<Kind> = Kind::ALL.into_iter().filter(|k| k.uses_volume_at_price()).collect();
-            assert_eq!(users, vec![Kind::VolumeProfile, Kind::Cvd]);
+            assert_eq!(users, vec![Kind::VolumeProfile, Kind::Cvd, Kind::VolumeDelta, Kind::Footprint, Kind::LargeOrders]);
         }
 
         /// A volume profile drawn over a span that is one of the study's

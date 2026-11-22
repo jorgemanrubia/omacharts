@@ -4845,6 +4845,44 @@ struct Edits {
     shade_alpha: Option<f64>,
     visible: Option<bool>,
     legend: Option<bool>,
+    /// The order flow indicators' buying and selling colours; `Some(None)`
+    /// is `none`, the colouring's own.
+    buy_color: Option<Option<ColorChoice>>,
+    sell_color: Option<Option<ColorChoice>>,
+    /// How solid each is drawn, as `Parts` are; `Some(None)` is `default`.
+    buy_alpha: Option<Option<f64>>,
+    sell_alpha: Option<Option<f64>>,
+    /// The bar width a footprint is drawn from, in pixels.
+    show_from: Option<f64>,
+    /// Whether a footprint's rows are filled by their strength.
+    intensity: Option<bool>,
+    /// The sizes a large order is bigger than, in and out of regular hours.
+    rth_threshold: Option<u64>,
+    eth_threshold: Option<u64>,
+    /// What a large order's bubble is sized against.
+    size_against: Option<omacharts_engine::indicators::flow::Compare>,
+    /// Whether prints of one moment and one side are one order.
+    combine: Option<bool>,
+}
+
+/// `on` or `off`, as a switch flag is given.
+fn switch(m: &clap::ArgMatches, id: &str) -> Result<Option<bool>, Fault> {
+    match arg(m, id).map(String::as_str) {
+        None => Ok(None),
+        Some("on") => Ok(Some(true)),
+        Some("off") => Ok(Some(false)),
+        Some(other) => Err(Fault::usage(format!("--{id} is on or off, not {other:?}"))),
+    }
+}
+
+/// A large order's threshold: a whole number of contracts, nought or more.
+fn threshold(m: &clap::ArgMatches, id: &str) -> Result<Option<u64>, Fault> {
+    let Some(text) = arg(m, id) else { return Ok(None) };
+    let most = crate::ui::chart_settings::LARGE_MAX_THRESHOLD;
+    match text.parse::<u64>() {
+        Ok(size) if size <= most => Ok(Some(size)),
+        _ => Err(Fault::usage(format!("--{id} takes a whole number of contracts from 0 to {most}, not {text:?}"))),
+    }
 }
 
 /// A time of day as `--from` or `--to` was given it.
@@ -5112,6 +5150,30 @@ impl Edits {
             },
             visible: arg(m, "visible").map(|v| v == "on"),
             legend: arg(m, "legend").map(|v| v == "on"),
+            buy_color: match arg(m, "buy-color").map(String::as_str) {
+                Some("none") => Some(None),
+                _ => colour(m, "buy-color")?.map(Some),
+            },
+            sell_color: match arg(m, "sell-color").map(String::as_str) {
+                Some("none") => Some(None),
+                _ => colour(m, "sell-color")?.map(Some),
+            },
+            buy_alpha: Parts::part(m, "buy-transparency")?,
+            sell_alpha: Parts::part(m, "sell-transparency")?,
+            show_from: {
+                use omacharts_engine::indicators::flow::{MAX_FOOTPRINT_ZOOM, MIN_FOOTPRINT_ZOOM};
+                bounded(m, "show-from", MIN_FOOTPRINT_ZOOM, MAX_FOOTPRINT_ZOOM)?
+            },
+            intensity: switch(m, "intensity")?,
+            rth_threshold: threshold(m, "rth-threshold")?,
+            eth_threshold: threshold(m, "eth-threshold")?,
+            size_against: match arg(m, "size-against") {
+                None => None,
+                Some(text) => Some(omacharts_engine::indicators::flow::Compare::from_key(text).ok_or_else(|| {
+                    Fault::usage(format!("{text:?} is not what a bubble is sized against; use visible, session or hours"))
+                })?),
+            },
+            combine: switch(m, "combine")?,
         })
     }
 
@@ -5184,6 +5246,95 @@ impl Edits {
             && self.zone.is_none()
             && self.visible.is_none()
             && self.legend.is_none()
+            && self.buy_color.is_none()
+            && self.sell_color.is_none()
+            && self.buy_alpha.is_none()
+            && self.sell_alpha.is_none()
+            && self.show_from.is_none()
+            && self.intensity.is_none()
+            && self.rth_threshold.is_none()
+            && self.eth_threshold.is_none()
+            && self.size_against.is_none()
+            && self.combine.is_none()
+    }
+
+    /// The flags only the order flow indicators take: their colours, and
+    /// what each one has of its own.
+    fn apply_flow(&self, params: &mut Value, kind: IndicatorKind) -> Result<(), Fault> {
+        let refuse = |what: &str| Fault::usage(format!("{} has no {what}", kind.short_name()));
+        let flow = matches!(kind, IndicatorKind::VolumeDelta | IndicatorKind::Footprint | IndicatorKind::LargeOrders);
+        for (choice, key, what) in [(&self.buy_color, "buy", "buying colour"), (&self.sell_color, "sell", "selling colour")] {
+            if let Some(choice) = choice {
+                if !flow {
+                    return Err(refuse(what));
+                }
+                match choice {
+                    Some(choice) => params["inks"][key] = to_value(choice)?,
+                    None => {
+                        if let Some(inks) = params["inks"].as_object_mut() {
+                            inks.remove(key);
+                        }
+                    }
+                }
+            }
+        }
+        for (alpha, key, what) in
+            [(self.buy_alpha, "buy_alpha", "buying transparency"), (self.sell_alpha, "sell_alpha", "selling transparency")]
+        {
+            if let Some(alpha) = alpha {
+                if !flow {
+                    return Err(refuse(what));
+                }
+                match alpha {
+                    Some(alpha) => params["inks"][key] = json!(alpha),
+                    None => {
+                        if let Some(inks) = params["inks"].as_object_mut() {
+                            inks.remove(key);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(zoom) = self.show_from {
+            match kind == IndicatorKind::Footprint {
+                true => params["zoom"] = json!(zoom),
+                false => return Err(refuse("bar width to show from")),
+            }
+        }
+        if let Some(on) = self.intensity {
+            match kind == IndicatorKind::Footprint {
+                true => params["intensity"] = json!(on),
+                false => return Err(refuse("intensity")),
+            }
+        }
+        for (size, key, what) in
+            [(self.rth_threshold, "regular", "RTH threshold"), (self.eth_threshold, "extended", "ETH threshold")]
+        {
+            if let Some(size) = size {
+                match kind == IndicatorKind::LargeOrders {
+                    true => params[key] = json!(size),
+                    false => return Err(refuse(what)),
+                }
+            }
+        }
+        if let Some(compare) = self.size_against {
+            match kind == IndicatorKind::LargeOrders {
+                true => params["compare"] = json!(compare.key()),
+                false => return Err(refuse("bubble sizing")),
+            }
+        }
+        if let Some(on) = self.combine {
+            match kind == IndicatorKind::LargeOrders {
+                true => params["combine"] = json!(on),
+                false => return Err(refuse("combining of prints")),
+            }
+        }
+        if flow && params["inks"].as_object().is_some_and(|inks| inks.is_empty()) {
+            if let Some(params) = params.as_object_mut() {
+                params.remove("inks");
+            }
+        }
+        Ok(())
     }
 
     /// Write what was given, and refuse what this indicator has no use for.
@@ -5529,6 +5680,26 @@ impl Edits {
                 IndicatorKind::Volume | IndicatorKind::VolumeProfile | IndicatorKind::Cvd => {
                     params["colouring"] = to_value(colouring)?;
                 }
+                IndicatorKind::VolumeDelta | IndicatorKind::Footprint | IndicatorKind::LargeOrders if word == "chart" => {
+                    return Err(Fault::usage(format!(
+                        "{} follows the colouring chosen in Preferences; use default",
+                        kind.short_name()
+                    )));
+                }
+                IndicatorKind::VolumeDelta | IndicatorKind::Footprint | IndicatorKind::LargeOrders if !telling => {
+                    return Err(Fault::usage(format!(
+                        "{word} paints rises and falls alike; {} takes default, theme, theme-soft or theme-quiet",
+                        kind.short_name()
+                    )));
+                }
+                IndicatorKind::VolumeDelta | IndicatorKind::Footprint | IndicatorKind::LargeOrders => match colouring {
+                    Some(colouring) => params["inks"]["colouring"] = to_value(colouring)?,
+                    None => {
+                        if let Some(inks) = params["inks"].as_object_mut() {
+                            inks.remove("colouring");
+                        }
+                    }
+                },
                 _ => return Err(refuse("colouring")),
             }
         }
@@ -5635,7 +5806,22 @@ impl Edits {
             }
         }
 
+        self.apply_flow(&mut stored["params"], kind)?;
         self.apply_ranges(stored, kind)?;
+
+        // The order flow indicators have no line: what paints them is
+        // their colouring and their sides' colours.
+        if matches!(kind, IndicatorKind::VolumeDelta | IndicatorKind::Footprint | IndicatorKind::LargeOrders) {
+            let what = match () {
+                _ if self.color.is_some() => Some("line colour; use --buy-color and --sell-color"),
+                _ if self.transparency.is_some() => Some("line transparency; use --buy-transparency and --sell-transparency"),
+                _ if self.width.is_some() || self.style.is_some() => Some("line"),
+                _ => None,
+            };
+            if let Some(what) = what {
+                return Err(Fault::usage(format!("{} has no {what}", kind.short_name())));
+            }
+        }
 
         // Session Times has no colour of its own: each range carries one,
         // and `--color` went to them above.
@@ -10053,6 +10239,124 @@ mod tests {
             let out = run(&format!("chart indicator set volume --book Macro --colouring {back}"), &store);
             assert_eq!(out.code, 0, "{back}: {}", out.err);
             assert_eq!(colouring(&store), None, "{back}");
+        }
+    }
+
+    /// Every setting of the order flow indicators is a flag, read back as it
+    /// was given, and refused on any indicator that has no such setting.
+    #[test]
+    fn the_order_flow_indicators_are_set_up_from_commands() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        let listed = |store: &Store, key: &str| {
+            let out = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&out.out).unwrap();
+            parsed["indicators"]
+                .as_array()
+                .and_then(|all| all.iter().find(|i| i["kind"] == key).cloned())
+                .unwrap_or(serde_json::Value::Null)
+        };
+        for key in ["volume_delta", "footprint", "large_orders"] {
+            let out = run(&format!("chart indicator add {key} --book Macro"), &store);
+            assert_eq!(out.code, 0, "{key}: {}", out.err);
+            assert_eq!(listed(&store, key)["kind"], key);
+        }
+        let fp = listed(&store, "footprint");
+        assert_eq!(fp["params"]["zoom"], 64.0);
+        assert_eq!(fp["params"]["intensity"], true);
+        let large = listed(&store, "large_orders");
+        assert_eq!((large["params"]["regular"].as_u64(), large["params"]["extended"].as_u64()), (Some(50), Some(20)));
+        assert_eq!(large["params"]["compare"], "session");
+        assert_eq!(large["params"]["combine"], true);
+
+        // The colours every one of the three takes.
+        for key in ["volume_delta", "footprint", "large_orders"] {
+            let out = run(
+                &format!(
+                    "chart indicator set {key} --book Macro --colouring theme-soft --buy-color Teal --sell-color #aa2233 \
+                     --buy-transparency 0.25 --sell-transparency 0.5"
+                ),
+                &store,
+            );
+            assert_eq!(out.code, 0, "{key}: {}", out.err);
+            let inks = &listed(&store, key)["params"]["inks"];
+            assert_eq!(inks["colouring"], "theme-soft", "{key}: {inks}");
+            assert_eq!(inks["buy"]["name"], "Teal", "{key}: {inks}");
+            assert_eq!(inks["sell"]["hex"], "#aa2233", "{key}: {inks}");
+            assert_eq!((inks["buy_alpha"].as_f64(), inks["sell_alpha"].as_f64()), (Some(0.75), Some(0.5)));
+            let out = run(
+                &format!(
+                    "chart indicator set {key} --book Macro --colouring default --buy-color none --sell-color none \
+                     --buy-transparency default --sell-transparency default"
+                ),
+                &store,
+            );
+            assert_eq!(out.code, 0, "{key}: {}", out.err);
+            assert!(listed(&store, key)["params"]["inks"].is_null(), "{key}: back to nothing written");
+            for refused in [
+                "--colouring chart",
+                "--colouring vivid",
+                "--color Teal",
+                "--transparency 0.3",
+                "--width 2",
+                "--buy-transparency 2",
+            ] {
+                let out = run(&format!("chart indicator set {key} --book Macro {refused}"), &store);
+                assert_ne!(out.code, 0, "{key} {refused}");
+            }
+        }
+
+        let out = run("chart indicator set volume_delta --book Macro --height 0.3", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(listed(&store, "volume_delta")["params"]["height"], 0.3);
+
+        let out = run("chart indicator set footprint --book Macro --show-from 120 --intensity off", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let fp = listed(&store, "footprint");
+        assert_eq!((fp["params"]["zoom"].as_f64(), fp["params"]["intensity"].as_bool()), (Some(120.0), Some(false)));
+
+        let out = run(
+            "chart indicator set large_orders --book Macro --rth-threshold 75 --eth-threshold 0 --size-against hours --combine off",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let large = listed(&store, "large_orders");
+        assert_eq!((large["params"]["regular"].as_u64(), large["params"]["extended"].as_u64()), (Some(75), Some(0)));
+        assert_eq!((large["params"]["compare"].as_str(), large["params"]["combine"].as_bool()), (Some("hours"), Some(false)));
+        for against in ["visible", "session"] {
+            let out = run(&format!("chart indicator set large_orders --book Macro --size-against {against}"), &store);
+            assert_eq!(out.code, 0, "{}", out.err);
+            assert_eq!(listed(&store, "large_orders")["params"]["compare"], against);
+        }
+
+        for refused in [
+            "chart indicator set footprint --book Macro --show-from 10",
+            "chart indicator set footprint --book Macro --intensity maybe",
+            "chart indicator set footprint --book Macro --rth-threshold 5",
+            "chart indicator set footprint --book Macro --height 0.3",
+            "chart indicator set volume_delta --book Macro --intensity on",
+            "chart indicator set large_orders --book Macro --rth-threshold -1",
+            "chart indicator set large_orders --book Macro --eth-threshold 2.5",
+            "chart indicator set large_orders --book Macro --size-against week",
+            "chart indicator set large_orders --book Macro --show-from 100",
+            "chart indicator set cvd --book Macro --buy-color Teal",
+        ] {
+            let out = run(refused, &store);
+            assert_ne!(out.code, 0, "{refused}");
+        }
+        assert_eq!(listed(&store, "large_orders")["params"]["regular"], 75, "a refusal leaves the chart as it was");
+
+        // Hidden, shown and taken away, as any indicator is.
+        for key in ["volume_delta", "footprint", "large_orders"] {
+            let out = run(&format!("chart indicator set {key} --book Macro --visible off --legend off"), &store);
+            assert_eq!(out.code, 0, "{key}: {}", out.err);
+            assert_eq!(listed(&store, key)["visible"], false);
+            let out = run(&format!("chart indicator set {key} --book Macro --visible on"), &store);
+            assert_eq!(out.code, 0, "{key}: {}", out.err);
+            assert_eq!(listed(&store, key)["visible"], true);
+            let out = run(&format!("chart indicator remove {key} --book Macro"), &store);
+            assert_eq!(out.code, 0, "{key}: {}", out.err);
+            assert!(listed(&store, key).is_null(), "{key} removed");
         }
     }
 

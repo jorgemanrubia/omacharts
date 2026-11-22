@@ -501,8 +501,10 @@ const CONTINUOUS: &[&str] = &["back-adjusted", "as-traded"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
 const KINDS: &[&str] = &[
     "volume", "sma", "ema", "vwap", "bollinger", "volume_profile", "market_profile", "rsi", "macd", "atr",
-    "stochastic", "session_times", "cvd",
+    "stochastic", "session_times", "cvd", "volume_delta", "footprint", "large_orders",
 ];
+/// What a large order's bubble is sized against.
+const SIZE_AGAINST: &[&str] = &["visible", "session", "hours"];
 /// The ranges Session Times offers ready made, and `custom`.
 const RANGE_PRESETS: &[&str] = &["eth", "rth", "asia", "london", "new_york", "custom"];
 /// What VWAP, a volume profile and a cumulative delta reset on, and
@@ -649,7 +651,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
     Flag::valued("up-transparency", "F", "how much of the chart shows through volume bars of a rising session, 0-1, or `default` to follow --opacity"),
     Flag::valued("down-transparency", "F", "the same for volume bars of a falling session"),
-    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles (default, or chart), or in theme, theme-soft or theme-quiet; and a delta volume profile's bought and sold rows or a cumulative delta's rises and falls: in the colouring chosen in Preferences (default), or theme, theme-soft or theme-quiet").of(VOLUME_COLOURINGS),
+    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles (default, or chart), or in theme, theme-soft or theme-quiet; and a delta volume profile's bought and sold rows, a cumulative delta's rises and falls, and the buying and selling of a volume delta, a footprint or large orders: in the colouring chosen in Preferences (default), or theme, theme-soft or theme-quiet").of(VOLUME_COLOURINGS),
     Flag::valued("opacity", "F", "how solid volume bars are drawn, rising and falling alike, 0-1; 1 is fully opaque"),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
     Flag::valued("d-transparency", "F", "how much of the chart shows through the stochastic's %D line, 0-1, or `default` to follow --transparency"),
@@ -658,7 +660,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("width", "F", "line thickness; 0 draws no line at all"),
     Flag::valued("line-style", "STYLE", "how the line is drawn").of(LINE_STYLES),
     Flag::valued("style", "STYLE", "the older name of --line-style").of(LINE_STYLES),
-    Flag::valued("height", "F", "share of the chart a pane takes, 0.05-0.95: volume, cumulative delta, RSI, MACD, ATR, stochastic"),
+    Flag::valued("height", "F", "share of the chart a pane takes, 0.05-0.95: volume, cumulative delta, volume delta, RSI, MACD, ATR, stochastic"),
     Flag::valued("overbought", "F", "the RSI or stochastic level drawn across the top, 0-100"),
     Flag::valued("oversold", "F", "the RSI or stochastic level drawn across the bottom, 0-100 and below overbought"),
     Flag::valued("bands", "LIST", "which bands are drawn: 1,2,3 for a VWAP, 1 or none for a Bollinger"),
@@ -672,6 +674,16 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("to", "TIME", "where a range ends; before --from runs past midnight"),
     Flag::valued("zone", "ZONE", "the clock a range keeps: an IANA name, or `chart` for the chart's own"),
     Flag::valued("shade-alpha", "F", "how solid a range's shading is, 0-1; every range, unless one is named"),
+    Flag::valued("buy-color", "COLOUR", "buying in a volume delta, a footprint or large orders, in place of its colouring's rise; none gives back the colouring's"),
+    Flag::valued("sell-color", "COLOUR", "selling in a volume delta, a footprint or large orders, in place of its colouring's fall; none gives back the colouring's"),
+    Flag::valued("buy-transparency", "F", "how much of the chart shows through buying in a volume delta, a footprint or large orders, 0-1, or `default` for its own (0 for a volume delta, 0.15 for a footprint's strongest row, 0.45 for bubbles)"),
+    Flag::valued("sell-transparency", "F", "the same for selling"),
+    Flag::valued("show-from", "PX", "the bar width, 24-400 pixels, a footprint is drawn from in place of the candles (default 64)"),
+    Flag::valued("intensity", "BOOL", "whether a footprint's rows are filled more solidly the bigger their delta against the biggest on screen (on unless set off); off fills every row alike").of(SWITCHES),
+    Flag::valued("rth-threshold", "N", "the size, in contracts, an order in regular hours has to be bigger than to be a large order (default 50)"),
+    Flag::valued("eth-threshold", "N", "the same outside regular hours (default 20)"),
+    Flag::valued("size-against", "WHAT", "what a large order's bubble is sized against: the large orders on screen, the session's, or the session's regular or extended hours' (default session)").of(SIZE_AGAINST),
+    Flag::valued("combine", "BOOL", "whether prints of one moment and one side count as one large order, their sizes added (on unless set off)").of(SWITCHES),
     Flag::valued("visible", "BOOL", "draw it at all").of(SWITCHES),
     Flag::valued("legend", "BOOL", "name it in the chart's legend; off by default for session_times").of(SWITCHES),
 ];

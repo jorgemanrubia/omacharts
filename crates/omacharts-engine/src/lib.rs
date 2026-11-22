@@ -16,6 +16,9 @@ pub mod formula;
 pub mod frame;
 pub mod indicators;
 pub mod ladders;
+/// The indicator arithmetic, for the chart to draw from without a
+/// dependency of its own.
+pub use omacharts_studies as studies;
 pub mod ink;
 pub mod link;
 pub mod log;

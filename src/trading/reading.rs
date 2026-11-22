@@ -268,6 +268,9 @@ pub fn values(drawn: &[Drawn], places: usize, label: impl Fn(&Drawn) -> String) 
                 }),
                 Output::Time(_) => return None,
                 Output::Unmet(why) => json!({"unmet": why}),
+                // Drawn from the ladders and the prints, with no series of
+                // their own to read back: their settings are in `indicator list`.
+                Output::Footprint | Output::LargeOrders => json!({}),
             };
             if let (Some(row), Value::Object(fields)) = (row.as_object_mut(), fields) {
                 row.extend(fields);
