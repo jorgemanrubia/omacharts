@@ -44,9 +44,18 @@ pub struct Fake {
     bars: Synthetic,
 }
 
+/// Milliseconds between the forming bar's moves, when set: a market that is
+/// open, for measuring what follows each tick. Unset, the bars stand still.
+pub const TICK_ENV: &str = "OMACHARTS_FAKE_TICK_MS";
+
 impl Fake {
     pub fn new() -> Fake {
-        Fake { bars: Synthetic::new(None) }
+        let tick = std::env::var(TICK_ENV)
+            .ok()
+            .and_then(|ms| ms.trim().parse::<u64>().ok())
+            .filter(|ms| *ms > 0)
+            .map(std::time::Duration::from_millis);
+        Fake { bars: Synthetic::new(tick) }
     }
 }
 
