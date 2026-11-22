@@ -42,10 +42,18 @@ use crate::colors;
 pub(super) const LEVELS: usize = 5;
 /// The weakest row's opacity, against the strongest's.
 const FAINT: f64 = 0.16;
+
+/// Monochrome's buying, never fainter than this share of its opacity, and
+/// its selling never stronger: one ink, two sides that do not overlap.
+const MONO_BUY_FLOOR: f64 = 0.45;
+const MONO_SELL_CEILING: f64 = 0.5;
+
+/// The space between a number and a row's edge.
+const PAD: f64 = 4.0;
 /// The least a row is drawn tall, in pixels: thinner, ticks fold together.
 const ROW_MIN: f64 = 3.0;
 /// The least a row is tall for its figure to be written in it.
-const FIGURE_MIN: f64 = 10.0;
+const FIGURE_MIN: f64 = 11.0;
 /// What a figure is written with: [`rows::short`]'s characters.
 const CHARS: &[u8; 14] = b"0123456789-.KM";
 const FACE: &str = "monospace";
@@ -311,6 +319,27 @@ fn paint(
     let (buy, sell) = inks(state, chosen_inks);
     let (buy_alpha, sell_alpha) = chosen_inks.alphas(flow::FOOTPRINT_ALPHA);
     let levels = if intensity { LEVELS } else { 1 };
+    // Each side's faintest and strongest. Monochrome paints both in one
+    // ink, so there the sides keep apart: buying from half solid up, selling
+    // no stronger than half, or the strongest sell reads as a middling buy.
+    let mono = chosen_inks.buy.is_none()
+        && chosen_inks.sell.is_none()
+        && chosen_inks.colouring.unwrap_or(state.house.0) == omacharts_engine::theme::BarColouring::Monochrome;
+    let span = |buying: bool| {
+        let full = if buying { buy_alpha } else { sell_alpha };
+        match (mono, buying) {
+            (false, _) => (FAINT * full, full),
+            (true, true) => (MONO_BUY_FLOOR * full, full),
+            (true, false) => (FAINT * full, MONO_SELL_CEILING * full),
+        }
+    };
+    let alpha_of = |delta: i64| {
+        let (faint, strong) = span(delta > 0);
+        match intensity {
+            true => rows::step_alpha(rows::strength(delta, largest, levels), levels, faint, strong),
+            false => strong,
+        }
+    };
     let length = |delta: i64, room: f64| match largest {
         0 => 0.0,
         largest => (room * delta.unsigned_abs() as f64 / largest as f64).max(1.0),
@@ -318,7 +347,8 @@ fn paint(
 
     cr.save().ok();
     // Each side's rows, a strength at a time, each strength one path.
-    for (buying, ink, full) in [(true, &buy, buy_alpha), (false, &sell, sell_alpha)] {
+    for (buying, ink) in [(true, &buy), (false, &sell)] {
+        let (faint, strong) = span(buying);
         for level in 1..=levels {
             let mut any = false;
             for (at, bar) in bars.iter().enumerate() {
@@ -335,8 +365,8 @@ fn paint(
             }
             if any {
                 let alpha = match intensity {
-                    true => rows::step_alpha(level, levels, FAINT * full, full),
-                    false => full,
+                    true => rows::step_alpha(level, levels, faint, strong),
+                    false => strong,
                 };
                 colors::set_source_alpha(cr, ink, alpha);
                 let _ = cr.fill();
@@ -362,7 +392,7 @@ fn paint(
         }
         if any {
             cr.set_line_width(1.0);
-            colors::set_source_alpha(cr, ink, full.max(0.35));
+            colors::set_source_alpha(cr, ink, strong.max(0.35));
             let _ = cr.stroke();
         }
     }
@@ -406,21 +436,29 @@ fn paint(
         let ground = luminance(&state.theme.ui.background);
         let text = luminance(&state.theme.ui.text);
         let (buy_light, sell_light) = (luminance(&buy), luminance(&sell));
-        let on_fill = |delta: i64, room: f64, text_px: f64| {
-            let (full, light) = if delta > 0 { (buy_alpha, buy_light) } else { (sell_alpha, sell_light) };
-            let alpha = match intensity {
-                true => rows::step_alpha(rows::strength(delta, largest, levels), levels, FAINT * full, full),
-                false => full,
-            };
-            let fill = ground + (light - ground) * alpha;
-            (fill - ground).abs() > (fill - text).abs() && length(delta, room) >= text_px + 5.0
+        // Where a number goes along its row, and whether it is dark: inside
+        // a row long enough to hold it, after the end of a shorter one, so
+        // the row's edge never cuts through a digit, and inside again, over
+        // the end, when there is no room after it either.
+        let place = |delta: i64, room: f64, text_px: f64| {
+            let long = length(delta, room);
+            let light = if delta > 0 { buy_light } else { sell_light };
+            let fill = ground + (light - ground) * alpha_of(delta);
+            let dark = (fill - ground).abs() > (fill - text).abs();
+            if long >= text_px + 2.0 * PAD {
+                (PAD, dark)
+            } else if long + PAD + text_px <= room {
+                (long + PAD, false)
+            } else {
+                (PAD, dark && long >= text_px)
+            }
         };
-        figures(cr, state, cache, step, columns, &row_y, &on_fill);
+        figures(cr, state, cache, step, columns, &row_y, &place);
     }
     cr.restore().ok();
 }
 
-/// Each row's delta written at its left, inside it, in one face, as glyphs
+/// Each row's delta written where `place` puts it, in one face, as glyphs
 /// drawn a batch at a time.
 fn figures(
     cr: &cairo::Context,
@@ -429,7 +467,7 @@ fn figures(
     step: u32,
     columns: &Columns,
     row_y: &impl Fn(i32) -> (f64, f64),
-    on_fill: &impl Fn(i64, f64, f64) -> bool,
+    place: &impl Fn(i64, f64, f64) -> (f64, bool),
 ) {
     const BATCH: usize = 256;
     let row_h = row_y(0).1 - row_y(0).0;
@@ -455,12 +493,16 @@ fn figures(
             cells.each_row(step, |low, delta| {
                 let text = rows::short(delta, &mut buf);
                 let text_px = text.len() as f64 * advance;
-                if text_px + 4.0 > room || on_fill(delta, room, text_px) != dark {
+                if text_px + PAD > room {
+                    return;
+                }
+                let (offset, on_dark) = place(delta, room, text_px);
+                if on_dark != dark {
                     return;
                 }
                 let (top, bottom) = row_y(low);
                 let baseline = ((top + bottom) / 2.0 + size * 0.36).round();
-                let mut pen = x + 3.0;
+                let mut pen = x + offset;
                 for byte in text.bytes() {
                     let Some(at) = CHARS.iter().position(|c| *c == byte) else { continue };
                     batch[n] = cairo::Glyph::new(table[at], pen, baseline);

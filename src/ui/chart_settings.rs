@@ -2682,8 +2682,7 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
         }
     });
     // The one a delta profile offers. Its Default is what volume always
-    // followed, the chart's own colouring, and Monochrome, which a delta is
-    // not offered, stays on offer to a volume pane already painted in it.
+    // followed, the chart's own colouring.
     let choice = colouring_row(owner, refresh, id, *colouring);
     // Bars have no line to repaint as a sample.
     let unused = Ink::new(String::new);
@@ -2728,9 +2727,8 @@ pub const VOLUME_DOWN: &str = "Down";
 /// cumulative delta share: **Default** first, then the colourings that tell
 /// a rise from a fall, [`DELTA_COLOURINGS`]. Default is the colouring
 /// chosen in Preferences for a delta, and the chart's own for volume, which
-/// is what it always followed. A colouring outside those three that an
-/// indicator already has — a volume pane painted Monochrome before — is
-/// offered last, so the row shows what is drawn.
+/// is what it always followed. A colouring outside those that an indicator
+/// already has is offered last, so the row shows what is drawn.
 fn colouring_row(owner: &Rc<Owner>, refresh: &Refresh, id: u32, current: Option<BarColouring>) -> adw::ComboRow {
     let owner = owner.clone();
     let refresh = refresh.clone();
@@ -2751,8 +2749,8 @@ fn colouring_row(owner: &Rc<Owner>, refresh: &Refresh, id: u32, current: Option<
 }
 
 /// The rows of the order flow indicators' own.
-pub const FOOTPRINT_ZOOM_LABEL: &str = "Show from bar width";
-pub const FOOTPRINT_INTENSITY_LABEL: &str = "Intensity";
+pub const FOOTPRINT_ZOOM_LABEL: &str = "Min bar width px";
+pub const FOOTPRINT_INTENSITY_LABEL: &str = "Shade by delta";
 pub const LARGE_RTH_LABEL: &str = "RTH threshold";
 pub const LARGE_ETH_LABEL: &str = "ETH threshold";
 pub const LARGE_COMPARE_LABEL: &str = "Size against";
