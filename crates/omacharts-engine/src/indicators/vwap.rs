@@ -61,11 +61,6 @@ pub fn default_bands() -> Vec<Band> {
     ]
 }
 
-/// Typical price — the midpoint the weighting is applied to.
-fn typical(bar: &Bar) -> f64 {
-    (bar.high + bar.low + bar.close) / 3.0
-}
-
 pub fn compute(bars: &[Bar], reset: Reset, session_origin: i64, bands: &[Band]) -> Bands {
     let mut out = Bands::blank(bars.len(), bands);
     if bars.is_empty() {
@@ -84,7 +79,7 @@ pub fn compute(bars: &[Bar], reset: Reset, session_origin: i64, bands: &[Band]) 
             bucket = this_bucket;
         }
         if let Some(spread) = study.step(bar, starts) {
-            out.set(i, spread.center, spread.deviation);
+            out.set(i, spread);
         }
     }
     out
@@ -142,15 +137,6 @@ impl Source {
             Source::Hl2 => omacharts_studies::Source::Hl2,
             Source::Ohlc4 => omacharts_studies::Source::Ohlc4,
             Source::Close => omacharts_studies::Source::Close,
-        }
-    }
-
-    pub fn of(self, bar: &Bar) -> f64 {
-        match self {
-            Source::Hlc3 => typical(bar),
-            Source::Hl2 => (bar.high + bar.low) / 2.0,
-            Source::Ohlc4 => (bar.open + bar.high + bar.low + bar.close) / 4.0,
-            Source::Close => bar.close,
         }
     }
 }

@@ -619,13 +619,7 @@ fn period(
         let Some((from, to)) = rows_of(bar) else {
             continue;
         };
-        for row in from..=to {
-            let row = (row - low) as usize;
-            if marks[row] != at {
-                marks[row] = at;
-                counts[row] += 1;
-            }
-        }
+        tpo::mark(counts, marks, (from - low) as usize..=(to - low) as usize, at);
     }
     let mut starts = Vec::with_capacity(len + 1);
     let mut total = 0u32;

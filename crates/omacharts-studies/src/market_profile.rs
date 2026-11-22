@@ -58,6 +58,23 @@ pub fn tpo_of(ts: i64, start: i64, minutes: u32) -> i64 {
     (ts - start).div_euclid(i64::from(minutes.max(1)) * 60)
 }
 
+/// Put TPO period `tpo`'s TPO in each of rows `rows` (indices into
+/// `counts` and `marks`) that it has not put one in yet: a row gets one TPO
+/// a TPO period however many of its bars touch it. `marks` holds the TPO
+/// period that last marked each row. Answers how many TPOs went in.
+#[inline]
+pub fn mark(counts: &mut [u32], marks: &mut [i64], rows: std::ops::RangeInclusive<usize>, tpo: i64) -> u32 {
+    let mut added = 0;
+    for at in rows {
+        if marks[at] != tpo {
+            marks[at] = tpo;
+            counts[at] += 1;
+            added += 1;
+        }
+    }
+    added
+}
+
 /// The letter of TPO period `tpo`, as an index into [`LETTERS`].
 #[inline]
 pub fn letter_of(tpo: i64) -> u8 {
@@ -248,14 +265,8 @@ impl Study for DevelopingMarketProfile {
             self.counts.resize(len, 0);
             self.marks.resize(len, UNMARKED);
         }
-        for row in from..=to {
-            let at = (row - self.low) as usize;
-            if self.marks[at] != tpo {
-                self.marks[at] = tpo;
-                self.counts[at] += 1;
-                self.total += 1;
-            }
-        }
+        let rows = (from - self.low) as usize..=(to - self.low) as usize;
+        self.total += u64::from(mark(&mut self.counts, &mut self.marks, rows, tpo));
         let counts = &self.counts;
         reading(self.low, counts.len(), |row| counts[row], self.total, self.tick_size, self.row_ticks, self.value_area)
     }

@@ -86,6 +86,20 @@ pub struct Level {
     pub ask_trades: u32,
 }
 
+/// A price folds into a footprint's rows as a whole level, so a ladder's
+/// point of control is [`omacharts_studies::footprint::point_of_control`]
+/// over its levels.
+impl omacharts_studies::footprint::Cell for Level {
+    #[inline]
+    fn traded(&self) -> bool {
+        self.volume() != 0
+    }
+    #[inline]
+    fn add(&mut self, other: &Level) {
+        Level::add(self, other);
+    }
+}
+
 impl Level {
     /// Everything that traded at this price, sides or not.
     #[inline]
@@ -225,18 +239,6 @@ impl Ladder {
     #[inline]
     pub fn delta(&self) -> i64 {
         self.sides.delta()
-    }
-
-    /// The tick that traded most, every side together; the lowest of a tie.
-    pub fn point_of_control(&self) -> Option<i32> {
-        let mut best: Option<(usize, u64)> = None;
-        for (i, level) in self.levels.iter().enumerate() {
-            let volume = level.volume();
-            if volume > 0 && best.is_none_or(|(_, most)| volume > most) {
-                best = Some((i, volume));
-            }
-        }
-        best.map(|(i, _)| self.low_tick + i as i32)
     }
 
     /// Every level as `(tick, level)`, lowest first.

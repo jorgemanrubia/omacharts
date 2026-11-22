@@ -129,11 +129,11 @@ impl Bands {
     /// on should not have to wait for a refetch and the arithmetic is already
     /// done. A spread of zero is a real answer — a window that did not move
     /// has no dispersion — and it puts the bands exactly on the line.
-    pub fn set(&mut self, i: usize, center: f64, spread: f64) {
-        self.center[i] = Some(center);
+    pub fn set(&mut self, i: usize, spread: omacharts_studies::Spread) {
+        self.center[i] = Some(spread.center);
         for band in self.bands.iter_mut() {
-            band.upper[i] = Some(center + spread * band.deviations);
-            band.lower[i] = Some(center - spread * band.deviations);
+            band.upper[i] = Some(spread.upper(band.deviations));
+            band.lower[i] = Some(spread.lower(band.deviations));
         }
     }
 
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn a_band_sits_its_own_multiple_of_the_spread_either_side() {
         let mut out = Bands::blank(1, &[band(1.0), band(2.5)]);
-        out.set(0, 100.0, 4.0);
+        out.set(0, omacharts_studies::Spread { center: 100.0, deviation: 4.0 });
         assert_eq!(out.center[0], Some(100.0));
         assert_eq!(out.bands[0].upper[0], Some(104.0));
         assert_eq!(out.bands[0].lower[0], Some(96.0));
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn no_spread_puts_the_bands_on_the_line() {
         let mut out = Bands::blank(1, &[band(2.0)]);
-        out.set(0, 50.0, 0.0);
+        out.set(0, omacharts_studies::Spread { center: 50.0, deviation: 0.0 });
         assert_eq!(out.bands[0].upper[0], Some(50.0));
         assert_eq!(out.bands[0].lower[0], Some(50.0));
     }
@@ -214,7 +214,7 @@ mod tests {
         let mut off = band(1.5);
         off.enabled = false;
         let mut out = Bands::blank(1, &[off, band(2.0)]);
-        out.set(0, 10.0, 1.0);
+        out.set(0, omacharts_studies::Spread { center: 10.0, deviation: 1.0 });
         assert!(!out.bands[0].enabled);
         assert_eq!(out.bands[0].upper[0], Some(11.5), "computed anyway");
         assert_eq!(out.bands[1].deviations, 2.0, "the outer band did not shift inward");
