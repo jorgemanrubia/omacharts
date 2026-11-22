@@ -14,7 +14,8 @@ use std::sync::{mpsc, Arc};
 
 use crate::exchanges::registry;
 use crate::ladders::{to_tick, Ladder, Minute, Side};
-use crate::provider::{LadderSink, LadderUpdate, Ladders, ProviderError, Subscription};
+use crate::provider::{LadderSink, LadderUpdate, Ladders, PrintSink, ProviderError, Subscription};
+use crate::studies::orders::{Aggressor, Print};
 use crate::ticks::{Tape, Trade, DEFAULT_CAPACITY};
 
 use super::{exchange_of, map_err, session, Rithmic, CME_GROUP};
@@ -213,6 +214,80 @@ impl Ladders for Rithmic {
             .map_err(|error| ProviderError::Network(error.to_string()))?;
         Ok(Box::new(Watching { stop, events }))
     }
+
+    /// The plant replays any contract it has minute ladders of a trade at a
+    /// time.
+    fn has_prints(&self, symbol: &str) -> bool {
+        self.serves(symbol)
+    }
+
+    /// The plant's tick bars of one trade each, as far back as it keeps
+    /// them: a day it has nothing of comes back empty, which is where a walk
+    /// back stops.
+    fn prints(&self, symbol: &str, tick_size: f64, from: i64, to: i64) -> Result<Vec<Print>, ProviderError> {
+        if !session::here() {
+            return Err(ProviderError::NeedsSetup(
+                "Rithmic trades are served by the open window, which holds the one session".into(),
+            ));
+        }
+        let login = self.login();
+        let client = session::client(login).map_err(|error| map_err(login, error))?;
+        let exchange = exchange_of(symbol);
+        let contract = match crate::specs::root_of(symbol) == symbol {
+            true => client.front_month(symbol, exchange).map_err(|error| map_err(login, error))?,
+            false => super::spelled(symbol),
+        };
+        let trades = client.trades(&contract, exchange, from, to).map_err(|error| map_err(login, error))?;
+        Ok(trades.iter().map(|trade| print_of(trade, tick_size)).collect())
+    }
+
+    /// Each trade the session hears on the contract, handed on as it comes:
+    /// a third listener on the one subscription the session holds.
+    fn watch_prints(&self, symbol: &str, tick_size: f64, sink: PrintSink) -> Result<Option<Box<dyn Subscription>>, ProviderError> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (events, inbox) = mpsc::channel::<Event>();
+        let stopping = stop.clone();
+        let root = symbol.to_string();
+        let login = self.login();
+        std::thread::Builder::new()
+            .name("omacharts rithmic trades".into())
+            .spawn(move || {
+                let Ok(client) = session::client(login) else { return };
+                let heard = Arc::new(sink);
+                let hear = {
+                    let stopping = stopping.clone();
+                    move |live| {
+                        if let rithmic::Live::Trade(trade) = live
+                            && !stopping.load(Ordering::Acquire)
+                        {
+                            heard(&[print_of(&trade, tick_size)]);
+                        }
+                    }
+                };
+                let _watch = match crate::specs::root_of(&root) == root {
+                    true => client.watch(&root, exchange_of(&root), hear),
+                    false => client.watch_contract(&super::spelled(&root), exchange_of(&root), hear),
+                };
+                // Held until the subscription is let go.
+                for event in &inbox {
+                    if matches!(event, Event::Stop) || stopping.load(Ordering::Acquire) {
+                        return;
+                    }
+                }
+            })
+            .map_err(|error| ProviderError::Network(error.to_string()))?;
+        Ok(Some(Box::new(Watching { stop, events })))
+    }
+}
+
+/// A trade as large orders keep it.
+fn print_of(trade: &rithmic::Trade, tick_size: f64) -> Print {
+    let side = match trade.aggressor {
+        Some(rithmic::Side::Buy) => Aggressor::Buy,
+        Some(rithmic::Side::Sell) => Aggressor::Sell,
+        None => Aggressor::Unknown,
+    };
+    Print::new(trade.at_nanos, to_tick(trade.price, tick_size), trade.size, side, false)
 }
 
 #[cfg(test)]
@@ -241,6 +316,16 @@ mod tests {
         assert_eq!(rithmic.history_since("ESZ26", november), None);
         // After the December roll, ESH7's span, from 10 December.
         assert_eq!(rithmic.history_since("ES", utc("2026-12-11T15:00:00Z")), Some(utc("2026-12-09T23:00:00Z")));
+    }
+
+    /// A trade is kept in whole ticks, its aggressor its side.
+    #[test]
+    fn a_trade_is_a_print_in_whole_ticks() {
+        let trade = rithmic::Trade { price: 6_000.5, size: 80, aggressor: Some(rithmic::Side::Sell), at_nanos: 7 };
+        let print = print_of(&trade, 0.25);
+        assert_eq!((print.ts_nanos, print.tick, print.size(), print.side()), (7, 24_002, 80, Aggressor::Sell));
+        let unsaid = rithmic::Trade { aggressor: None, ..trade };
+        assert_eq!(print_of(&unsaid, 0.25).side(), Aggressor::Unknown);
     }
 
     /// A plant minute becomes a ladder of whole ticks, each side where the
