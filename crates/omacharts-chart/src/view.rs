@@ -808,6 +808,14 @@ struct Columns<'a> {
     /// Where the plot ends on the right: past the last bar by whatever room
     /// is open after it, or at its end when there is none.
     end: f64,
+    /// One past the series' last bar, on screen or not: what the session
+    /// still forming ends at.
+    live: usize,
+    /// Where the plot's right edge stands with the view at rest at the live
+    /// edge, wherever the view is now: the end of the room the right-aligned
+    /// profiles' live sessions are drawn in, which moves with the bars when
+    /// they are scrolled, off the right of the plot and out of view.
+    margin_end: f64,
     /// The visible bars the columns were made from.
     slice: &'a [Bar],
     /// Bars to a group: the fewest that make half a pixel.
@@ -841,6 +849,8 @@ impl<'a> Columns<'a> {
             bar_px,
             start: plot_x,
             end: plot_x + plot_w.max(1.0),
+            live: first + visible,
+            margin_end: plot_x + plot_w.max(1.0),
             slice: bars,
             per,
             groups: 0..=0,
@@ -1032,8 +1042,21 @@ impl<'a> Columns<'a> {
     /// The empty space past the last bar on screen, in pixels: where the
     /// series ends short of the plot's right edge. Nothing with the bars
     /// running to the edge, or off it.
+    #[cfg(test)]
     fn room_after(&self) -> f64 {
         (self.end - self.left_of(self.first + self.visible)).max(0.0)
+    }
+
+    /// The room past the series' last bar the right-aligned profiles' live
+    /// sessions are drawn in: where it ends, and how wide it is. At rest at
+    /// the live edge it is the empty space past the last bar, to the plot's
+    /// right edge; scrolled back it is the same room where it was, carried
+    /// right with the bars, so what is drawn in it keeps its place beside
+    /// them and its width rather than being squeezed into what is left.
+    fn margin(&self) -> (f64, f64) {
+        let from = self.left_of(self.live);
+        let end = self.margin_end.max(from);
+        (end, (end - from).max(0.0))
     }
 }
 
@@ -2624,6 +2647,21 @@ impl State {
             true => self.overhang,
             false => self.overhang + self.margin_floor(),
         }
+    }
+
+    /// The empty columns past the last bar with the view at rest at the live
+    /// edge, wherever it is now: the resting margin with the profiles' room
+    /// on top, or what is there now while it is at rest.
+    fn resting_overhang(&self) -> usize {
+        let columns = self.columns();
+        if columns == 0 {
+            return 0;
+        }
+        let rest = match self.anchored && !self.overhang_by_hand {
+            true => self.overhang_now(),
+            false => RIGHT_MARGIN + self.margin_floor(),
+        };
+        rest.min(columns - 1)
     }
 
     /// How many empty columns `OVERHANG_PX` is at this zoom — short of the
@@ -7018,6 +7056,9 @@ fn frame(state: &State, width: f64, height: f64) -> Option<Frame<'_>> {
     let bars_x = plan.plot_x + lead as f64 * column_w;
     let mut columns = Columns::of(bars, first, visible, bars_x, column_w * visible as f64);
     columns.end = plan.plot_x + plan.plot_w;
+    columns.live = state.bars.len();
+    let resting = columns.left_of(columns.live) + state.resting_overhang() as f64 * column_w;
+    columns.margin_end = resting.max(columns.end);
 
     let max_volume = columns.bars.iter().fold(0.0_f64, |most, b| most.max(b.volume));
     // Off the real bars rather than the columns. The two agree, because a
