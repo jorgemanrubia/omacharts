@@ -20,6 +20,7 @@
 //! drag at the frame rate.
 
 pub mod bench;
+pub mod flow_bench;
 mod compare;
 mod bubbles;
 mod executions;

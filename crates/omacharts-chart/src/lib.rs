@@ -50,6 +50,7 @@ pub mod zoom;
 
 pub use marks::{AnyPrice, AxisChip, LabelSide, MarkDrag, MarkEvent, MarkLink, MarkPreview, MarkRules, MarkTab, PriceMark, MARK_NEAR};
 pub use view::bench;
+pub use view::flow_bench;
 pub use view::{CompareLine, Comparing, Reading, Readout};
 pub use view::{ExecutionMark, Executions, TripLine};
 pub use view::{
