@@ -31,7 +31,13 @@
 //! following a contract costs nothing between trades and one `pread` per
 //! batch.
 //!
-//! This crate depends on nothing in the app: the engine depends on it.
+//! **Trades are prints.** [`prints`] reads a record as the trades it holds,
+//! side by side, and as the single prints the tick and volume-at-price
+//! model folds, a split trade's pieces marked as continuing it.
+//!
+//! This crate depends on nothing in the app: the engine depends on it. It
+//! depends only on that model, `omacharts-ticks` and `omacharts-studies`,
+//! for what a trade and a print are.
 
 #[cfg(target_endian = "big")]
 compile_error!("Sierra Chart's files are little-endian and are mapped as they are, so this crate is little-endian only");
@@ -39,6 +45,7 @@ compile_error!("Sierra Chart's files are little-endian and are mapped as they ar
 pub mod dly;
 pub mod fold;
 pub mod install;
+pub mod prints;
 pub mod scid;
 pub mod settings;
 pub mod symbols;

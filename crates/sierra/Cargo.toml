@@ -13,3 +13,8 @@ memmap2 = "0.9"
 # inotify, poll and eventfd, for following a file as Sierra Chart appends to
 # it. std has none of the three.
 libc = "0.2"
+# What a trade and a print are: the tick and volume-at-price model and the
+# arithmetic it rests on, both light, so a record reads as the prints and
+# ladder trades it holds.
+omacharts-ticks = { path = "../omacharts-ticks" }
+omacharts-studies = { path = "../omacharts-studies" }

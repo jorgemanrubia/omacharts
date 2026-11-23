@@ -976,7 +976,7 @@ mod tests {
         let scid = mapped(resolved.scid.as_ref().unwrap()).unwrap();
         let scid = scid.lock().unwrap();
         let ladders = ladders::minutes_in(scid.records(), resolved.multiplier, 0.25);
-        let prints = ladders::trades_in(scid.records(), resolved.multiplier, 0.25);
+        let prints = sierra::prints::prints_in(scid.records(), resolved.multiplier, 0.25);
         assert_eq!((bars.len(), ladders.len(), prints.len()), (30, 30, 30), "bars, ladders and trades of one file");
         assert_eq!(bars[0].close, 6_000.0);
         assert_eq!(ladders[0].close, 6_000.0);
