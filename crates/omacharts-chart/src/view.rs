@@ -1903,14 +1903,15 @@ impl State {
     }
 
     fn project_anchor(&self, plan: &Layout, scale: &PriceScale, anchor: Anchor) -> (f64, f64) {
+        self.strip(plan).anchor(&self.bars, plan, scale, anchor)
+    }
+
+    /// Where the columns are across the plot as the view stands: worked
+    /// out once for every point a drawing projects, rather than the view
+    /// asked again for each.
+    fn strip(&self, plan: &Layout) -> Strip {
         let (first, _, lead) = self.view();
-        let bar_w = plan.plot_w / self.columns().max(1) as f64;
-        let left = first as f64 - lead as f64;
-        let index = index_of_ts(&self.bars, anchor.ts);
-        (
-            plan.plot_x + (index - left + 0.5) * bar_w,
-            scale.to_y(anchor.price, plan.price_y, plan.price_h),
-        )
+        Strip { plot_x: plan.plot_x, left: first as f64 - lead as f64, bar_w: plan.plot_w / self.columns().max(1) as f64 }
     }
 
     /// The volume profile a profile drawing shows: of the bars between its
@@ -2044,14 +2045,13 @@ impl State {
 
     /// Where a bar's column begins, in pixels.
     fn column_edge(&self, plan: &Layout, index: f64) -> f64 {
-        let (first, _, lead) = self.view();
-        let bar_w = plan.plot_w / self.columns().max(1) as f64;
-        plan.plot_x + (index - (first as f64 - lead as f64)) * bar_w
+        self.strip(plan).edge(index)
     }
 
     /// A drawing as pixels, through the same scales the candles use.
     fn project(&self, plan: &Layout, scale: &PriceScale, drawing: &Drawing) -> Projected {
-        let point = |anchor: &Anchor| self.project_anchor(plan, scale, *anchor);
+        let strip = self.strip(plan);
+        let point = |anchor: &Anchor| strip.anchor(&self.bars, plan, scale, *anchor);
         // A profile is as wide as the bars it covers, edge to edge, and as
         // tall as the prices they reached: its anchors only say when.
         if drawing.kind == DrawingKind::Profile
@@ -2059,8 +2059,8 @@ impl State {
             && let (Some(low), Some(high)) = (profile.rows.first(), profile.rows.last())
         {
             let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
-            let left = self.column_edge(plan, profile.first_bar as f64);
-            let right = self.column_edge(plan, profile.last_bar as f64 + 1.0);
+            let left = strip.edge(profile.first_bar as f64);
+            let right = strip.edge(profile.last_bar as f64 + 1.0);
             return Projected::new(drawing.kind, (left, to_y(high.high)), (right, to_y(low.low)));
         }
         // An anchored VWAP is the line through its values, one a bar, from
@@ -2073,7 +2073,7 @@ impl State {
             let at = |index: usize| {
                 let value = line[index - start].vwap;
                 (
-                    self.column_edge(plan, index as f64 + 0.5),
+                    strip.edge(index as f64 + 0.5),
                     scale.to_y(value, plan.price_y, plan.price_h),
                 )
             };
@@ -3225,6 +3225,29 @@ impl State {
         let first = left.max(0);
         let right = (left + columns as i64).min(len);
         (first as usize, (right - first).max(0) as usize, (-left).max(0) as usize)
+    }
+}
+
+/// The columns across the plot as the view stands: [`State::strip`].
+#[derive(Clone, Copy)]
+struct Strip {
+    plot_x: f64,
+    /// The bar index at the plot's left edge, before the first bar when
+    /// there is room there.
+    left: f64,
+    bar_w: f64,
+}
+
+impl Strip {
+    /// The x of `index`, in bars from the first: its left edge when whole.
+    fn edge(&self, index: f64) -> f64 {
+        self.plot_x + (index - self.left) * self.bar_w
+    }
+
+    /// Where `anchor` is drawn: the middle of its bar, at its price.
+    fn anchor(&self, bars: &[Bar], plan: &Layout, scale: &PriceScale, anchor: Anchor) -> (f64, f64) {
+        let index = index_of_ts(bars, anchor.ts);
+        (self.plot_x + (index - self.left + 0.5) * self.bar_w, scale.to_y(anchor.price, plan.price_y, plan.price_h))
     }
 }
 
