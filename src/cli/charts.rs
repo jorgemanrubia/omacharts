@@ -482,6 +482,16 @@ pub fn remove_leaf(node: &Value, id: u32) -> Option<Value> {
     }
 }
 
+/// Which other charts' drawings a stored chart shows: its choice, or in a
+/// chart written while it was a switch, what the switch did.
+pub fn shows_drawings(pane: &serde_json::Value) -> omacharts_engine::drawings::ShowDrawings {
+    use omacharts_engine::drawings::ShowDrawings;
+    pane["show_drawings"]
+        .as_str()
+        .and_then(ShowDrawings::from_key)
+        .unwrap_or_else(|| ShowDrawings::from_switch(pane["shows_drawings"].as_bool().unwrap_or(true)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,12 +625,3 @@ mod tests {
     }
 }
 
-/// Which other charts' drawings a stored chart shows: its choice, or in a
-/// chart written while it was a switch, what the switch did.
-pub fn shows_drawings(pane: &serde_json::Value) -> omacharts_engine::drawings::ShowDrawings {
-    use omacharts_engine::drawings::ShowDrawings;
-    pane["show_drawings"]
-        .as_str()
-        .and_then(ShowDrawings::from_key)
-        .unwrap_or_else(|| ShowDrawings::from_switch(pane["shows_drawings"].as_bool().unwrap_or(true)))
-}
