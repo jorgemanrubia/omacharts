@@ -1123,6 +1123,7 @@ impl<'a> Columns<'a> {
     }
 
     /// How wide the bars from `from` up to but not including `to` are.
+    #[cfg(test)]
     fn width_of(&self, from: usize, to: usize) -> f64 {
         self.left_of(to) - self.left_of(from)
     }

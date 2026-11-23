@@ -35,6 +35,7 @@ crop: none
 |---|---|---|
 | **Automatic rows** | On | Off sets **Row height (ticks)** by hand |
 | **Row height (ticks)** | Greyed while automatic, showing the ticks a row holds | 1 to 10000 ticks a row |
+| **Size against** | Visible bars | **Visible bars**: the biggest row on screen, so rows change length as the chart scrolls. **Session**: the session's. **RTH or ETH**: the session's regular or extended hours', each against its own ([Size against](#size-against)) |
 | **Shade by delta** | On | Off fills every row alike, at its colour's opacity |
 | **Numbers** | On | Off draws the rows alone, with no number in them |
 | **Volume profile** | Off | On draws each bar's volume profile at its left ([Volume profile](#volume-profile)) |
@@ -51,7 +52,7 @@ With **Automatic rows** on, a row holds 1, 2, 4, 5, 10, 20, 25, 50 or more ticks
 
 ## Volume profile
 
-With **Volume profile** on, each bar also shows everything that traded at each of its rows, sides or not: at_bid plus at_ask, and any volume whose side the feed did not say. The profile takes the left of the bar's column, each row ending against the narrow bar and as long as its total, and the narrow bar and the delta rows move right to make room, the two sides sharing the column half and half. Its rows are the delta rows' own: the same ticks to a row, the same height, gaps and grid, the same outline, and with **Shade by delta** on the same five strengths. A row's length and strength are measured against the most traded row on screen, as a delta row's are against the biggest delta on screen. Its total is written inside it, against the narrow bar, in the type the deltas are written in and written short the same way, dark on a row solid enough to need it. Its colour says nothing of up or down: one swatch, the theme's **Blue** unless another is picked, following the theme as it changes, at 55% at its strongest so it stays quieter than the deltas.
+With **Volume profile** on, each bar also shows everything that traded at each of its rows, sides or not: at_bid plus at_ask, and any volume whose side the feed did not say. The profile takes the left of the bar's column, each row ending against the narrow bar and as long as its total, and the narrow bar and the delta rows move right to make room, the two sides sharing the column half and half. Its rows are the delta rows' own: the same ticks to a row, the same height, gaps and grid, the same outline, and with **Shade by delta** on the same five strengths. A row's length and strength are measured against the most traded row of the same bars a delta row's are measured against ([Size against](#size-against)): on screen, unless set otherwise. Its total is written inside it, against the narrow bar, in the type the deltas are written in and written short the same way, dark on a row solid enough to need it. Its colour says nothing of up or down: one swatch, the theme's **Blue** unless another is picked, following the theme as it changes, at 55% at its strongest so it stays quieter than the deltas.
 
 A footprint with its profile needs room for both sides, so it comes on at about twice the bar width: about 130 px with both sides' numbers, less with either turned off. A chart with a footprint on can be zoomed in to four bars across, rather than twelve, to give it that room. With **Volume profile** off, nothing of it is drawn or measured and the footprint is exactly as it was.
 
@@ -70,7 +71,17 @@ crop: none
 
 ## Shade by delta
 
-With **Shade by delta** on, a row is filled more solidly the bigger its delta, in five steps from faint up to its colour's opacity. The strongest is measured against the biggest delta of any row on screen, so a row's length and its strength say the same thing, and scrolling to a busier stretch makes the rest fainter. Each row keeps a thin outline in its own colour, so a faint row is still seen. In **Monochrome** every row is the one colour, so a strength says only how big a delta is, and the minus sign in a row's number says which way it went.
+With **Shade by delta** on, a row is filled more solidly the bigger its delta, in five steps from faint up to its colour's opacity. The strongest is measured against the biggest delta the row's length is measured against ([Size against](#size-against)), so a row's length and its strength say the same thing. Against the rows on screen, the default, scrolling to a busier stretch makes the rest fainter. Each row keeps a thin outline in its own colour, so a faint row is still seen. In **Monochrome** every row is the one colour, so a strength says only how big a delta is, and the minus sign in a row's number says which way it went.
+
+## Size against
+
+**Size against** is what a row's length and strength are measured against, with the same choices as a large order's bubble: the biggest row on screen counts as the longest row and the strongest shade.
+
+- **Visible bars**, the default: the biggest delta of any row on screen. Rows change length as the chart scrolls to a busier or a quieter stretch.
+- **Session**: the biggest of the bar's session, on screen or not. A row keeps its length as the chart scrolls, and a quiet session's rows stay short beside a busy one's.
+- **RTH or ETH**: the biggest of the bar's session's regular hours, or of its extended hours, whichever the bar is in. Overnight rows are measured against the overnight's, so they are not all drowned by the open. On an instrument with no regular hours it is the same as **Session**.
+
+The volume profile's rows are measured the same way, against the most traded row of the same bars. A bar of a day or longer is a session of its own. A session's biggest is read once, when the footprint is first drawn over it, and kept; only the newest bars are added again as they trade.
 
 ## See also
 

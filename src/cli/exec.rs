@@ -5576,7 +5576,7 @@ impl Edits {
             size_against: match arg(m, "size-against") {
                 None => None,
                 Some(text) => Some(omacharts_engine::indicators::flow::Compare::from_key(text).ok_or_else(|| {
-                    Fault::usage(format!("{text:?} is not what a bubble is sized against; use visible, session or hours"))
+                    Fault::usage(format!("{text:?} is not what a bubble or a footprint is sized against; use visible, session or hours"))
                 })?),
             },
             combine: switch(m, "combine")?,
@@ -5825,9 +5825,15 @@ impl Edits {
             }
         }
         if let Some(compare) = self.size_against {
-            match kind == IndicatorKind::LargeOrders {
-                true => params["compare"] = json!(compare.key()),
-                false => return Err(refuse("bubble sizing")),
+            match kind {
+                IndicatorKind::LargeOrders => params["compare"] = json!(compare.key()),
+                IndicatorKind::Footprint if compare.is_footprint_default() => {
+                    if let Some(params) = params.as_object_mut() {
+                        params.remove("compare");
+                    }
+                }
+                IndicatorKind::Footprint => params["compare"] = json!(compare.key()),
+                _ => return Err(refuse("sizing against the biggest; --size-against is large orders' and a footprint's")),
             }
         }
         if let Some(on) = self.combine {
@@ -10957,6 +10963,20 @@ mod tests {
             assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
         }
 
+        // A footprint's rows are sized against what a bubble can be, the
+        // biggest on screen unless told, which is not written down.
+        assert!(listed(&store, "footprint")["params"].get("compare").is_none());
+        for against in ["session", "hours"] {
+            let out = run(&format!("chart indicator set footprint --book Macro --size-against {against}"), &store);
+            assert_eq!(out.code, 0, "{}", out.err);
+            assert_eq!(listed(&store, "footprint")["params"]["compare"], against);
+        }
+        let out = run("chart indicator set footprint --book Macro --size-against visible", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(listed(&store, "footprint")["params"].get("compare").is_none(), "back to its own");
+        let out = run("chart indicator set volume_delta --book Macro --size-against session", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE, "a volume delta sizes nothing against anything");
+
         let out = run(
             "chart indicator set large_orders --book Macro --rth-threshold 75 --eth-threshold 0 --size-against hours --combine off",
             &store,
@@ -10984,6 +11004,7 @@ mod tests {
             "chart indicator set large_orders --book Macro --rth-threshold -1",
             "chart indicator set large_orders --book Macro --eth-threshold 2.5",
             "chart indicator set large_orders --book Macro --size-against week",
+            "chart indicator set footprint --book Macro --size-against week",
             "chart indicator set large_orders --book Macro --show-from 100",
             "chart indicator set cvd --book Macro --buy-color Teal",
         ] {

@@ -407,7 +407,8 @@ period, in a strip; `volume_delta` (VD) is the same delta bar by bar, one
 candle per bar from nought, in a strip; `footprint` replaces each candle,
 once a bar is wide enough for its rows to read (worked out from the figures' width; narrower with `--numbers off`), with a narrow bar of the chart's own style (none on a line chart)
 and each price's delta beside it, rows filled more solidly the bigger the
-delta unless `--intensity off`, the figures written in them unless
+delta unless `--intensity off`, sized against `--size-against visible`
+(the default), `session` or `hours` as bubbles are, the figures written in them unless
 `--numbers off`, `--row-ticks N` ticks a row or `auto` (the default: a
 compact line's worth), and with `--profile on` each bar's volume profile
 at its left (total traded at each row, one colour: `--profile-color`,

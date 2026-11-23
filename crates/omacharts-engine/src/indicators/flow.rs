@@ -1,6 +1,7 @@
 //! What the order flow indicators share, besides the arithmetic in
 //! `omacharts_studies`: how each paints what was bought and what was sold,
-//! and what a large order's bubble is measured against.
+//! and what a large order's bubble and a footprint's rows are measured
+//! against.
 //!
 //! Order flow reads who took liquidity, trade by trade or price by price,
 //! which only a feed with volume at price says: on any other chart the
@@ -114,7 +115,9 @@ pub const LARGE_ORDERS_ALPHA: f64 = 0.35;
 
 
 /// What a large order's bubble is sized against: the largest order it is
-/// compared with is the biggest bubble.
+/// compared with is the biggest bubble. A footprint's rows are measured
+/// the same ways, against the biggest row: on screen unless told, which is
+/// [`footprint_compare`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Compare {
@@ -150,6 +153,17 @@ impl Compare {
     pub fn from_key(key: &str) -> Option<Compare> {
         Compare::ALL.into_iter().find(|compare| compare.key() == key)
     }
+
+    /// Whether it is a footprint's own unless told, so not written down.
+    pub fn is_footprint_default(&self) -> bool {
+        *self == footprint_compare()
+    }
+}
+
+/// What a footprint's rows are measured against unless told: the biggest
+/// on screen, as they always were.
+pub fn footprint_compare() -> Compare {
+    Compare::Visible
 }
 
 /// The sizes a large order has to be bigger than, unless told: a print of

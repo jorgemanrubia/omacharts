@@ -256,6 +256,12 @@ impl FlowScene {
         &self.state
     }
 
+    /// The same, to change.
+    #[cfg(test)]
+    pub(super) fn state_mut(&mut self) -> &mut State {
+        &mut self.state
+    }
+
     pub fn view_frame(&self, cr: &cairo::Context, width: f64, height: f64) {
         draw(cr, width, height, &self.state);
     }

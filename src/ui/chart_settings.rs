@@ -1942,7 +1942,7 @@ fn parameters_group(
             }
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
-        Params::Footprint { intensity, numbers, row_ticks, profile, .. } => {
+        Params::Footprint { intensity, numbers, row_ticks, profile, compare, .. } => {
             // Automatic, or so many ticks a row, as a market profile's:
             // greyed while automatic, showing the ticks being drawn.
             let granularity = {
@@ -1967,6 +1967,19 @@ fn parameters_group(
             (granularity.show)(row_ticks.map(|t| t as usize));
             group.add(&granularity.automatic);
             group.add(&granularity.rows);
+            group.add(&choice_row(
+                owner,
+                refresh,
+                id,
+                LARGE_COMPARE_LABEL,
+                &flow::Compare::ALL.map(flow::Compare::label),
+                flow::Compare::ALL.iter().position(|c| c == compare),
+                |indicator, at| {
+                    if let Params::Footprint { compare, .. } = &mut indicator.params {
+                        *compare = flow::Compare::ALL.get(at).copied().unwrap_or_else(flow::footprint_compare);
+                    }
+                },
+            ));
             group.add(&flow_switch(owner, refresh, id, FOOTPRINT_INTENSITY_LABEL, *intensity, |params, on| {
                 if let Params::Footprint { intensity, .. } = params {
                     *intensity = on;

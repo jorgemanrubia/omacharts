@@ -518,6 +518,7 @@ impl Kind {
                 row_ticks: None,
                 inks: flow::Inks::default(),
                 profile: flow::BarProfile::default(),
+                compare: flow::footprint_compare(),
             },
             Kind::LargeOrders => Params::LargeOrders {
                 regular: flow::REGULAR_THRESHOLD,
@@ -932,6 +933,11 @@ pub enum Params {
         /// Each bar's volume profile beside it: off unless turned on.
         #[serde(default, skip_serializing_if = "flow::BarProfile::is_default")]
         profile: flow::BarProfile,
+        /// What a row's length and strength, and its profile's rows, are
+        /// measured against: the biggest row on screen, of its session, or
+        /// of its session's regular or extended hours.
+        #[serde(default = "flow::footprint_compare", skip_serializing_if = "flow::Compare::is_footprint_default")]
+        compare: flow::Compare,
     },
     /// A bubble at each order bigger than the threshold of the hours it
     /// traded in.
