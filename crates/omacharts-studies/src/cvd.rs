@@ -19,7 +19,7 @@
 //! assert_eq!((bar.open, bar.high, bar.low, bar.close), (120.0, 150.0, 70.0, 95.0));
 //! ```
 
-use crate::{Ohlcv, Study};
+use crate::{AtPrice, AtPriceStudy, Ohlcv, Study};
 
 /// A bar's estimated delta: its volume, signed by the way it closed — on its
 /// open, or on the close before it when it closed where it opened. Volume
@@ -204,6 +204,114 @@ impl Study for BarDeltaEstimate {
     }
 }
 
+/// The running delta read from what traded, a bar at a time: each bar a
+/// [`DeltaBar`] opening where the running delta stood — or at nought, at
+/// the start of a period or, for each bar's own delta, of every bar — and
+/// moved along by every piece of the bar's bought less sold, so its high
+/// and low are the furthest it went either way between. A bar whose pieces
+/// cannot be told whole is estimated from its direction instead (see
+/// [`estimate`]) and marked so.
+///
+/// Stepped on bars of volume at price ([`AtPrice`]) it never estimates, and
+/// reads each bar in the pieces [`AtPrice::each_delta`] hands over. A
+/// caller that reads the pieces from elsewhere — minute ladders held apart
+/// from the bars — steps it with [`DeltaRead::step_with`].
+#[derive(Clone, Debug, Default)]
+pub struct DeltaRead {
+    /// Every bar starts from nought: each bar's own delta.
+    each_bar: bool,
+    /// The running delta the last bar closed at.
+    running: f64,
+    /// The last bar's close, for an estimate's side.
+    previous: Option<f64>,
+}
+
+impl DeltaRead {
+    /// The cumulative delta, started again at each new period: the `cvd`
+    /// indicator read from volume at price.
+    pub fn cumulative() -> DeltaRead {
+        DeltaRead::default()
+    }
+
+    /// Each bar's own delta, from nought at its open: the `volume_delta`
+    /// indicator read from volume at price.
+    pub fn each_bar() -> DeltaRead {
+        DeltaRead { each_bar: true, ..DeltaRead::default() }
+    }
+
+    /// Carrying on after a bar whose running delta closed at `running` and
+    /// whose own close was `previous`: for a caller that keeps the bars it
+    /// worked out and steps only the ones after them again.
+    pub fn resumed(mut self, running: f64, previous: Option<f64>) -> DeltaRead {
+        self.running = running;
+        self.previous = previous;
+        self
+    }
+
+    #[inline(always)]
+    fn next<B: Ohlcv>(&self, bar: &B, new_period: bool, read: impl FnOnce(&mut DeltaBar) -> bool) -> DeltaBar {
+        let starts = self.each_bar || new_period;
+        let open = if starts { 0.0 } else { self.running };
+        let mut delta = DeltaBar::opening(open, starts);
+        if read(&mut delta) { delta } else { DeltaBar::estimated(open, starts, bar, self.previous) }
+    }
+
+    /// Take the next bar, which has closed, reading its pieces with `read`:
+    /// it moves the bar it is handed along by each piece's bought less
+    /// sold, in order, with [`DeltaBar::add`], and answers whether it could
+    /// tell the bar whole. When it could not, whatever it added is thrown
+    /// away and the bar is estimated.
+    #[inline]
+    pub fn step_with<B: Ohlcv>(&mut self, bar: &B, new_period: bool, read: impl FnOnce(&mut DeltaBar) -> bool) -> DeltaBar {
+        let delta = self.next(bar, new_period, read);
+        self.running = delta.close;
+        self.previous = Some(bar.close());
+        delta
+    }
+
+    /// What [`DeltaRead::step_with`] would answer for `bar`, without taking
+    /// it, to the bit.
+    #[inline]
+    pub fn peek_with<B: Ohlcv>(&self, bar: &B, new_period: bool, read: impl FnOnce(&mut DeltaBar) -> bool) -> DeltaBar {
+        self.next(bar, new_period, read)
+    }
+}
+
+/// A bar of volume at price, read in its own pieces.
+#[inline(always)]
+fn pieces<B: AtPrice>(bar: &B) -> impl FnOnce(&mut DeltaBar) -> bool + '_ {
+    move |delta| {
+        bar.each_delta(|piece| delta.add(piece as f64));
+        true
+    }
+}
+
+impl AtPriceStudy for DeltaRead {
+    type Value = DeltaBar;
+
+    #[inline]
+    fn step<B: AtPrice>(&mut self, bar: &B, new_period: bool) -> Option<DeltaBar> {
+        Some(self.step_with(bar, new_period, pieces(bar)))
+    }
+
+    #[inline]
+    fn peek<B: AtPrice>(&self, bar: &B, new_period: bool) -> Option<DeltaBar> {
+        Some(self.peek_with(bar, new_period, pieces(bar)))
+    }
+
+    fn warmup(&self) -> usize {
+        0
+    }
+
+    fn key(&self) -> &'static str {
+        if self.each_bar { "volume_delta" } else { "cvd" }
+    }
+
+    fn params(&self) -> Vec<(&'static str, f64)> {
+        Vec::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,6 +333,96 @@ mod tests {
         assert_eq!(estimate(&bar(10.0, 10.0, 50.0), Some(10.0)), 0.0, "unchanged either way");
         assert_eq!(estimate(&bar(10.0, 10.0, 50.0), None), 0.0, "nothing before it");
         assert_eq!(estimate(&bar(10.0, 11.0, f64::NAN), None), 0.0);
+    }
+
+    /// A bar of minutes, bought and sold, and how many of its pieces can
+    /// be told.
+    struct Minutes {
+        bar: Bar,
+        deltas: Vec<i64>,
+    }
+
+    impl Ohlcv for Minutes {
+        fn ts(&self) -> i64 {
+            self.bar.ts
+        }
+        fn open(&self) -> f64 {
+            self.bar.open
+        }
+        fn high(&self) -> f64 {
+            self.bar.high
+        }
+        fn low(&self) -> f64 {
+            self.bar.low
+        }
+        fn close(&self) -> f64 {
+            self.bar.close
+        }
+        fn volume(&self) -> f64 {
+            self.bar.volume
+        }
+    }
+
+    impl AtPrice for Minutes {
+        fn bought(&self) -> u64 {
+            self.deltas.iter().filter(|d| **d > 0).sum::<i64>() as u64
+        }
+        fn sold(&self) -> u64 {
+            (-self.deltas.iter().filter(|d| **d < 0).sum::<i64>()) as u64
+        }
+        fn each_price(&self, _: impl FnMut(i32, u64)) {}
+        fn each_delta(&self, mut each: impl FnMut(i64)) {
+            self.deltas.iter().for_each(|d| each(*d));
+        }
+    }
+
+    /// Read in pieces, a bar's high and low are the furthest the running
+    /// delta went inside it; it runs on from bar to bar and starts again at
+    /// each period, and each bar's own starts at nought every bar.
+    #[test]
+    fn a_delta_read_in_pieces_has_the_extremes_inside_each_bar() {
+        let bars = [
+            Minutes { bar: bar(10.0, 9.0, 3.0), deltas: vec![10, -25, 30] },
+            Minutes { bar: bar(9.0, 8.0, 3.0), deltas: vec![-5, 0, 0] },
+            Minutes { bar: bar(8.0, 9.0, 3.0), deltas: vec![4, -1] },
+        ];
+        let mut cvd = DeltaRead::cumulative();
+        let mut own = DeltaRead::each_bar();
+        let out: Vec<(DeltaBar, DeltaBar)> = bars
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let new_period = i != 1;
+                let peeked = (cvd.peek(b, new_period), own.peek(b, new_period));
+                let stepped = (cvd.step(b, new_period).unwrap(), own.step(b, new_period).unwrap());
+                assert_eq!(peeked, (Some(stepped.0), Some(stepped.1)));
+                stepped
+            })
+            .collect();
+        assert_eq!(out[0].0, DeltaBar { open: 0.0, high: 15.0, low: -15.0, close: 15.0, estimated: false, starts: true });
+        assert_eq!(out[1].0, DeltaBar { open: 15.0, high: 15.0, low: 10.0, close: 10.0, estimated: false, starts: false });
+        assert_eq!((out[2].0.open, out[2].0.close, out[2].0.starts), (0.0, 3.0, true), "a new period opens at nought");
+        assert_eq!(out[1].1, DeltaBar { open: 0.0, high: 0.0, low: -5.0, close: -5.0, estimated: false, starts: true });
+        assert_eq!((cvd.key(), own.key()), ("cvd", "volume_delta"));
+    }
+
+    /// A bar whose pieces cannot be told is the estimate, whatever was
+    /// added before it gave up, and the running delta carries through it.
+    #[test]
+    fn a_bar_that_cannot_be_told_is_estimated_where_the_estimate_would_be() {
+        let bars = [bar(10.0, 11.0, 5.0), bar(11.0, 10.0, 2.0), bar(10.0, 10.0, 4.0)];
+        let mut read = DeltaRead::cumulative();
+        let mut estimate = CvdEstimate::new();
+        for (i, b) in bars.iter().enumerate() {
+            let read = read.step_with(b, i == 0, |delta| {
+                delta.add(1_000.0);
+                false
+            });
+            assert_eq!(Some(read), estimate.step(b, i == 0));
+        }
+        let mut resumed = DeltaRead::each_bar().resumed(40.0, Some(9.0));
+        let doji = resumed.step_with(&bar(10.0, 10.0, 3.0), false, |_| false);
+        assert_eq!((doji.open, doji.close, doji.estimated), (0.0, 3.0, true), "above the close before it");
     }
 
     /// A column of a cumulative delta runs from the first bar's open to the

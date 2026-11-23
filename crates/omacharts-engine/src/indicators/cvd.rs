@@ -74,6 +74,7 @@ impl Style {
 pub const NEVER: &str = "Never";
 
 pub use omacharts_studies::cvd::DeltaBar;
+use omacharts_studies::cvd::DeltaRead;
 
 /// Where a chart's volume at price comes from, for a delta read from it.
 pub struct Source<'a> {
@@ -190,26 +191,29 @@ fn run(
         Cut::Period(reset) => reset.map_or(0, |reset| reset.bucket(ts, session_origin)),
         Cut::Bar => ts,
     };
-    let mut running = start.checked_sub(1).map_or(0.0, |at| memo.out[at].close);
+    // The study, carried on from the last bar kept.
+    let study = match cut {
+        Cut::Period(_) => DeltaRead::cumulative(),
+        Cut::Bar => DeltaRead::each_bar(),
+    };
+    let mut study = match start.checked_sub(1) {
+        Some(at) => study.resumed(memo.out[at].close, Some(bars[at].close)),
+        None => study,
+    };
     for at in start..bars.len() {
         let bar = &bars[at];
         let previous = at.checked_sub(1).map(|before| &bars[before]);
         let starts = previous.is_none_or(|before| period(before.ts) != period(bar.ts));
-        if starts {
-            running = 0.0;
-        }
-        let mut delta = DeltaBar::opening(running, starts);
-        if !source.is_some_and(|source| read(bar, &mut delta, timeframe, source)) {
-            delta = DeltaBar::estimated(running, starts, bar, previous.map(|p| p.close));
-        }
-        running = delta.close;
+        let delta = study.step_with(bar, starts, |delta| source.is_some_and(|source| read(bar, delta, timeframe, source)));
         memo.out.push(delta);
     }
     memo.out.clone()
 }
 
-/// Move `delta` through `bar` by what traded at the bid and the ask;
-/// false when the ladders cannot tell it whole.
+/// Move `delta` through `bar` by what traded at the bid and the ask, a
+/// minute at a time — or a day at a time, for bars a day or longer — the
+/// pieces [`DeltaRead`] reads it in; false when the ladders cannot tell it
+/// whole.
 fn read(bar: &Bar, delta: &mut DeltaBar, timeframe: Timeframe, source: &Source) -> bool {
     if timeframe.is_intraday() {
         return source.held.minute_deltas(bar.ts, bar.ts + timeframe.seconds(), |_, minute| delta.add(minute as f64));
@@ -309,6 +313,69 @@ mod tests {
         let out = compute(&ones, None, 0, Timeframe::minutes(1), Some(&source), None);
         assert_eq!(closes(&out), vec![10.0, -15.0, 15.0, 10.0, 10.0, 10.0]);
         assert!(out.iter().all(|b| !b.estimated && b.high == b.open.max(b.close)));
+    }
+
+    /// What the chart drew before it drew through [`DeltaRead`]: the
+    /// running delta worked out here, bar by bar, kept to hold the study
+    /// to it.
+    fn drawn_before(bars: &[Bar], reset: Option<Option<Reset>>, timeframe: Timeframe, source: Option<&Source>) -> Vec<DeltaBar> {
+        let period = |ts: i64| match reset {
+            Some(reset) => reset.map_or(0, |reset| reset.bucket(ts, 0)),
+            None => ts,
+        };
+        let mut out = Vec::new();
+        let mut running = 0.0;
+        for at in 0..bars.len() {
+            let bar = &bars[at];
+            let previous = at.checked_sub(1).map(|before| &bars[before]);
+            let starts = previous.is_none_or(|before| period(before.ts) != period(bar.ts));
+            if starts {
+                running = 0.0;
+            }
+            let mut delta = DeltaBar::opening(running, starts);
+            if !source.is_some_and(|source| read(bar, &mut delta, timeframe, source)) {
+                delta = DeltaBar::estimated(running, starts, bar, previous.map(|p| p.close));
+            }
+            running = delta.close;
+            out.push(delta);
+        }
+        out
+    }
+
+    /// Through the study, the chart draws what it drew before, to the bit:
+    /// read and estimated, cumulative and each bar's own, worked out whole
+    /// and carried on from a memo.
+    #[test]
+    fn the_study_draws_what_the_chart_drew_before() {
+        let flows: Vec<(u64, u64)> = (0..240u64).map(|i| ((i * 37) % 23, (i * 53) % 29)).collect();
+        let series = minutes(&flows);
+        let held = Held::of(&series);
+        let days = Days::fixed(0);
+        let source = Source { held: &held, days: &days };
+        for minutes_a_bar in [1i64, 3, 5, 15] {
+            let tf = Timeframe::minutes(minutes_a_bar as u32);
+            // Bars from an hour before the ladders begin to past their end.
+            let bars: Vec<Bar> = (-4..(240 / minutes_a_bar) + 4)
+                .map(|i| {
+                    let open = 100.0 + ((i * 7) % 5) as f64;
+                    bar(MIDNIGHT + 60 * minutes_a_bar * i, open, open + ((i % 3) - 1) as f64, 10.0 + (i % 11) as f64)
+                })
+                .collect();
+            let bits = |out: &[DeltaBar]| out.iter().map(|b| (b.open.to_bits(), b.high.to_bits(), b.low.to_bits(), b.close.to_bits(), b.estimated, b.starts)).collect::<Vec<_>>();
+            for source in [None, Some(&source)] {
+                for reset in [None, Some(Reset::Session)] {
+                    let drawn = compute(&bars, reset, 0, tf, source, None);
+                    assert_eq!(bits(&drawn), bits(&drawn_before(&bars, Some(reset), tf, source)), "{minutes_a_bar}m {reset:?}");
+                    let mut memo = Memo::default();
+                    compute(&bars[..bars.len() - 3], reset, 0, tf, source, Some(&mut memo));
+                    assert_eq!(bits(&compute(&bars, reset, 0, tf, source, Some(&mut memo))), bits(&drawn), "carried on");
+                }
+                let drawn = per_bar(&bars, 0, tf, source, None);
+                assert_eq!(bits(&drawn), bits(&drawn_before(&bars, None, tf, source)), "{minutes_a_bar}m each bar");
+                let wicks = drawn.iter().any(|b| !b.estimated && (b.high > b.close.max(b.open) || b.low < b.close.min(b.open)));
+                assert!(source.is_none() || minutes_a_bar == 1 || wicks, "read bars with wicks inside them");
+            }
+        }
     }
 
     /// Bought is up and sold is down, whatever the bars did: a falling bar
