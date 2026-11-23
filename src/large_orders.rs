@@ -35,7 +35,7 @@
 //! the time it gets to it.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -88,6 +88,19 @@ enum Job {
     Live { key: String },
     /// No chart shows `key` any more.
     Forget { key: String },
+    /// One more day of `key`'s walk back: never sent, taken by the thread
+    /// from its own list between the jobs that are.
+    Walk(Walk),
+}
+
+/// A contract's walk back to its chart's first bar, a day at a time: `day`
+/// is the next to read, `first` the last, `now` when the load was asked.
+#[derive(Clone, Debug)]
+struct Walk {
+    key: String,
+    day: i64,
+    first: i64,
+    now: i64,
 }
 
 /// What the thread hands back: a book, whole.
@@ -314,16 +327,22 @@ impl LargeOrders {
         let ladders = self.provider.ladders()?;
         let mailbox = self.mailboxes.of(key);
         let wake = self.sender.clone();
-        let key = key.to_string();
+        let woken = key.to_string();
         let sink: omacharts_engine::PrintSink = Box::new(move |prints: &[Print]| {
             mailbox.prints.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(prints);
             // One wake per batch the thread has not drained yet: it disarms
             // as it takes them.
             if !mailbox.armed.swap(true, Ordering::AcqRel) {
-                let _ = wake.send(Job::Live { key: key.clone() });
+                let _ = wake.send(Job::Live { key: woken.clone() });
             }
         });
-        ladders.watch_prints(symbol, tick_size, sink).ok().flatten()
+        match ladders.watch_prints(symbol, tick_size, sink) {
+            Ok(live) => live,
+            Err(error) => {
+                eprintln!("omacharts: large orders of {key}: no live trades: {error}");
+                None
+            }
+        }
     }
 
     /// The live data moved on: once a minute, settled, every contract of a
@@ -375,6 +394,12 @@ impl LargeOrders {
         if empty {
             entries.remove(&key);
             self.wants.forget(&key);
+            // Let go here, with the stream that fed it, and never on the
+            // thread: a chart wanting the contract again straight after opens
+            // a new stream into a new mailbox before the thread gets to the
+            // forget, which took that new one away and left its trades where
+            // nothing ever read them.
+            self.mailboxes.forget(&key);
             drop(entries);
             self.send(Job::Forget { key });
         }
@@ -520,19 +545,49 @@ fn work(
     let Ok(store) = Store::open_at(path) else { return };
     let Some(ladders) = provider.ladders() else { return };
     let mut held: HashMap<String, Held> = HashMap::new();
-    let publish = |key: &str, held: &Held, settings: Settings, builder: &Builder| {
+    // How many large orders the book it handed over holds.
+    let publish = |key: &str, held: &Held, settings: Settings, builder: &Builder| -> usize {
         let book = builder.book(&mut held.hours());
+        let orders = book.orders.len();
         let _ = done.send_blocking(Done { key: key.to_string(), settings, book: Arc::new(book) });
+        orders
     };
-    let rebuild = |key: &str, contract: &mut Held, settings: &[Settings]| {
+    let rebuild = |key: &str, contract: &mut Held, settings: &[Settings]| -> Vec<String> {
         contract.builders.clear();
+        let mut told = Vec::new();
         for settings in settings {
             let builder = contract.build(&store, *settings);
-            publish(key, contract, *settings, &builder);
+            let orders = publish(key, contract, *settings, &builder);
+            told.push(format!("{orders} over {}/{}", settings.regular, settings.extended));
             contract.builders.insert(*settings, builder);
         }
+        told
     };
-    while let Ok(job) = inbox.recv() {
+    // The walks back, a day of one taken after each job: a walk is a day of
+    // trades from the provider at a time, which from Rithmic's history plant
+    // is minutes, and a month of them is hours. Done in one job, as it was,
+    // everything else for the contract waited behind it: the book of a
+    // threshold changed meanwhile, a chart's load asked again, and every live
+    // trade, while the chart drew no bubbles at all.
+    let mut walks: VecDeque<Walk> = VecDeque::new();
+    let mut walk_turn = false;
+    loop {
+        let turn = if walk_turn { walks.pop_front() } else { None };
+        let job = match turn {
+            Some(walk) => Job::Walk(walk),
+            None => match inbox.try_recv() {
+                Ok(job) => job,
+                Err(mpsc::TryRecvError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty) => match walks.pop_front() {
+                    Some(walk) => Job::Walk(walk),
+                    None => match inbox.recv() {
+                        Ok(job) => job,
+                        Err(_) => break,
+                    },
+                },
+            },
+        };
+        walk_turn = !matches!(job, Job::Walk(_));
         match job {
             Job::Load { key, stored, symbol, instrument, tick_size, from, now, settings } => {
                 let days = Days::new(&instrument);
@@ -553,20 +608,26 @@ fn work(
                     builders: HashMap::new(),
                 });
                 // The last days first, and a book of them straight away; then
-                // back to the chart's first bar, and the book again.
-                let near = days.start(days.of(now) - (FIRST_DAYS - 1)).max(from);
-                let walked = read_days(&store, ladders, &mut contract, near, now);
+                // back to the chart's first bar a day at a time, between the
+                // other jobs, and the book again at the end. Days are counted,
+                // never found again from a moment: a weekend's moments are
+                // Monday's trading date, and a walk begun from one skipped
+                // the weekend's days, leaving one read part way for good.
+                let last = days.of(now);
+                let near = last - (FIRST_DAYS - 1);
+                let first = days.of(from).max(last - DEEPEST);
+                let walked = read_days(&store, ladders, &mut contract, first.max(near), last, now);
                 let fresh = mailboxes.take(&key);
                 append(&mut contract, fresh);
-                rebuild(&key, &mut contract, &settings);
-                if walked && from < near {
-                    read_days(&store, ladders, &mut contract, from, days.start(days.of(near)) - 1);
-                    let fresh = mailboxes.take(&key);
-                    append(&mut contract, fresh);
-                    rebuild(&key, &mut contract, &settings);
-                }
+                let books = rebuild(&key, &mut contract, &settings);
                 contract.save(&store, true);
                 contract.from = contract.from.min(from);
+                walks.retain(|walk| walk.key != key);
+                if walked && first < near {
+                    walks.push_back(Walk { key: key.clone(), day: near - 1, first, now });
+                } else {
+                    told(&key, &contract, &books);
+                }
                 held.insert(key, contract);
             }
             Job::Build { key, settings } => {
@@ -594,7 +655,8 @@ fn work(
                     contract.open.clear();
                     contract.dirty.clear();
                     let settings: Vec<Settings> = contract.builders.keys().copied().collect();
-                    read_days(&store, ladders, contract, contract.from, now);
+                    let (first, last) = (contract.days.of(contract.from), contract.days.of(now));
+                    read_days(&store, ladders, contract, first.max(last - DEEPEST), last, now);
                     let fresh = mailboxes.take(&key);
                     append(contract, fresh);
                     rebuild(&key, contract, &settings);
@@ -608,7 +670,13 @@ fn work(
                 if to <= since {
                     continue;
                 }
-                let Ok(fresh) = ladders.prints(&contract.symbol, contract.tick_size, since, to) else { continue };
+                let fresh = match ladders.prints(&contract.symbol, contract.tick_size, since, to) {
+                    Ok(fresh) => fresh,
+                    Err(error) => {
+                        eprintln!("omacharts: large orders of {key}: trades {since}..{to}: {error}");
+                        continue;
+                    }
+                };
                 let added = append(contract, fresh);
                 // Known to here now, whatever came.
                 let day = contract.days.of(to - 1);
@@ -627,9 +695,11 @@ fn work(
                 contract.save(&store, false);
             }
             Job::Live { key } => {
+                // Not loaded yet: the trades wait in the mailbox for the load,
+                // which takes them once it has read the history.
+                let Some(contract) = held.get_mut(&key) else { continue };
                 // Every wake that queued up behind this one is this drain's.
                 let fresh = mailboxes.take(&key);
-                let Some(contract) = held.get_mut(&key) else { continue };
                 let added = append(contract, fresh);
                 if !added.is_empty() {
                     let wanted = wants.of(&key);
@@ -645,7 +715,24 @@ fn work(
                 if let Some(mut contract) = held.remove(&key) {
                     contract.save(&store, true);
                 }
-                mailboxes.forget(&key);
+                walks.retain(|walk| walk.key != key);
+            }
+            Job::Walk(walk) => {
+                let Some(contract) = held.get_mut(&walk.key) else { continue };
+                let more = read_days(&store, ladders, contract, walk.day, walk.day, walk.now);
+                if more && walk.day > walk.first {
+                    walks.push_back(Walk { day: walk.day - 1, ..walk });
+                    continue;
+                }
+                // Back as far as it goes: every book again, from it all.
+                let fresh = mailboxes.take(&walk.key);
+                append(contract, fresh);
+                let wanted = wants.of(&walk.key);
+                let mut settings: Vec<Settings> = wanted.kept.iter().copied().collect();
+                settings.sort_by_key(Settings::key);
+                let books = rebuild(&walk.key, contract, &settings);
+                contract.save(&store, true);
+                told(&walk.key, contract, &books);
             }
         }
     }
@@ -653,6 +740,17 @@ fn work(
     for contract in held.values_mut() {
         contract.save(&store, true);
     }
+}
+
+/// What came of a load, once it has walked back as far as it goes: a chart
+/// with no bubbles says here whether no trades came, or none was large.
+fn told(key: &str, contract: &Held, books: &[String]) {
+    let open: usize = contract.open.values().map(|day| day.prints.len()).sum();
+    eprintln!(
+        "omacharts: large orders of {key}: {} whole days kept, {open} trades of open days, large orders {}",
+        contract.whole.len(),
+        books.join(", ")
+    );
 }
 
 /// Fold `added` into every book of `contract`.
@@ -694,16 +792,16 @@ fn append(contract: &mut Held, mut fresh: Vec<Print>) -> Vec<Print> {
     added
 }
 
-/// Read `contract`'s days from `from` to `now`, newest first: a day the
+/// Read `contract`'s days `first..=last`, newest first, as they stand at
+/// `now`: a day the
 /// store has whole is only noted; any other is asked of the provider from
 /// where it is known to. Stops at the first weekday the provider has
 /// nothing of, answering false: there is nothing further back.
-fn read_days(store: &Store, ladders: &dyn omacharts_engine::Ladders, contract: &mut Held, from: i64, now: i64) -> bool {
+fn read_days(store: &Store, ladders: &dyn omacharts_engine::Ladders, contract: &mut Held, first: i64, last: i64, now: i64) -> bool {
     let days = contract.days.clone();
-    let (first, last) = (days.of(from), days.of(now));
     let settled = (now - SETTLED).div_euclid(60) * 60;
     let mut day = last;
-    while day >= first && last - day <= DEEPEST {
+    while day >= first {
         let (start, end) = (days.start(day), days.start(day + 1));
         if contract.whole.contains(&day) || store.print_day_complete(&contract.stored, day, contract.tick_size, &contract.source) {
             contract.whole.insert(day);
@@ -729,7 +827,13 @@ fn read_days(store: &Store, ladders: &dyn omacharts_engine::Ladders, contract: &
         let since = open.upto.div_euclid(1_000_000_000).max(start);
         let to = end.min(settled);
         if since < to {
-            let Ok(fresh) = ladders.prints(&contract.symbol, contract.tick_size, since, to) else { return false };
+            let fresh = match ladders.prints(&contract.symbol, contract.tick_size, since, to) {
+                Ok(fresh) => fresh,
+                Err(error) => {
+                    eprintln!("omacharts: large orders of {}: trades {since}..{to}: {error}", contract.stored);
+                    return false;
+                }
+            };
             let floor = open.upto;
             open.prints.extend(fresh.into_iter().filter(|p| p.ts_nanos >= floor && p.ts_nanos < to * 1_000_000_000));
             open.prints.sort_by_key(|p| p.ts_nanos);
@@ -793,6 +897,10 @@ pub(crate) mod tests {
         stops: Option<i64>,
         /// Where it says it reads the trades from.
         source: Option<String>,
+        /// How long a day from before `slow_before` takes to come, as a day
+        /// of ES takes from Rithmic's history plant.
+        slow: Duration,
+        slow_before: i64,
     }
 
     /// A feed of single trades, one an hour: what the window's tests chart
@@ -831,6 +939,11 @@ pub(crate) mod tests {
             true
         }
         fn prints(&self, _: &str, _: f64, from: i64, to: i64) -> Result<Vec<Print>, ProviderError> {
+            let slow = {
+                let asked = self.0.lock().unwrap();
+                if from < asked.slow_before { asked.slow } else { Duration::ZERO }
+            };
+            std::thread::sleep(slow);
             let mut asked = self.0.lock().unwrap();
             asked.spans.push((from, to));
             Ok(hourly(from.max(asked.depth), asked.stops.map_or(to, |stops| to.min(stops))))
@@ -1198,5 +1311,116 @@ pub(crate) mod tests {
         let (day_now, night_now) = split(&large, daytime);
         assert_eq!(night_now, night, "the night's bubbles untouched");
         assert!(!day_now.is_empty() && day_now.len() < day.len());
+    }
+
+    /// 2026-11-23 15:00 UTC, a Monday, ES trading.
+    const MONDAY: i64 = 1_795_446_000;
+
+    fn monday() -> i64 {
+        MONDAY
+    }
+
+    /// The store as a Rithmic chart of ES left it: weekdays kept whole, a
+    /// Saturday read a minute short of its end and never finished, Sunday
+    /// whole and empty, and Monday read to early morning. A chart of it the
+    /// next time is drawn with its bubbles, and the Saturday finished.
+    #[test]
+    fn a_store_left_part_read_by_a_streaming_feed_still_draws_its_bubbles() {
+        let path = scratch("left");
+        let days = Days::new(&es());
+        let today = days.of(MONDAY);
+        {
+            let store = Store::open_at(&path).unwrap();
+            for day in today - 19..=today {
+                let (start, end) = (days.start(day), days.start(day + 1));
+                let weekend = !is_weekday(start);
+                let (upto, complete) = match day - today {
+                    0 => (MONDAY - 10 * HOUR, false),
+                    -2 => (end - 60, false),
+                    _ => (end, true),
+                };
+                let prints = if weekend { Vec::new() } else { hourly(start, upto) };
+                let kept = PrintDay { tick_size: 0.25, upto: upto * 1_000_000_000, complete, prints, source: String::new() };
+                store.save_print_day(KEY, day, &kept).unwrap();
+            }
+        }
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(path.clone())).unwrap();
+        large.set_clock(monday);
+        large.want(4, KEY, KEY, "ES", &es(), MONDAY - 18 * DAY, SETTINGS, false);
+        assert!(settle(&large).contains(&4));
+        let (book, _) = large.book(KEY, SETTINGS).expect("a book");
+        assert!(book.orders.len() > 100, "{} orders", book.orders.len());
+        let store = Store::open_at(&path).unwrap();
+        assert!(store.print_day_complete(KEY, today - 2, 0.25, ""), "the Saturday is finished");
+    }
+
+    /// The book of a threshold changed while the walk back is still asking
+    /// a feed for its days, slowly, as Rithmic's history plant answers a
+    /// day of ES, comes at once, and so do live trades: the walk is a day
+    /// at a time between them, never one job everything waits behind.
+    #[test]
+    fn a_slow_walk_back_never_holds_up_a_new_threshold_or_live_trades() {
+        let asked = Arc::new(Mutex::new(Asked {
+            slow: Duration::from_millis(400),
+            slow_before: NOW - 2 * DAY,
+            ..Asked::default()
+        }));
+        let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(scratch("slow"))).unwrap();
+        large.set_clock(now);
+        large.want(1, KEY, KEY, "ES", &es(), NOW - 20 * DAY, SETTINGS, false);
+        assert_eq!(next(&large), vec![1], "the last days' book");
+        let started = Instant::now();
+        let lower = Settings { regular: 5, extended: 5, combine: true };
+        large.want(1, KEY, KEY, "ES", &es(), NOW - 20 * DAY, lower, false);
+        let sink = asked.lock().unwrap().sinks.pop().expect("a stream");
+        sink(&[Print::new((NOW + 10) * 1_000_000_000, 30_000, 700, Aggressor::Buy, false)]);
+        let until = Instant::now() + Duration::from_secs(5);
+        while large.book(KEY, lower).is_none_or(|(book, _)| !book.orders.iter().any(|o| o.order.size == 700)) {
+            if let Ok(done) = large.done().try_recv() {
+                large.finished(done);
+            }
+            assert!(Instant::now() < until, "held up behind the walk");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        let walked = asked.lock().unwrap().spans.iter().filter(|(from, _)| *from < NOW - 2 * DAY).count();
+        assert!(walked < 10, "the walk was still going: {walked} days");
+        // And it goes on to the end, and the book has all of it then.
+        let until = Instant::now() + Duration::from_secs(30);
+        let oldest = |large: &LargeOrders| large.book(KEY, lower).and_then(|(book, _)| book.orders.first().map(|o| o.order.ts_nanos));
+        while oldest(&large).is_none_or(|ts| ts >= (NOW - 18 * DAY) * 1_000_000_000) {
+            if let Ok(done) = large.done().try_recv() {
+                large.finished(done);
+            }
+            assert!(Instant::now() < until, "the walk never reached the book");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let (book, _) = large.book(KEY, lower).unwrap();
+        assert!(book.orders.iter().any(|o| o.order.size == 700), "the live trade too");
+    }
+
+    /// A chart that lets go of a contract and wants it again before the
+    /// thread has got to the forget — busy reading — still gets its live
+    /// trades: its new stream's mailbox is never the one forgotten.
+    #[test]
+    fn a_chart_wanting_its_contract_again_at_once_still_hears_live_trades() {
+        let asked = Arc::new(Mutex::new(Asked { slow: Duration::from_millis(300), slow_before: i64::MAX, ..Asked::default() }));
+        let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(scratch("again-live"))).unwrap();
+        large.set_clock(now);
+        large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, SETTINGS, false);
+        large.unwatch(1);
+        large.want(1, KEY, KEY, "ES", &es(), NOW - DAY, SETTINGS, false);
+        settle(&large);
+        let sink = asked.lock().unwrap().sinks.pop().expect("the new stream");
+        sink(&[Print::new((NOW + 10) * 1_000_000_000, 30_000, 900, Aggressor::Sell, false)]);
+        let until = Instant::now() + Duration::from_secs(5);
+        while !sizes(&large).contains(&900) {
+            if let Ok(done) = large.done().try_recv() {
+                large.finished(done);
+            }
+            assert!(Instant::now() < until, "the live trade never reached the book");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
