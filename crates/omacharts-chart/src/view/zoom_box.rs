@@ -200,8 +200,8 @@ mod tests {
     fn a_box_becomes_its_columns_and_its_prices() {
         let state = charted(300);
         // The view is the last 100 columns, with the resting margin past
-        // the last bar: 210 to 310.
-        assert_eq!(state.left_edge(), 210);
+        // the last bar, a sixteenth of them: 206 to 306.
+        assert_eq!(state.left_edge(), 206);
         let (a, b) = (pixel(&state, 220.0, 104.0), pixel(&state, 250.0, 96.0));
         let window = state.zoom_box(W, H, a, b, 4.0).unwrap();
         assert!((window.left - 220.0).abs() < 1e-9, "{window:?}");
@@ -220,7 +220,7 @@ mod tests {
         let plan = layout(&state, W, H);
         let inside = pixel(&state, 280.0, 100.0);
         let window = state.zoom_box(W, H, inside, (W - 1.0, H - 1.0), 4.0).unwrap();
-        assert!((window.right - 310.0).abs() < 1e-9, "the plot's right edge: {window:?}");
+        assert!((window.right - 306.0).abs() < 1e-9, "the plot's right edge: {window:?}");
         let bottom = {
             let (first, visible) = state.slice();
             let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();

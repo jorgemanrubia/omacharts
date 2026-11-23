@@ -1233,12 +1233,13 @@ mod tests {
             (state.overhang_now(), state.columns())
         };
         let (none, columns) = margin(&[(Left, 0.4)]);
-        assert_eq!(none, super::super::RIGHT_MARGIN, "no profile aligned right, no room added");
-        assert_eq!(margin(&[]).0, super::super::RIGHT_MARGIN);
+        let resting = super::super::rest_columns(super::super::RIGHT_MARGIN, columns);
+        assert_eq!(none, resting, "no profile aligned right, no room added");
+        assert_eq!(margin(&[]).0, resting);
 
         let needed = |widths: f64, count: f64| {
             let taken = (columns as f64 * (widths * super::SLOT_SHARE + (count - 1.0) * super::SLOT_GAP_SHARE)).ceil();
-            super::super::RIGHT_MARGIN + taken as usize
+            resting + taken as usize
         };
         let (one, _) = margin(&[(Right, 1.0), (Left, 0.4)]);
         assert_eq!(one, needed(1.0, 1.0));
@@ -1246,7 +1247,7 @@ mod tests {
         assert_eq!(two, needed(1.8, 2.0));
         // However narrow, it is room on top of the resting margin.
         assert_eq!(margin(&[(Right, 0.2)]).0, needed(0.2, 1.0));
-        assert!(margin(&[(Right, 0.2)]).0 > super::super::RIGHT_MARGIN);
+        assert!(margin(&[(Right, 0.2)]).0 > resting);
         assert!(two > one && one > none, "{none} < {one} < {two}");
 
         // Taken off, the room goes with it.
@@ -1254,7 +1255,7 @@ mod tests {
         state.indicators.pop();
         assert_eq!(state.overhang_now(), one);
         state.indicators.clear();
-        assert_eq!(state.overhang_now(), super::super::RIGHT_MARGIN);
+        assert_eq!(state.overhang_now(), resting);
         // However many there are, the bars keep most of the plot.
         let crowd = stacked(&[(Right, 1.0); 5]);
         let most = crowd.columns() as f64 * super::MARGIN_MAX_SHARE + 1.0 + super::super::RIGHT_MARGIN as f64;
@@ -1343,7 +1344,7 @@ mod tests {
         use profile::Align::Right;
         let rests = |state: &State, taken: f64, what: &str| {
             let (gap, block, bar) = margin_px(state);
-            let resting = super::super::RIGHT_MARGIN as f64 * bar;
+            let resting = state.rest_margin(super::super::RIGHT_MARGIN) as f64 * bar;
             assert!(state.anchored && !state.overhang_by_hand, "{what}: at rest at the live edge");
             assert!((gap - resting).abs() <= bar + 1e-6, "{what}: {gap} off the last bar, {resting} with none");
             assert!(gap >= resting - 1e-6, "{what}: never less than with none");
@@ -1370,6 +1371,39 @@ mod tests {
             assert!(!state.anchored, "into history");
             state.pan_by(3.0 * columns, plot_w);
             rests(&state, taken, &format!("{} back from history", looks.len()));
+        }
+    }
+
+    /// Zoomed in as far as a chart goes, the resting margin past the last
+    /// bar is as wide on screen as at the zoom a chart opens at, not ten
+    /// of the wide bars: the profiles aligned right after it stay on the
+    /// plot. Zoomed out as far, it is as wide too.
+    #[test]
+    fn the_resting_margin_keeps_its_width_on_screen_at_any_zoom() {
+        use profile::Align::Right;
+        for looks in [&[][..], &[(Right, 1.0), (Right, 0.8)][..]] {
+            let mut state = long_with(looks);
+            let plan = frame(&state, W, H).expect("a frame").plan;
+            state.visible = super::super::REFERENCE_COLUMNS;
+            let (reference, _, _) = margin_px(&state);
+            let share = super::super::RIGHT_MARGIN as f64 / super::super::REFERENCE_COLUMNS as f64;
+            let bar = plan.plot_w / state.columns() as f64;
+            assert!((reference - share * plan.plot_w).abs() <= bar / 2.0 + 1e-6, "{reference} at the opening zoom");
+            for factor in [0.01, 0.5, 2.0, 100.0] {
+                state.zoom_time(factor, 0.5, plan.plot_w);
+                let (gap, _, bar) = margin_px(&state);
+                let what = format!("{} profiles at {} columns", looks.len(), state.columns());
+                // Whole columns: within a bar for the margin, and one for the
+                // profiles' room rounded up.
+                assert!((gap - reference).abs() <= 2.0 * bar + 1.0, "{what}: {gap} vs {reference}");
+                for (from, to) in period_boxes(&state, state.bars.len()) {
+                    assert!(from >= plan.plot_x - 1e-6 && to <= plan.plot_x + plan.plot_w + 1e-6, "{what}: a profile at {from}..{to} off the plot");
+                }
+            }
+            state.zoom_time(0.0, 0.5, plan.plot_w);
+            assert_eq!(state.columns(), state.fewest(), "zoomed in as far as a chart goes");
+            let (gap, _, bar) = margin_px(&state);
+            assert!(gap <= reference + 2.0 * bar + 1.0, "{gap} zoomed all the way in");
         }
     }
 
@@ -1445,7 +1479,7 @@ mod tests {
         state.pan_by(2.0, plot_w);
         assert_eq!(state.overhang_now(), 7, "and part way open again");
         state.reset_view();
-        assert_eq!(state.overhang_now(), state.margin_floor() + super::super::RIGHT_MARGIN);
+        assert_eq!(state.overhang_now(), state.margin_floor() + state.rest_margin(super::super::RIGHT_MARGIN));
     }
 
     /// Profiles aligned to the same edge of a period sit side by side from

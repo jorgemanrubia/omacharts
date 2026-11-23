@@ -73,8 +73,26 @@ const PAD: f64 = 10.0;
 const OVERHANG_PX: f64 = 500.0;
 /// Empty columns past the last bar when the chart opens or is reset, so the
 /// live bar is not pressed against the price axis. About what other
-/// charting software leaves.
+/// charting software leaves. Counted at [`REFERENCE_COLUMNS`] across the
+/// plot, the zoom a chart opens at: at rest the margin is the same share of
+/// the plot, the same width on screen, at any zoom ([`State::rest_margin`]).
 const RIGHT_MARGIN: usize = 10;
+/// The columns across the plot a chart opens with, which the resting margin
+/// is counted at.
+const REFERENCE_COLUMNS: usize = 160;
+/// The empty columns a resting margin of `margin` columns at
+/// [`REFERENCE_COLUMNS`] is across `columns`: the same share of the plot, so
+/// the same width on screen however wide a bar is. Counted in columns, it
+/// grew with the bars zoomed in until it pushed the right-aligned profiles
+/// after it off the plot. Rounded to whole columns, so it is within half a
+/// bar of that width; never less than one, so the live bar is not pressed
+/// against the price axis however wide it is, and none when none is asked.
+fn rest_columns(margin: usize, columns: usize) -> usize {
+    match margin {
+        0 => 0,
+        _ => ((margin * columns + REFERENCE_COLUMNS / 2) / REFERENCE_COLUMNS).max(1),
+    }
+}
 /// Kept short of the whole view, so dividing by what is left is safe.
 const MARGIN_MAX_SHARE_OF_VIEW: f64 = 0.9;
 /// Room above the highest price on screen when the price is the top row, so
@@ -1548,7 +1566,7 @@ impl State {
             vwap_cache: RefCell::new(Vec::new()),
             timeframe: Timeframe::days(1),
             first: 0,
-            visible: 160,
+            visible: REFERENCE_COLUMNS,
             pointer: None,
             magnet: false,
             hover_grip: None,
@@ -2646,7 +2664,7 @@ impl State {
     /// far as `OVERHANG_PX`.
     fn profile_stop(&self) -> Option<usize> {
         let floor = self.margin_floor();
-        (floor > 0).then(|| floor + RIGHT_MARGIN)
+        (floor > 0).then(|| floor + self.rest_margin(RIGHT_MARGIN))
     }
 
     /// Back at rest once the view reaches the profiles' margin, so it is
@@ -2697,13 +2715,14 @@ impl State {
     fn trim_room(&mut self, plot_w: f64) {
         let room = self.max_overhang(plot_w);
         self.lead = self.lead.min(room);
-        // At rest it is the resting margin alone, trimmed as with no
-        // profiles; set by hand it may reach as far as the view stops.
-        let most = match self.overhang_by_hand {
-            true => room.max(self.profile_stop().unwrap_or(0)),
-            false => room,
-        };
-        self.overhang = self.overhang.min(most);
+        // At rest it is the resting margin, counted at the zoom a chart
+        // opens at and kept the same share of the plot at any other, so it
+        // is never trimmed: trimmed zoomed in, it stayed as few columns
+        // zoomed out again. Set by hand it may reach as far as the view
+        // stops.
+        if self.overhang_by_hand {
+            self.overhang = self.overhang.min(room.max(self.profile_stop().unwrap_or(0)));
+        }
     }
 
     /// The columns past the last bar the live sessions of the right-aligned
@@ -2725,8 +2744,14 @@ impl State {
     fn overhang_now(&self) -> usize {
         match self.overhang_by_hand {
             true => self.overhang,
-            false => self.overhang + self.margin_floor(),
+            false => self.rest_margin(self.overhang) + self.margin_floor(),
         }
+    }
+
+    /// The empty columns a resting margin of `margin` columns at
+    /// [`REFERENCE_COLUMNS`] is at this zoom ([`rest_columns`]).
+    fn rest_margin(&self, margin: usize) -> usize {
+        rest_columns(margin, self.columns())
     }
 
     /// The empty columns past the last bar with the view at rest at the live
@@ -2739,7 +2764,7 @@ impl State {
         }
         let rest = match self.anchored && !self.overhang_by_hand {
             true => self.overhang_now(),
-            false => RIGHT_MARGIN + self.margin_floor(),
+            false => self.rest_margin(RIGHT_MARGIN) + self.margin_floor(),
         };
         rest.min(columns - 1)
     }
@@ -2768,7 +2793,12 @@ impl State {
     /// margin past it, so a short series still opens with room after its
     /// last bar instead of losing bars to it.
     fn span(&self) -> usize {
-        self.bars.len() + RIGHT_MARGIN
+        let len = self.bars.len();
+        let mut columns = (len * REFERENCE_COLUMNS).div_ceil(REFERENCE_COLUMNS - RIGHT_MARGIN);
+        while columns - rest_columns(RIGHT_MARGIN, columns) < len {
+            columns += 1;
+        }
+        columns
     }
 
     /// Zoom the time axis about `anchor`, a fraction across the plot. On
@@ -2889,7 +2919,7 @@ impl State {
         self.range = None;
         self.free_price();
         self.free_strips();
-        self.visible = 160;
+        self.visible = REFERENCE_COLUMNS;
         self.anchored = true;
         self.overhang = RIGHT_MARGIN;
         self.overhang_by_hand = false;
@@ -3115,12 +3145,26 @@ impl State {
         if end >= len {
             // Wide enough that the margin, widened for the profiles beside
             // the live session, still leaves the range's first bar on screen.
-            let share = selection::margin_share(self).min(MARGIN_MAX_SHARE_OF_VIEW);
-            let wanted = ((len - first + RIGHT_MARGIN) as f64 / (1.0 - share)).ceil() as usize;
+            let bars = len - first;
+            let rest = RIGHT_MARGIN as f64 / REFERENCE_COLUMNS as f64;
+            let share = (selection::margin_share(self) + rest).min(MARGIN_MAX_SHARE_OF_VIEW);
+            let wanted = (bars as f64 / (1.0 - share)).ceil() as usize;
             self.visible = wanted.clamp(self.fewest(), MAX_VISIBLE);
             self.anchored = true;
             self.overhang = RIGHT_MARGIN;
             self.overhang_by_hand = false;
+            // The margin is whole columns, so a column more or fewer may
+            // be what shows the range's bars and no more.
+            while self.visible < MAX_VISIBLE && self.slice().1 < bars {
+                self.visible += 1;
+            }
+            while self.visible > self.fewest() {
+                self.visible -= 1;
+                if self.slice().1 < bars {
+                    self.visible += 1;
+                    break;
+                }
+            }
             return;
         }
         // Over before the last bar: its own bars edge to edge, from the
@@ -13229,7 +13273,7 @@ mod tests {
         state.replace_series(named("BTC"), Timeframe::days(1), days(start, today, true));
         state.show_range(Range::ToDate(1, Period::Year));
         assert_eq!(state.slice().1, 292, "1 January to 19 October, every day");
-        assert_eq!(state.columns(), 292 + RIGHT_MARGIN);
+        assert_eq!(state.columns(), 292 + state.rest_margin(RIGHT_MARGIN));
 
         let stock = days(start, today, false);
         let weekdays = stock.iter().filter(|bar| bar.ts >= days(ymd(2026, 1, 1), today, true)[0].ts).count();
@@ -13369,7 +13413,7 @@ mod tests {
     fn a_short_series_opens_with_room_past_it() {
         let mut state = charted(5);
         state.reset_view();
-        assert_eq!(state.columns(), 5 + RIGHT_MARGIN);
+        assert_eq!(state.columns(), 5 + state.rest_margin(RIGHT_MARGIN));
         assert_eq!(state.slice(), (0, 5));
         assert_eq!(state.left_edge(), 0);
     }

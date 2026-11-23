@@ -115,7 +115,7 @@ With **Automatic rows** off, **Rows** is the number of rows each period is divid
 
 Aligned right, the session still forming is drawn in the empty space past the last bar, against the price axis, when there is room for it there. Scrolled back, or with no room open, it ends where its bars do like the rest.
 
-That space is widened to fit it, and narrowed again when no profile is aligned right. It is a share of the chart's width, not a number of bars, so zooming in and out moves the bars and leaves it, and the profiles in it, the same size. Scrolling forward stops at it, so coming back to the latest bar finds it as wide as before. Drag part of it shut and it stays as you left it, at the same size on screen as you zoom, until you scroll back to the latest bar or reset the view. Past the last bar, the profiles take at most 60% of the chart between them.
+That space is widened to fit it, and narrowed again when no profile is aligned right. All of it, the room a chart keeps past the last bar with no profile there as well as what the profiles add, is a share of the chart's width, not a number of bars, so zooming in and out moves the bars and leaves it, and the profiles in it, the same size. Scrolling forward stops at it, so coming back to the latest bar finds it as wide as before. Drag part of it shut and it stays as you left it, at the same size on screen as you zoom, until you scroll back to the latest bar or reset the view. Past the last bar, the profiles take at most 60% of the chart between them.
 
 ## Composite profiles
 
