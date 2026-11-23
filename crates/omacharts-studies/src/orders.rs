@@ -313,6 +313,25 @@ impl Builder {
         book
     }
 
+    /// The orders closed so far, read in place: [`Builder::book`] without
+    /// the order still open, and without copying the book. Each order is in
+    /// it once the print after its last fill has arrived, and the largest
+    /// of each session are of those orders alone.
+    #[inline]
+    pub fn closed(&self) -> &Book {
+        &self.book
+    }
+
+    /// The order still open, placed as [`Builder::book`] places it — in the
+    /// last session of [`Builder::closed`] or the one after it — if it is
+    /// big enough to count yet. Nothing is copied; `hours` is asked only of
+    /// an open order that could count.
+    #[inline]
+    pub fn open(&self, hours: &mut impl FnMut(i64) -> (i64, bool)) -> Option<Placed> {
+        let open = self.combiner.peek()?;
+        placed(&self.book, &self.thresholds, open, hours).map(|(placed, _)| placed)
+    }
+
     /// Every print in: the open order is closed, and the book is final.
     pub fn finish(mut self, hours: &mut impl FnMut(i64) -> (i64, bool)) -> Book {
         if let Some(order) = self.combiner.flush() {
@@ -480,5 +499,38 @@ mod tests {
         builder.push(p(S, 102, 8, Aggressor::Buy), &mut hours);
         let book = builder.finish(&mut hours);
         assert_eq!(book.orders.iter().map(|o| o.order.size).collect::<Vec<_>>(), vec![24]);
+    }
+
+    /// Read in place, a book is its closed orders and the open one beside
+    /// them: together, after every print, what the copy as it stands holds.
+    #[test]
+    fn the_closed_orders_and_the_open_one_are_the_book_as_it_stands() {
+        use Aggressor::*;
+        let thresholds = Thresholds { regular: 10, extended: 5 };
+        let prints = [
+            p(5 * S, 100, 4, Buy),
+            p(5 * S, 101, 4, Buy),
+            p(12 * S, 100, 30, Sell),
+            p(13 * S, 99, 3, Sell),
+            p(13 * S, 98, 9, Sell),
+            p(105 * S, 99, 25, Buy),
+            p(106 * S, 99, 2, Unknown),
+        ];
+        let mut builder = Builder::new(true, thresholds);
+        assert_eq!(builder.open(&mut hours), None);
+        for print in prints {
+            builder.push(print, &mut hours);
+            let mut together = builder.closed().clone();
+            if let Some(open) = builder.open(&mut hours) {
+                assert!(open.session as usize <= together.sessions.len());
+                together.orders.push(open);
+            }
+            let copied = builder.book(&mut hours);
+            assert_eq!(together.orders, copied.orders, "after the print at {}", print.ts_nanos);
+            assert!(builder.closed().orders.len() <= copied.orders.len());
+        }
+        let closed: Vec<u64> = builder.closed().orders.iter().map(|o| o.order.size).collect();
+        assert_eq!(closed, vec![8, 30, 12, 25], "each closed by the print after its last fill");
+        assert_eq!(builder.open(&mut hours), None, "an unknown side of two is too small to count");
     }
 }
