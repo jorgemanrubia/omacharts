@@ -752,9 +752,20 @@ fn build_charts_page(context: &Rc<Context>) {
     };
     scales.add(&switch("Logarithmic scale", current.log_scale, |d, on| d.log_scale = on));
     scales.add(&switch("Gridlines", current.show_grid, |d, on| d.show_grid = on));
-    drawings.add(&switch("Show drawings from other charts", current.shows_drawings, |d, on| {
-        d.shows_drawings = on
-    }));
+    let shows = adw::ComboRow::new();
+    shows.set_title(crate::ui::chart_settings::SHOW_DRAWINGS_LABEL);
+    {
+        use omacharts_engine::drawings::ShowDrawings;
+        let choices: Vec<String> = ShowDrawings::ALL.iter().map(|s| s.label().to_string()).collect();
+        shows.set_model(Some(&string_list(&choices)));
+        shows.set_selected(ShowDrawings::ALL.iter().position(|s| *s == current.shows_drawings).unwrap_or(0) as u32);
+        let changed = changed.clone();
+        shows.connect_selected_notify(move |row| {
+            let Some(chosen) = ShowDrawings::ALL.get(row.selected() as usize).copied() else { return };
+            changed(&|d| d.shows_drawings = chosen);
+        });
+    }
+    drawings.add(&shows);
     drawings.add(&switch("Send drawings to other charts", current.sends_drawings, |d, on| {
         d.sends_drawings = on
     }));

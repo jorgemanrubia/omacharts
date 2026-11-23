@@ -441,6 +441,9 @@ const TPO_STYLES: &[&str] = &["letters", "blocks"];
 const PROFILE_METHODS: &[&str] = &["total", "delta"];
 const VWAP_SOURCES: &[&str] = &["hlc3", "hl2", "ohlc4", "close"];
 const SWITCHES: &[&str] = &["on", "off"];
+/// Which other charts' drawings a chart shows; `on` and `off` are what the
+/// switch it was took, read as `all` and `none`.
+const SHOW_DRAWINGS: &[&str] = &["none", "chartbook", "all", "on", "off"];
 const LINKS: &[&str] = &["focus", "follow", "pinned"];
 /// The answers `config bars` gives and takes. `coloured`, `hollow` and
 /// `red-up` are what a released version took: `coloured` is `vivid`, and the
@@ -602,7 +605,7 @@ pub const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("sell-color", "COLOUR", "selling in a delta volume profile, a volume delta, a footprint or large orders; given over a preset, it makes the colouring custom, buying kept as drawn; none lets it go"),
     Flag::valued("buy-transparency", "F", "how much of the chart shows through buying in a volume delta, a footprint or large orders, 0-1, or `default` for its own (0 for a volume delta, 0.15 for a footprint's strongest row, 0.65 for bubbles)"),
     Flag::valued("sell-transparency", "F", "the same for selling"),
-    Flag::valued("intensity", "BOOL", "whether a footprint's rows are filled more solidly the bigger their delta against the biggest on screen (on unless set off); off fills every row alike").of(SWITCHES),
+    Flag::valued("intensity", "BOOL", "whether a footprint's rows are filled more solidly the bigger their delta against the biggest row they are sized against, --size-against (on unless set off); off fills every row alike").of(SWITCHES),
     Flag::valued("numbers", "BOOL", "whether a footprint writes each row's delta in it (on unless set off); off draws the rows alone").of(SWITCHES),
     Flag::valued("profile", "BOOL", "whether a footprint draws each bar's volume profile at its left, everything traded at each row's prices, the narrow bar and the delta rows moved right of it (off unless set on)").of(SWITCHES),
     Flag::valued("profile-color", "COLOUR", "a footprint's volume profile's colour, or `default` for the theme's blue"),
@@ -610,7 +613,7 @@ pub const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("profile-numbers", "BOOL", "whether a footprint's volume profile writes each row's total in it (on unless set off)").of(SWITCHES),
     Flag::valued("rth-threshold", "N", "the size, in contracts, an order in regular hours has to be bigger than to be a large order (default 50)"),
     Flag::valued("eth-threshold", "N", "the same outside regular hours (default 20)"),
-    Flag::valued("size-against", "WHAT", "what a large order's bubble is sized against: the large orders on screen, the session's, or the session's regular or extended hours' (default session)").of(SIZE_AGAINST),
+    Flag::valued("size-against", "WHAT", "what a large order's bubble, or a footprint's rows, are sized against: the biggest on screen, the session's, or the session's regular or extended hours' (default session for large orders, visible for a footprint)").of(SIZE_AGAINST),
     Flag::valued("combine", "BOOL", "whether prints of one moment and one side count as one large order, their sizes added (on unless set off)").of(SWITCHES),
     Flag::valued("visible", "BOOL", "draw it at all").of(SWITCHES),
     Flag::valued("legend", "BOOL", "name it in the chart's legend; off by default for session_times").of(SWITCHES),
@@ -1242,8 +1245,12 @@ pub const SURFACE: &[Noun] = &[
                     )
                     .of(LINKS),
                     Flag::valued("grid", "BOOL", "draw the grid").of(&["on", "off"]),
-                    Flag::valued("show-drawings", "BOOL", "whether the chart shows what other charts of its symbol draw")
-                        .of(SWITCHES),
+                    Flag::valued(
+                        "show-drawings",
+                        "WHICH",
+                        "drawings from other charts of its symbol: none (Hide), chartbook (This chartbook: the charts in its own chartbook) or all (All chartbooks); on and off are all and none",
+                    )
+                    .of(SHOW_DRAWINGS),
                     Flag::valued("send-drawings", "BOOL", "whether what is drawn here goes to the symbol's other charts")
                         .of(SWITCHES),
                     Flag::valued("auto-scale", "BOOL", "fit the price axis to the visible bars, or hold it still")
@@ -2207,6 +2214,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("show_grid", "chart set", "--grid"),
     ("link", "chart set", "--link"),
     ("shows_drawings", "chart set", "--show-drawings"),
+    ("show_drawings", "chart set", "--show-drawings"),
     ("sends_drawings", "chart set", "--send-drawings"),
     ("shows_legend", "chart set", "--legend"),
     ("drawings", "chart drawing", ""),

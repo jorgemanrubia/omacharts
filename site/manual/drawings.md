@@ -232,18 +232,23 @@ While they are hidden, a struck-through pencil after the chart's resolution says
 
 ## Sharing drawings between charts
 
-Each chart has two switches, in the **Drawings** group of [Chart settings](/manual/chart-settings/) (<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd>). Both are on by default.
+Each chart has two rows for this, in the **Drawings** group of [Chart settings](/manual/chart-settings/) (<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd>).
 
-| Switch | Off means |
+**Drawings from other charts** says which other charts of the same symbol the chart shows drawings from:
+
+| Choice | The chart shows |
 |---|---|
-| **Show drawings from other charts** | The chart shows only its own drawings |
-| **Send drawings to other charts** | What is drawn on this chart stays on this chart |
+| **Hide** | Only its own drawings |
+| **This chartbook** | Its own, and those sent by the other charts in its chartbook |
+| **All chartbooks** | Its own, and those sent by every other chart of the symbol, in any chartbook. The default |
+
+**Send drawings to other charts** is a switch, on by default. Off, what is drawn on this chart stays on this chart.
 
 Both act on existing drawings as well as new ones. Turning sending off takes this chart's drawings off the other charts, and turning it back on sends them again.
 
-With showing off, the chart still shows every drawing made on it, including the ones it sent to other charts. A drawing from an early version that does not record which chart made it counts as another chart's.
+Whatever it shows of other charts', the chart still shows every drawing made on it, including the ones it sent to other charts. With **This chartbook**, a drawing counts as the chartbook's while the chart that sent it is in the chartbook: one sent by a chart since closed, or from an early version that does not record which chart made it, counts as another chartbook's. A chart that was set to show drawings from other charts before there was a choice shows **All chartbooks**, and one that was not shows **Hide**, so nothing it showed changes.
 
-New charts take their defaults from Preferences › Charts › Defaults › **Drawings**, the same two switches ([Chart settings](/manual/chart-settings/#defaults-for-new-charts)).
+New charts take their defaults from Preferences › Charts › Defaults › **Drawings**, the same two rows ([Chart settings](/manual/chart-settings/#defaults-for-new-charts)).
 
 **Remove all drawings** in the chart menu removes every drawing the chart shows. <kbd>Ctrl</kbd> + <kbd>Z</kbd> brings them back.
 

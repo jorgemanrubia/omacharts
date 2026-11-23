@@ -483,22 +483,24 @@ impl Client {
     /// Every trade of `contract` in `from..to`, unix seconds, oldest first:
     /// the history plant's tick bars of one trade each.
     ///
-    /// The plant is asked for the whole window, its 10,000 record cap lifted;
-    /// a replay that stops short of the window anyway — some servers end one
-    /// at half a million trades — is asked again from the last second it
-    /// reached, that second's trades read afresh so none is counted twice or
-    /// lost. Each request is held to the same time a bar replay is.
+    /// Asked a piece at a time, [`TRADES_PIECE`] long, oldest first, each
+    /// held to the time a bar replay is: a whole day of ES is hundreds of
+    /// thousands of trades, which the plant streams in four-second bursts,
+    /// and asked in one request it ran past that time and came back as
+    /// nothing at all. A piece that still runs past it is asked again as two
+    /// halves, down to a minute. Within a piece, a replay that stops short —
+    /// some servers end one at half a million trades — is asked again from
+    /// the last second it reached, that second's trades read afresh so none
+    /// is counted twice or lost.
     pub fn trades(&self, contract: &str, exchange: &str, from: i64, to: i64) -> Result<Vec<Trade>, Error> {
         let handles = self.up()?;
-        let mut trades: Vec<Trade> = Vec::new();
-        let mut since = from;
-        loop {
+        trades_in(from, to, TRADES_PIECE, |since, until| {
             let request = TickBarReplayRequest::new()
                 .symbol(contract)
                 .exchange(exchange)
                 .bar_length(1)
                 .start_time_sec(wire_seconds(since))
-                .end_time_sec(wire_seconds(to))
+                .end_time_sec(wire_seconds(until))
                 .resume_bars(true);
             let replay = handles.history.load_tick_bar_replay(request);
             let responses = self.inner.handle.block_on(async {
@@ -507,12 +509,8 @@ impl Client {
                     Err(_) => Err(Error::Timeout),
                 }
             })?;
-            let more = trades_of(&responses)?;
-            match continue_from(&mut trades, more, since, to) {
-                Some(next) => since = next,
-                None => return Ok(trades),
-            }
-        }
+            trades_of(&responses)
+        })
     }
 
     /// Cut the connection the way a dropped network does, from underneath:
@@ -1422,8 +1420,10 @@ fn bars_of(responses: &[RithmicResponse], period: Period) -> Result<Vec<Bar>, Er
 /// One trade of a tick replay of a trade a bar, if it says its price.
 fn replayed_trade(bar: &rithmic_rs::rti::ResponseTickBarReplay) -> Option<Trade> {
     let price = bar.close_price?;
-    let seconds = i64::from(*bar.data_bar_ssboe.first()?);
-    let micros = i64::from(bar.data_bar_usecs.first().copied().unwrap_or(0));
+    // The bar's close, its second time, is the trade's own: the plant
+    // stamps the first bar's open with the second it was asked from.
+    let seconds = i64::from(*bar.data_bar_ssboe.get(1).or(bar.data_bar_ssboe.first())?);
+    let micros = i64::from(bar.data_bar_usecs.get(1).or(bar.data_bar_usecs.first()).copied().unwrap_or(0));
     let size = bar.volume.unwrap_or(0);
     // Named by the aggressor, as the minute ladders are: bid volume is
     // buyers lifting the offer.
@@ -1467,6 +1467,65 @@ fn continue_from(trades: &mut Vec<Trade>, more: Vec<Trade>, since: i64, to: i64)
     let cut = trades.partition_point(|trade| trade.at_nanos < last * 1_000_000_000);
     trades.truncate(cut);
     Some(last)
+}
+
+/// How long a piece of a trades replay is: a busy half hour of ES is some
+/// tens of thousands of trades, well inside [`REPLAY`].
+pub(crate) const TRADES_PIECE: i64 = 30 * 60;
+
+/// The shortest piece a trades replay is split down to when one runs past
+/// its time.
+const TRADES_SMALLEST: i64 = 60;
+
+const NANOS: i64 = 1_000_000_000;
+
+/// Every trade in `from..to`, oldest first, asked of `fetch` a window of at
+/// most `piece` seconds at a time, oldest first. A window `fetch` answers
+/// short of its end is asked again from the last second it reached; one it
+/// times out on is asked again as two halves, until it is
+/// [`TRADES_SMALLEST`] long, when the time out is the answer. Any other
+/// failure is the answer at once.
+fn trades_in(
+    from: i64,
+    to: i64,
+    piece: i64,
+    mut fetch: impl FnMut(i64, i64) -> Result<Vec<Trade>, Error>,
+) -> Result<Vec<Trade>, Error> {
+    let mut trades: Vec<Trade> = Vec::new();
+    let mut windows: Vec<(i64, i64)> = Vec::new();
+    // Pushed newest first, popped oldest first.
+    let mut end = to;
+    while end > from {
+        let start = (end - piece.max(TRADES_SMALLEST)).max(from);
+        windows.push((start, end));
+        end = start;
+    }
+    while let Some((start, end)) = windows.pop() {
+        let mut since = start;
+        loop {
+            match fetch(since, end) {
+                Ok(mut more) => {
+                    // The plant's window takes in its last second too: a
+                    // trade there is the next window's, never counted twice.
+                    more.retain(|trade| (since * NANOS..end * NANOS).contains(&trade.at_nanos));
+                    match continue_from(&mut trades, more, since, end) {
+                        Some(next) => since = next,
+                        None => break,
+                    }
+                }
+                // What was read before it stands: the halves go on from
+                // where it stopped.
+                Err(Error::Timeout) if end - since > TRADES_SMALLEST => {
+                    let middle = since + (end - since) / 2;
+                    windows.push((middle, end));
+                    windows.push((since, middle));
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(trades)
 }
 
 /// One minute of a volume-profile replay, if it says its prices.
@@ -1702,6 +1761,125 @@ pub(crate) mod tests {
         assert_eq!(continue_from(&mut held, Vec::new(), 10, 1_000), None, "nothing more");
         let mut stuck = Vec::new();
         assert_eq!(continue_from(&mut stuck, vec![at(10, 0)], 10, 1_000), None, "no progress, no loop");
+    }
+
+    /// The plant's one-trade tick bar is stamped with its open and its
+    /// close, and the first of a replay opens at the second asked from:
+    /// the close is the trade's time.
+    #[test]
+    fn a_tick_bar_is_timed_by_its_close() {
+        let mut bar = rithmic_rs::rti::ResponseTickBarReplay::default();
+        bar.close_price = Some(6_000.25);
+        bar.volume = Some(3);
+        bar.data_bar_ssboe = vec![1_700_000_000, 1_700_000_007];
+        bar.data_bar_usecs = vec![0, 125];
+        assert_eq!(replayed_trade(&bar).unwrap().at_nanos, 1_700_000_007_000_125_000);
+    }
+
+    /// A tick bar as the plant sends one, for a trade at `at_nanos`.
+    fn tick_bar(at_nanos: i64, size: u64, bought: bool) -> rithmic_rs::rti::ResponseTickBarReplay {
+        let mut bar = rithmic_rs::rti::ResponseTickBarReplay::default();
+        bar.close_price = Some(6_000.0);
+        bar.volume = Some(size);
+        bar.bid_volume = Some(if bought { size } else { 0 });
+        bar.ask_volume = Some(if bought { 0 } else { size });
+        let (seconds, micros) = (at_nanos.div_euclid(1_000_000_000), at_nanos.rem_euclid(1_000_000_000) / 1_000);
+        bar.data_bar_ssboe = vec![seconds as i32, seconds as i32];
+        bar.data_bar_usecs = vec![micros as i32, micros as i32];
+        bar
+    }
+
+    /// A day of trades, one every `every` seconds, sized by their second:
+    /// a plant that answers any window of it, its end second included, and
+    /// times out on any window longer than `patience` seconds.
+    struct History {
+        trades: Vec<rithmic_rs::rti::ResponseTickBarReplay>,
+        patience: i64,
+        asked: Vec<(i64, i64)>,
+    }
+
+    impl History {
+        fn new(from: i64, to: i64, every: i64, patience: i64) -> History {
+            let trades = (from..to)
+                .step_by(every as usize)
+                .map(|second| tick_bar(second * 1_000_000_000 + 500_000, (second % 97) as u64 + 1, second % 2 == 0))
+                .collect();
+            History { trades, patience, asked: Vec::new() }
+        }
+
+        fn replay(&mut self, since: i64, until: i64) -> Result<Vec<Trade>, Error> {
+            self.asked.push((since, until));
+            if until - since > self.patience {
+                return Err(Error::Timeout);
+            }
+            Ok(self
+                .trades
+                .iter()
+                .filter_map(replayed_trade)
+                .filter(|trade| (since * 1_000_000_000..(until + 1) * 1_000_000_000).contains(&trade.at_nanos))
+                .collect())
+        }
+    }
+
+    /// A day of ES is never asked for in one request, which ran past the
+    /// time a replay is given and came back as nothing: it is asked for a
+    /// piece at a time, oldest first, and every trade comes back once, in
+    /// order, with its side.
+    #[test]
+    fn a_day_of_trades_is_asked_for_a_piece_at_a_time() {
+        let (from, to) = (1_700_000_000, 1_700_000_000 + 23 * 3_600);
+        let mut plant = History::new(from, to, 7, i64::MAX);
+        let trades = trades_in(from, to, TRADES_PIECE, |a, b| plant.replay(a, b)).unwrap();
+        let expected: Vec<Trade> = History::new(from, to, 7, i64::MAX).trades.iter().filter_map(replayed_trade).collect();
+        assert_eq!(trades.len(), expected.len());
+        assert_eq!(trades, expected, "every trade once, oldest first");
+        assert!(trades.iter().any(|t| t.aggressor == Some(Side::Buy)) && trades.iter().any(|t| t.aggressor == Some(Side::Sell)));
+        assert!(plant.asked.iter().all(|(a, b)| b - a <= TRADES_PIECE), "{:?}", plant.asked);
+        // 23 hours in half hours, each asked once more from its last trade
+        // when that is short of its end: a quiet tail and a reply cut short
+        // look the same.
+        let pieces: Vec<(i64, i64)> = plant.asked.iter().filter(|(a, _)| (a - from) % TRADES_PIECE == 0).copied().collect();
+        assert_eq!(pieces.len(), 46, "{pieces:?}");
+        assert!(pieces.windows(2).all(|w| w[0].1 == w[1].0), "back to back, oldest first");
+        assert!(plant.asked.len() <= 2 * 46);
+    }
+
+    /// A piece the plant takes too long over is asked again in halves,
+    /// down to a minute; a minute it still cannot answer is the answer.
+    #[test]
+    fn a_piece_that_times_out_is_asked_again_in_halves() {
+        let (from, to) = (1_700_000_000, 1_700_000_000 + 3_600);
+        let mut plant = History::new(from, to, 3, 450);
+        let trades = trades_in(from, to, TRADES_PIECE, |a, b| plant.replay(a, b)).unwrap();
+        let expected: Vec<Trade> = History::new(from, to, 3, 450).trades.iter().filter_map(replayed_trade).collect();
+        assert_eq!(trades, expected);
+        assert!(plant.asked.iter().any(|(a, b)| b - a <= 450), "split: {:?}", plant.asked);
+
+        let mut hopeless = History::new(from, to, 3, 10);
+        let failed = trades_in(from, to, TRADES_PIECE, |a, b| hopeless.replay(a, b));
+        assert!(matches!(failed, Err(Error::Timeout)), "{failed:?}");
+        assert!(hopeless.asked.iter().all(|(a, b)| b - a >= TRADES_SMALLEST / 2), "never below a minute: {:?}", hopeless.asked);
+
+        let refused = trades_in(from, to, TRADES_PIECE, |_, _| Err(Error::Rejected("no permission".into())));
+        assert!(matches!(refused, Err(Error::Rejected(_))), "anything else is the answer at once");
+    }
+
+    /// A piece the plant ends short of its end, as some servers do at half
+    /// a million trades, goes on from the last second it reached.
+    #[test]
+    fn a_piece_cut_short_goes_on_where_it_stopped() {
+        let (from, to) = (1_700_000_000, 1_700_000_000 + 1_800);
+        let mut plant = History::new(from, to, 1, i64::MAX);
+        let mut calls = 0;
+        let trades = trades_in(from, to, TRADES_PIECE, |a, b| {
+            calls += 1;
+            let mut got = plant.replay(a, b)?;
+            got.truncate(500);
+            Ok(got)
+        })
+        .unwrap();
+        assert_eq!(trades.len(), 1_800);
+        assert!(calls > 3, "{calls}");
     }
 
     #[test]

@@ -45,7 +45,8 @@ same.
 | `chart_session` | `extended`, `regular` | `extended` | Charts › Defaults › Hours | [Chart settings](/manual/chart-settings/) |
 | `show_grid` | on, off | off | Charts › Defaults › Gridlines | [Chart settings](/manual/chart-settings/) |
 | `chart_log_scale` | on, off | off | Charts › Defaults › Logarithmic scale | [Chart settings](/manual/chart-settings/) |
-| `chart_shows_drawings` | on, off | on | Charts › Defaults › Show drawings from other charts | [Drawings](/manual/drawings/) |
+| `chart_show_drawings` | `none`, `chartbook`, `all` | `all` | Charts › Defaults › Drawings from other charts: Hide, This chartbook, All chartbooks | [Drawings](/manual/drawings/) |
+| `chart_shows_drawings` | on, off | on | What versions before `chart_show_drawings` read, and still written beside it: read only where that is not set, on as `all` and off as `none` | [Drawings](/manual/drawings/) |
 | `chart_sends_drawings` | on, off | on | Charts › Defaults › Send drawings to other charts | [Drawings](/manual/drawings/) |
 | `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Defaults › Template | [Chart templates](/manual/chart-templates/) |
 | `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `title`, `feed`, `stripe`; or `none` | `feed,symbol,resolution,change` | Charts › Header › Left | [Charts](/manual/charts/) |

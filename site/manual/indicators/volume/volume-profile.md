@@ -69,7 +69,7 @@ A colour and its opacity share one row: the colour's name, the swatch, then **Op
 |---|---|---|
 | **Display** | Filled | Filled, or Outline: only the edge of the rows, so the candles under it stay clear |
 | **Alignment** | Left | Left, or Right: the rows grow back from the end of the period ([Aligned right](#aligned-right)). Beside a market profile with the same period each keeps its own ([Beside a volume profile](/manual/indicators/volume/market-profile/#beside-a-volume-profile)) |
-| **Width %** | 40% | 10 to 100%: how far the longest row reaches, of the period's width, or of the empty space past the last bar for the session drawn there |
+| **Width %** | 40% | 10 to 100%: how far the longest row reaches, of the whole period's width, on screen or not, or of the empty space past the last bar for the session drawn there. Scrolling moves a profile with its bars and never changes its width |
 | **Colour** | The next free colour, at 30% opacity | A palette name, or a custom colour, greyed for Ask volume - bid volume, whose rows are in its **Colouring**. Its **Opacity** is how solid the rows are drawn, 0 to 100%: at 100% they are solid, and at 0% the profile is gone. The value area's two opacities follow it until they are set |
 | **Outline** | Off | On for an edge round filled rows. Always on, and greyed, while **Display** is Outline |
 | **Outline colour** | The profile's **Colour**, at 45% opacity round filled rows; in the Outline display its opacity follows the rows' | A palette name, or a custom colour. Its **Opacity** is how solid the edge is drawn, 0 to 100%; once set, it stays put when the rows' moves |
@@ -115,7 +115,7 @@ With **Automatic rows** off, **Rows** is the number of rows each period is divid
 
 Aligned right, the session still forming is drawn in the empty space past the last bar, against the price axis, when there is room for it there. Scrolled back, or with no room open, it ends where its bars do like the rest.
 
-That space is widened to fit it, and narrowed again when no profile is aligned right. It is a share of the chart's width, not a number of bars, so zooming in and out moves the bars and leaves it, and the profiles in it, the same size. Scrolling forward stops at it, so coming back to the latest bar finds it as wide as before. Drag part of it shut and it stays as you left it, at the same size on screen as you zoom, until you scroll back to the latest bar or reset the view. Past the last bar, the profiles take at most 60% of the chart between them.
+That space is widened to fit it, and narrowed again when no profile is aligned right. All of it, the room a chart keeps past the last bar with no profile there as well as what the profiles add, is a share of the chart's width, not a number of bars, so zooming in and out moves the bars and leaves it, and the profiles in it, the same size. Scrolling forward stops at it, so coming back to the latest bar finds it as wide as before. Drag part of it shut and it stays as you left it, at the same size on screen as you zoom, until you scroll back to the latest bar or reset the view. Past the last bar, the profiles take at most 60% of the chart between them.
 
 ## Composite profiles
 

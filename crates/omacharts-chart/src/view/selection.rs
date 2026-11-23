@@ -545,7 +545,9 @@ pub(super) const PROFILE_ROOM_MIN: f64 = 48.0;
 /// Where a profile is drawn across, the arithmetic the profile is drawn
 /// with. Nothing for one off screen.
 ///
-/// A share of its period's width, from the edge it is aligned to — except
+/// A share of its whole period's width, from the edge it is aligned to,
+/// however much of the period is on screen, so scrolling never changes it —
+/// except
 /// the period still forming at the live edge, aligned right: that one is
 /// drawn back from the plot's right edge across the empty space past the
 /// last bar, so it describes the session without sitting on the bars it is
@@ -574,15 +576,17 @@ pub(super) fn profile_box(profile: &Profile, columns: &Columns, look: &ProfileLo
     if profile.last_bar < first || profile.first_bar >= last {
         return NONE;
     }
-    let from = profile.first_bar.max(first);
-    let to = profile.last_bar.min(last - 1) + 1;
-    let width = columns.width_of(from, to).max(columns.bar_w);
+    // The whole period, on screen or not: measured on what of it is on
+    // screen, a profile grew and shrank as the view scrolled across it.
+    let (from, to) = (profile.first_bar, profile.last_bar + 1);
+    let left = columns.left_at(from);
+    let width = ((to - from) as f64 * columns.bar_px).max(columns.bar_w);
     // Of the period, what a share of one is once they all fit in it.
     let share = width / look.total.max(1.0);
     let span = share * look.width;
     match look.align {
-        Align::Left => ProfileBox { edge: columns.left_of(from) + share * look.before, span, towards: 1.0 },
-        Align::Right => ProfileBox { edge: columns.left_of(from) + width - share * look.after, span, towards: -1.0 },
+        Align::Left => ProfileBox { edge: left + share * look.before, span, towards: 1.0 },
+        Align::Right => ProfileBox { edge: left + width - share * look.after, span, towards: -1.0 },
     }
 }
 
@@ -1068,7 +1072,7 @@ mod tests {
             .iter()
             .map(|p| {
                 let area = profile_box(p, &frame.columns, &look);
-                let period = (frame.columns.left_of(p.first_bar.max(frame.columns.first)), frame.columns.left_of(p.last_bar + 1));
+                let period = (frame.columns.left_at(p.first_bar), frame.columns.left_of(p.last_bar + 1));
                 (p.clone(), area, period.0, period.1)
             })
             .collect()
@@ -1233,12 +1237,13 @@ mod tests {
             (state.overhang_now(), state.columns())
         };
         let (none, columns) = margin(&[(Left, 0.4)]);
-        assert_eq!(none, super::super::RIGHT_MARGIN, "no profile aligned right, no room added");
-        assert_eq!(margin(&[]).0, super::super::RIGHT_MARGIN);
+        let resting = super::super::rest_columns(super::super::RIGHT_MARGIN, columns);
+        assert_eq!(none, resting, "no profile aligned right, no room added");
+        assert_eq!(margin(&[]).0, resting);
 
         let needed = |widths: f64, count: f64| {
             let taken = (columns as f64 * (widths * super::SLOT_SHARE + (count - 1.0) * super::SLOT_GAP_SHARE)).ceil();
-            super::super::RIGHT_MARGIN + taken as usize
+            resting + taken as usize
         };
         let (one, _) = margin(&[(Right, 1.0), (Left, 0.4)]);
         assert_eq!(one, needed(1.0, 1.0));
@@ -1246,7 +1251,7 @@ mod tests {
         assert_eq!(two, needed(1.8, 2.0));
         // However narrow, it is room on top of the resting margin.
         assert_eq!(margin(&[(Right, 0.2)]).0, needed(0.2, 1.0));
-        assert!(margin(&[(Right, 0.2)]).0 > super::super::RIGHT_MARGIN);
+        assert!(margin(&[(Right, 0.2)]).0 > resting);
         assert!(two > one && one > none, "{none} < {one} < {two}");
 
         // Taken off, the room goes with it.
@@ -1254,7 +1259,7 @@ mod tests {
         state.indicators.pop();
         assert_eq!(state.overhang_now(), one);
         state.indicators.clear();
-        assert_eq!(state.overhang_now(), super::super::RIGHT_MARGIN);
+        assert_eq!(state.overhang_now(), resting);
         // However many there are, the bars keep most of the plot.
         let crowd = stacked(&[(Right, 1.0); 5]);
         let most = crowd.columns() as f64 * super::MARGIN_MAX_SHARE + 1.0 + super::super::RIGHT_MARGIN as f64;
@@ -1343,7 +1348,7 @@ mod tests {
         use profile::Align::Right;
         let rests = |state: &State, taken: f64, what: &str| {
             let (gap, block, bar) = margin_px(state);
-            let resting = super::super::RIGHT_MARGIN as f64 * bar;
+            let resting = state.rest_margin(super::super::RIGHT_MARGIN) as f64 * bar;
             assert!(state.anchored && !state.overhang_by_hand, "{what}: at rest at the live edge");
             assert!((gap - resting).abs() <= bar + 1e-6, "{what}: {gap} off the last bar, {resting} with none");
             assert!(gap >= resting - 1e-6, "{what}: never less than with none");
@@ -1370,6 +1375,39 @@ mod tests {
             assert!(!state.anchored, "into history");
             state.pan_by(3.0 * columns, plot_w);
             rests(&state, taken, &format!("{} back from history", looks.len()));
+        }
+    }
+
+    /// Zoomed in as far as a chart goes, the resting margin past the last
+    /// bar is as wide on screen as at the zoom a chart opens at, not ten
+    /// of the wide bars: the profiles aligned right after it stay on the
+    /// plot. Zoomed out as far, it is as wide too.
+    #[test]
+    fn the_resting_margin_keeps_its_width_on_screen_at_any_zoom() {
+        use profile::Align::Right;
+        for looks in [&[][..], &[(Right, 1.0), (Right, 0.8)][..]] {
+            let mut state = long_with(looks);
+            let plan = frame(&state, W, H).expect("a frame").plan;
+            state.visible = super::super::REFERENCE_COLUMNS;
+            let (reference, _, _) = margin_px(&state);
+            let share = super::super::RIGHT_MARGIN as f64 / super::super::REFERENCE_COLUMNS as f64;
+            let bar = plan.plot_w / state.columns() as f64;
+            assert!((reference - share * plan.plot_w).abs() <= bar / 2.0 + 1e-6, "{reference} at the opening zoom");
+            for factor in [0.01, 0.5, 2.0, 100.0] {
+                state.zoom_time(factor, 0.5, plan.plot_w);
+                let (gap, _, bar) = margin_px(&state);
+                let what = format!("{} profiles at {} columns", looks.len(), state.columns());
+                // Whole columns: within a bar for the margin, and one for the
+                // profiles' room rounded up.
+                assert!((gap - reference).abs() <= 2.0 * bar + 1.0, "{what}: {gap} vs {reference}");
+                for (from, to) in period_boxes(&state, state.bars.len()) {
+                    assert!(from >= plan.plot_x - 1e-6 && to <= plan.plot_x + plan.plot_w + 1e-6, "{what}: a profile at {from}..{to} off the plot");
+                }
+            }
+            state.zoom_time(0.0, 0.5, plan.plot_w);
+            assert_eq!(state.columns(), state.fewest(), "zoomed in as far as a chart goes");
+            let (gap, _, bar) = margin_px(&state);
+            assert!(gap <= reference + 2.0 * bar + 1.0, "{gap} zoomed all the way in");
         }
     }
 
@@ -1445,7 +1483,7 @@ mod tests {
         state.pan_by(2.0, plot_w);
         assert_eq!(state.overhang_now(), 7, "and part way open again");
         state.reset_view();
-        assert_eq!(state.overhang_now(), state.margin_floor() + super::super::RIGHT_MARGIN);
+        assert_eq!(state.overhang_now(), state.margin_floor() + state.rest_margin(super::super::RIGHT_MARGIN));
     }
 
     /// Profiles aligned to the same edge of a period sit side by side from
@@ -1478,7 +1516,7 @@ mod tests {
         let Output::Profiles(profiles) = &state.indicators[0].output else { panic!("profiles") };
         let p = &profiles[period];
         let area = profile_box(p, &frame.columns, &super::placed_look(state, &state.indicators[0]));
-        (p.clone(), area, frame.columns.left_of(p.first_bar.max(frame.columns.first)), frame.columns.left_of(p.last_bar + 1))
+        (p.clone(), area, frame.columns.left_at(p.first_bar), frame.columns.left_of(p.last_bar + 1))
     }
 
     /// A profile study as the legend lists it: its kind, the edge it is set
@@ -1514,6 +1552,51 @@ mod tests {
         state
     }
 
+    /// Scrolled sideways, every profile keeps its width on screen and moves
+    /// with its bars, pixel for pixel: it is measured on its whole period,
+    /// not on what of the period is on screen nor on the plot. A volume
+    /// profile and a market profile, aligned either way, alone or beside
+    /// each other, with the period they are drawn in part off the plot's
+    /// left edge.
+    #[test]
+    fn scrolling_moves_a_profile_and_never_resizes_it() {
+        use omacharts_engine::Reset;
+        use profile::Align::{Left, Right};
+        let vp = |align| (Kind::VolumeProfile, align, 0.4, Reset::Session);
+        let mp = |align| (Kind::MarketProfile, align, 0.4, Reset::Session);
+        for legend in [vec![vp(Left)], vec![vp(Right)], vec![mp(Left)], vec![mp(Right)], vec![vp(Right), mp(Left)], vec![mp(Right), vp(Right)]] {
+            let mut state = with_studies(&legend);
+            let plot_w = frame(&state, W, H).expect("a frame").plan.plot_w;
+            let periods = state.indicators[0].output.periods().expect("profiles").len();
+            let drawn = |state: &State| {
+                let frame = frame(state, W, H).expect("a frame");
+                let bars: Vec<f64> = (0..state.bars.len()).map(|at| frame.columns.left_at(at)).collect();
+                let boxes: Vec<Vec<((f64, f64), f64)>> = (0..periods - 1).map(|period| study_boxes(state, period)).collect();
+                (bars, boxes)
+            };
+            let (bars, boxes) = drawn(&state);
+            for by in [7.0, 23.0, -11.0] {
+                state.pan_by(by, plot_w);
+                let (bars_now, boxes_now) = drawn(&state);
+                let shift = bars_now[0] - bars[0];
+                assert!(shift.abs() > 1.0, "{legend:?}: scrolled {by}");
+                assert!(bars.iter().zip(&bars_now).all(|(was, now)| (now - was - shift).abs() < 1e-6), "the bars move as one");
+                for (period, (was, now)) in boxes.iter().zip(&boxes_now).enumerate() {
+                    for (study, (((a, b), towards), ((c, d), towards_now))) in was.iter().zip(now).enumerate() {
+                        if b - a <= 0.0 || d - c <= 0.0 {
+                            continue;
+                        }
+                        let what = format!("{legend:?} study {study} period {period} scrolled {by}");
+                        assert_eq!(towards, towards_now, "{what}");
+                        assert!(((d - c) - (b - a)).abs() < 1e-6, "{what}: {} wide, was {}", d - c, b - a);
+                        assert!((c - a - shift).abs() < 1e-6, "{what}: moved {} with the bars' {shift}", c - a);
+                    }
+                }
+                state.pan_by(-by, plot_w);
+            }
+        }
+    }
+
     /// Each study's box in period `period` as drawn, in legend order: the
     /// span its longest row reaches, and which way its rows grow.
     fn study_boxes(state: &State, period: usize) -> Vec<((f64, f64), f64)> {
@@ -1534,7 +1617,7 @@ mod tests {
         let frame = frame(state, W, H).expect("a frame");
         let profiles = state.indicators[0].output.periods().expect("profiles");
         let p = profiles[period];
-        (frame.columns.left_of(p.first_bar.max(frame.columns.first)), frame.columns.left_of(p.last_bar + 1))
+        (frame.columns.left_at(p.first_bar), frame.columns.left_of(p.last_bar + 1))
     }
 
     /// Expanded, a market profile's TPOs are laid out over time: each TPO

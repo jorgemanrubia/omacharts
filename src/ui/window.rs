@@ -739,6 +739,7 @@ mod tests {
                 show_grid: true,
                 link: LinkMode::Focus,
                 shows_drawings: true,
+                show_drawings: None,
                 sends_drawings: true,
                 shows_legend: false,
                 drawing_uid: String::new(),
@@ -879,6 +880,7 @@ mod tests {
             show_grid: true,
             link,
             shows_drawings: true,
+            show_drawings: None,
             sends_drawings: true,
             shows_legend: true,
             drawing_uid: String::new(),
@@ -2889,6 +2891,71 @@ mod outside_change_tests {
         });
     }
 
+    /// Shown its chartbook's drawings, a chart shows what the other charts
+    /// of its chartbook drew and not what charts of another chartbook did;
+    /// shown all chartbooks', both; hidden, neither. Its own whichever.
+    #[test]
+    fn a_chart_shows_the_drawings_of_the_chartbooks_it_is_told() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            level(&window, "pos:0", 100.0);
+            let listed: serde_json::Value =
+                serde_json::from_str(&command(&window, &["chart", "list", "--json"])).expect("JSON");
+            let symbol = listed["charts"][0]["symbol"].as_str().expect("a symbol").to_string();
+            command(&window, &["chartbook", "create", "Other", "--symbol", &symbol, "--switch"]);
+            command(&window, &["chart", "split", "horizontal"]);
+            level(&window, "pos:0", 200.0);
+            level(&window, "pos:1", 300.0);
+            for (shows, seen) in [
+                ("chartbook", vec![200.0, 300.0]),
+                ("all", vec![100.0, 200.0, 300.0]),
+                ("none", vec![300.0]),
+                ("on", vec![100.0, 200.0, 300.0]),
+                ("off", vec![300.0]),
+            ] {
+                command(&window, &["chart", "set", "--show-drawings", shows, "--chart", "pos:1"]);
+                assert_eq!(levels(&at(&window, 1)), seen, "{shows}");
+                let listed: serde_json::Value =
+                    serde_json::from_str(&command(&window, &["chart", "drawing", "list", "--json", "--chart", "pos:1"]))
+                        .expect("JSON");
+                assert_eq!(listed["drawings"].as_array().map(Vec::len), Some(seen.len()), "{shows}: the command lists what it shows");
+            }
+            command(&window, &["chart", "set", "--show-drawings", "chartbook", "--chart", "pos:1"]);
+            let listed: serde_json::Value =
+                serde_json::from_str(&command(&window, &["chart", "list", "--json"])).expect("JSON");
+            assert_eq!(listed["charts"][1]["show_drawings"], "chartbook");
+            assert_eq!(listed["charts"][1]["shows_drawings"], true, "the switch's answer, for what reads only that");
+
+            window.save_workspace();
+            drop(window);
+            let window = bare_window(&store);
+            assert_eq!(levels(&at(&window, 1)), vec![200.0, 300.0], "held through a restart");
+        });
+    }
+
+    /// A chart written while showing other charts' drawings was a switch
+    /// reads as what the switch did: on every chart's in any chartbook, off
+    /// none. Written now, the switch goes beside the choice.
+    #[test]
+    fn a_chart_written_with_the_switch_shows_what_it_showed() {
+        use omacharts_engine::drawings::ShowDrawings;
+        for (on, shows) in [(true, ShowDrawings::All), (false, ShowDrawings::Hide)] {
+            let mut written = serde_json::to_value(StoredPane::blank()).expect("written");
+            written.as_object_mut().expect("an object").remove("show_drawings");
+            written["shows_drawings"] = serde_json::json!(on);
+            let read: StoredPane = serde_json::from_value(written.clone()).expect("read");
+            assert_eq!(read.shows(), shows);
+            assert_eq!(crate::cli::charts::shows_drawings(&written), shows);
+        }
+        let mut chosen = StoredPane::blank();
+        chosen.show_drawings = Some(ShowDrawings::Chartbook);
+        let written = serde_json::to_value(&chosen).expect("written");
+        assert_eq!(written["show_drawings"], "chartbook");
+        let read: StoredPane = serde_json::from_value(written).expect("read");
+        assert_eq!(read.shows(), ShowDrawings::Chartbook);
+    }
+
     /// A range set on one chart by a command stays on it when another
     /// command moves the focus, which rebuilds every chart from what was
     /// written down, and when the focus comes back.
@@ -4632,6 +4699,11 @@ struct StoredPane {
     /// put in one.
     #[serde(default = "yes")]
     shows_drawings: bool,
+    /// Which other charts' drawings it shows, once more than all or none
+    /// could be chosen: missing, it is what `shows_drawings` said, which is
+    /// still written beside it for a version that reads only that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    show_drawings: Option<omacharts_engine::drawings::ShowDrawings>,
     #[serde(default = "yes")]
     sends_drawings: bool,
     /// Whether the chart draws its indicator legend at all. Missing from a
@@ -4695,6 +4767,12 @@ struct StoredPane {
 }
 
 impl StoredPane {
+    /// Which other charts' drawings it shows: its choice, or in a chart
+    /// written while it was a switch, what the switch did.
+    fn shows(&self) -> omacharts_engine::drawings::ShowDrawings {
+        self.show_drawings.unwrap_or_else(|| omacharts_engine::drawings::ShowDrawings::from_switch(self.shows_drawings))
+    }
+
     /// A chart with nothing in it, written down: what stands in for a
     /// field of a stored one while the others are tried. See [`mend`].
     fn blank() -> StoredPane {
@@ -4723,6 +4801,7 @@ impl StoredPane {
             indicators_shown: true,
             drawings_shown: true,
             shows_drawings: true,
+            show_drawings: None,
             sends_drawings: true,
             shows_legend: true,
             drawing_uid: String::new(),
@@ -7338,7 +7417,8 @@ impl Window {
                     continuous: Some(pane.continuous.get().key().to_string()),
                     show_grid: pane.show_grid.get(),
                     link: pane.mode(),
-                    shows_drawings: pane.shows_drawings.get(),
+                    shows_drawings: pane.shows_drawings.get().any(),
+                    show_drawings: Some(pane.shows_drawings.get()),
                     sends_drawings: pane.sends_drawings.get(),
                     shows_legend: pane.shows_legend.get(),
                     drawing_uid: pane.uid.borrow().clone(),
@@ -7700,7 +7780,7 @@ impl Window {
                     .and_then(omacharts_engine::continuous::Adjustment::from_key)
                     .unwrap_or(defaults.continuous),
             );
-            pane.shows_drawings.set(stored.shows_drawings);
+            pane.shows_drawings.set(stored.shows());
             pane.sends_drawings.set(stored.sends_drawings);
             pane.view.set_sends(stored.sends_drawings);
             pane.shows_legend.set(stored.shows_legend);
@@ -13674,7 +13754,8 @@ impl Window {
                 stored.continuous = Some(defaults.continuous.key().to_string());
                 stored.show_grid = defaults.show_grid;
                 stored.log_scale = defaults.log_scale;
-                stored.shows_drawings = defaults.shows_drawings;
+                stored.shows_drawings = defaults.shows_drawings.any();
+                stored.show_drawings = Some(defaults.shows_drawings);
                 stored.shows_legend = defaults.shows_legend;
                 // Not sending: turning it on or off moves a chart's drawings
                 // between it and its symbol, which only a chart on screen
@@ -14242,12 +14323,13 @@ impl Window {
                 *pane.local_drawings.borrow_mut() = locals;
                 let shows = pane.shows_drawings.get();
                 let mine = pane.uid.borrow().clone();
+                let book = self.chart_uids();
                 let keep: std::collections::HashSet<i64> = shared.iter().map(|d| d.id).collect();
                 for d in self.store.drawings(&instrument.symbol, suffix) {
                     // Only what this chart could see is this chart's to
                     // undo: a chart that is not shown other charts'
                     // drawings cannot have removed one of theirs.
-                    if d.seen_by(&mine, shows) && !keep.contains(&d.id) {
+                    if d.seen_by(&mine, shows, &book) && !keep.contains(&d.id) {
                         self.store.remove_drawing(d.id);
                     }
                 }
@@ -14287,7 +14369,15 @@ impl Window {
             &pane.local_drawings.borrow(),
             &pane.uid.borrow(),
             pane.shows_drawings.get(),
+            &self.chart_uids(),
         )
+    }
+
+    /// The names of the charts in the chartbook on screen, which is the
+    /// chartbook every chart drawn is in: whose drawings a chart showing
+    /// its chartbook's shows.
+    fn chart_uids(&self) -> Vec<String> {
+        self.panes.borrow().iter().map(|pane| pane.uid.borrow().clone()).collect()
     }
 
     /// The nine configurations of each kind, as stored.
@@ -14308,13 +14398,13 @@ impl Window {
     /// Whether the focused chart is shown what other charts of its symbol
     /// draw. It is shown its drawings again, since the answer to "which do
     /// I see" just changed.
-    pub fn set_shows_drawings(self: &Rc<Self>, shows: bool) {
+    pub fn set_shows_drawings(self: &Rc<Self>, shows: omacharts_engine::drawings::ShowDrawings) {
         self.set_pane_shows_drawings(&self.focused_pane(), shows);
         self.save_workspace();
     }
 
     /// The same for any chart, written down by the caller.
-    fn set_pane_shows_drawings(self: &Rc<Self>, pane: &Rc<ChartPane>, shows: bool) {
+    fn set_pane_shows_drawings(self: &Rc<Self>, pane: &Rc<ChartPane>, shows: omacharts_engine::drawings::ShowDrawings) {
         pane.shows_drawings.set(shows);
         let instrument = pane.instrument.borrow().clone();
         if let Some(instrument) = instrument {

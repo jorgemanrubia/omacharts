@@ -10,7 +10,8 @@ Each bar's delta at every price, drawn inside the bar once the bars are wide eno
 
 | Flag | Takes | For |
 |---|---|---|
-| `--intensity B` | `on`, `off`; on when not given | Rows filled more solidly the bigger their delta, against the biggest on screen. Off fills every row alike |
+| `--size-against W` | `visible`, `session`, `hours`; `visible` when not given | What a row's length and strength are measured against: the biggest row on screen, the session's, or its regular or extended hours' ([Size against](/manual/indicators/order-flow/footprint/#size-against)) |
+| `--intensity B` | `on`, `off`; on when not given | Rows filled more solidly the bigger their delta, against the biggest they are sized against. Off fills every row alike |
 | `--numbers B` | `on`, `off`; on when not given | Each row's delta written in it. Off draws the rows alone |
 | `--row-ticks N` | `auto`, or ticks to a row, 1 to 10000; `auto` when not given | How many ticks a row holds. `auto` is the fewest of 1, 2, 4, 5, 10 and on that make a row about a line of small type tall at the chart's price scale |
 | `--profile B` | `on`, `off`; off when not given | Each bar's volume profile at its left, the narrow bar and the delta rows moved right of it ([Volume profile](/manual/indicators/order-flow/footprint/#volume-profile)) |
@@ -19,12 +20,13 @@ Each bar's delta at every price, drawn inside the bar once the bars are wide eno
 | `--profile-numbers B` | `on`, `off`; on when not given | Each profile row's total written in it |
 | `--colouring C`, `--buy-color C`, `--sell-color C`, `--buy-transparency F`, `--sell-transparency F` | As for [every order flow indicator](/manual/cli/indicators/order-flow/#colours); the strongest row at 0.15 transparency unless set | Its rows |
 
-`list --json` reads them back as `params.intensity`, `params.numbers` and `params.row_ticks` (`null` for `auto`), and the profile as `params.profile`: `on`, `numbers`, and `colour` and `alpha` (how solid, 1 less the transparency) once set, absent for their defaults. A footprint whose profile was never set has no `params.profile`.
+`list --json` reads them back as `params.intensity`, `params.numbers`, `params.row_ticks` (`null` for `auto`) and `params.compare` (absent for `visible`), and the profile as `params.profile`: `on`, `numbers`, and `colour` and `alpha` (how solid, 1 less the transparency) once set, absent for their defaults. A footprint whose profile was never set has no `params.profile`.
 
 ```
 omacharts chart indicator add footprint --intensity off
 omacharts chart indicator set footprint --numbers off
 omacharts chart indicator set footprint --row-ticks 4
+omacharts chart indicator set footprint --size-against session
 omacharts chart indicator set footprint --profile on --profile-color violet --profile-numbers off
 omacharts chart values --indicator footprint --last 5 --row-ticks 2 --json
 ```

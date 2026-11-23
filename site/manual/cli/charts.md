@@ -66,7 +66,7 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--link MODE` | `focus`, `follow`, `pinned` | [Linking charts to the watchlist](/manual/watchlists/#linking-charts-to-the-watchlist) |
 | `--template T` | A chart template, or `none` | [Chart templates](/manual/chart-templates/) |
 | `--drawings on` or `off` | Draws the chart's drawings, its own and the shared, or hides them all | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
-| `--show-drawings on` or `off`, `--send-drawings on` or `off` | Whether the chart shows other charts' drawings, and whether it sends its own | [Drawings](/manual/drawings/) |
+| `--show-drawings none`, `chartbook` or `all`, `--send-drawings on` or `off` | Drawings from other charts: Hide, This chartbook or All chartbooks (`on` and `off` still work, as `all` and `none`); and whether it sends its own. `chart list --json` reads the choice back as `show_drawings`, and `shows_drawings` is still there, true unless it is `none` | [Drawings](/manual/drawings/) |
 | `--feed FEED` | The data feed the chart is drawn from, by its id or its name as `provider list` gives them, or `default` to follow the order | [The header](/manual/charts/#the-header) |
 | `--account ACCOUNT` | The account the chart trades on: its name, its number, its login and number such as `Acme Futures/ACME-0001`, or `default` to follow the default account | [The Account part](/manual/trading-on-a-chart/#the-account-part) |
 | `--quantity N` | The quantity its Qty is set to, one its quantities offer | [The Account part](/manual/trading-on-a-chart/#the-account-part) |

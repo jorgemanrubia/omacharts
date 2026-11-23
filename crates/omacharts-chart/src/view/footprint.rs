@@ -26,12 +26,22 @@
 //! figure is placed, no font is set and no glyph is looked up.
 //!
 //! **Strength.** With intensity on, a row is filled more solidly the bigger
-//! its delta against the biggest on screen — the same reference the rows'
-//! lengths are measured against, so a row's length and its strength say the
-//! same thing — in [`LEVELS`] steps, from faint to the opacity chosen, which
-//! the strongest row is painted at exactly. Measured against each bar's
-//! own biggest instead, a quiet bar would shout as loud as a busy one; and
-//! against the session's, one spike would leave every other row faint.
+//! its delta against the biggest it is measured with — the same reference
+//! the rows' lengths are measured against, so a row's length and its
+//! strength say the same thing — in [`LEVELS`] steps, from faint to the
+//! opacity chosen, which the strongest row is painted at exactly. Measured
+//! against each bar's own biggest, a quiet bar would shout as loud as a busy
+//! one, so the reference is always more than a bar.
+//!
+//! **Size against.** That reference is the biggest row on screen unless
+//! told, as a large order's bubble can be: the biggest of the bar's
+//! session, or of the session's regular or extended hours, whichever the
+//! bar is in ([`flow::Compare`]). The profile's rows are measured the same
+//! way, against the most traded row of the same bars. A session's biggest
+//! is read once and kept ([`References`]): its bars sealed are not read
+//! again until the ladders change, and only the newest bars, which a tick
+//! changes, are added each frame. None of it is read until the footprint is
+//! drawn.
 
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -116,6 +126,30 @@ pub(super) struct Cache {
     /// was worked out for: worked out again only when the price scale
     /// changes, and then held while it still makes a comfortable row.
     step: Option<(u32, u64)>,
+    /// What each bar on screen is measured against.
+    references: References,
+}
+
+/// What a footprint's rows are measured against, by session: see the
+/// module's **Size against**.
+#[derive(Default, Debug)]
+struct References {
+    /// The ladders' generation, the tick size, the bar length, the ticks a
+    /// row holds and what is compared: any change and nothing kept holds.
+    key: Option<(u64, u64, i64, u32, flow::Compare)>,
+    /// The instrument the days were cut for.
+    symbol: Option<String>,
+    days: Option<omacharts_engine::ladders::Days>,
+    regular: Option<omacharts_engine::exchanges::Schedule<'static>>,
+    /// By trading day, and by regular hours or not when the hours are
+    /// compared: the biggest rows of its bars that opened before the
+    /// cut-off kept with them. One whose bars all opened before it is
+    /// final; one that runs on past it holds only while the cut-off does.
+    kept: HashMap<(i64, Option<bool>), (i64, bool, rows::Largest)>,
+    /// Each bar on screen's reference this frame, kept for its allocation.
+    per_bar: Vec<rows::Largest>,
+    /// A bar read out of sight, kept for its allocation.
+    scratch: rows::BarFootprint<rows::Tick>,
 }
 
 impl Cache {
@@ -134,6 +168,117 @@ impl Cache {
                         step
                     }
                 }
+            }
+        }
+    }
+
+    /// Work out what each bar on screen is measured against, `compare`
+    /// read with rows of `step` ticks, after [`Cache::fill`].
+    fn measure(&mut self, state: &State, held: &Held, columns: &Columns, step: u32, compare: flow::Compare) {
+        let Cache { key, bars, scratch, references, .. } = self;
+        let refs = references;
+        refs.per_bar.clear();
+        if compare == flow::Compare::Visible {
+            let mut on_screen = rows::Largest::default();
+            for bar in columns.slice {
+                if let Some(cells) = bars.get(&bar.ts) {
+                    cells.footprint.each_row(step, |_, tick| on_screen.take(tick));
+                }
+            }
+            refs.per_bar.resize(columns.slice.len(), on_screen);
+            return;
+        }
+        let Some((generation, tick, seconds)) = *key else { return };
+        let wanted = (generation, tick, seconds, step, compare);
+        let symbol = state.instrument.as_ref().map(|i| i.symbol.as_str());
+        if refs.key != Some(wanted) || refs.symbol.as_deref() != symbol {
+            refs.key = Some(wanted);
+            refs.kept.clear();
+            refs.symbol = symbol.map(str::to_string);
+            // With no instrument to say its hours, days run midnight to
+            // midnight UTC.
+            refs.days = Some(match state.instrument.as_ref() {
+                Some(instrument) => omacharts_engine::ladders::Days::new(instrument),
+                None => omacharts_engine::ladders::Days::fixed(0),
+            });
+            refs.regular = omacharts_engine::indicators::time::schedule_for(state.instrument.as_ref()).filter(|s| s.has_regular());
+        }
+        let Some(days) = refs.days.as_ref() else {
+            refs.per_bar.resize(columns.slice.len(), rows::Largest::default());
+            return;
+        };
+        let tf = state.timeframe;
+        let intraday = tf.is_intraday();
+        let bar_days = bar_days(state);
+        let series = &state.bars;
+        // The bars a tick changes, which [`Cache::fill`] reads again: never
+        // kept in a session's biggest, but added to it a frame at a time.
+        let cutoff = series.last().map_or(i64::MAX, |last| last.ts - tf.seconds());
+        let hours = compare == flow::Compare::Hours;
+        let part = |ts: i64| match (hours && intraday, refs.regular.as_ref()) {
+            (false, _) => None,
+            (true, None) => Some(true),
+            (true, Some(schedule)) => Some(schedule.is_regular(ts)),
+        };
+        // A bar's biggest rows, from what is kept, or read where it is not.
+        let read = |bar: &omacharts_engine::Bar, into: &mut rows::Largest, scratch: &mut Ladder, cells: &mut rows::BarFootprint<rows::Tick>| {
+            match bars.get(&bar.ts).filter(|kept| kept.volume == bar.volume.to_bits()) {
+                Some(kept) => kept.footprint.each_row(step, |_, tick| into.take(tick)),
+                None => {
+                    if bar_ladder(held, bar.ts, tf, bar_days.as_ref(), scratch) {
+                        let ticks = scratch.levels.iter().map(|level| rows::Tick::of(level.at_bid, level.at_ask, level.unknown));
+                        cells.refill(scratch.low_tick, ticks);
+                        cells.each_row(step, |_, tick| into.take(tick));
+                    }
+                }
+            }
+        };
+        let first = columns.first;
+        let mut last: Option<((i64, Option<bool>), rows::Largest)> = None;
+        for (at, bar) in columns.slice.iter().enumerate() {
+            // A bar of more than a day is its own session.
+            let day = match intraday {
+                true => days.of(bar.ts),
+                false => bar.ts,
+            };
+            let which = (day, part(bar.ts));
+            if let Some((was, largest)) = last
+                && was == which
+            {
+                refs.per_bar.push(largest);
+                continue;
+            }
+            let (lo, hi) = match intraday {
+                true => (
+                    series.partition_point(|b| days.of(b.ts) < day),
+                    series.partition_point(|b| days.of(b.ts) <= day),
+                ),
+                false => (first + at, first + at + 1),
+            };
+            let held_now = refs.kept.get(&which).filter(|(at, whole, _)| *whole || *at == cutoff).map(|kept| kept.2);
+            let mut largest = match held_now {
+                Some(largest) => largest,
+                None => {
+                    let mut largest = rows::Largest::default();
+                    for bar in series[lo..hi].iter().filter(|b| b.ts < cutoff && part(b.ts) == which.1) {
+                        read(bar, &mut largest, scratch, &mut refs.scratch);
+                    }
+                    let whole = hi == lo || series[hi - 1].ts < cutoff;
+                    refs.kept.insert(which, (cutoff, whole, largest));
+                    largest
+                }
+            };
+            for bar in series[lo..hi].iter().filter(|b| b.ts >= cutoff && part(b.ts) == which.1) {
+                read(bar, &mut largest, scratch, &mut refs.scratch);
+            }
+            refs.per_bar.push(largest);
+            last = Some((which, largest));
+        }
+        // Scrolled a long way, sessions read long ago go.
+        if refs.kept.len() > 256 {
+            refs.kept.retain(|_, (_, whole, _)| *whole);
+            if refs.kept.len() > 256 {
+                refs.kept.clear();
             }
         }
     }
@@ -476,7 +621,7 @@ pub(super) fn inks<'a>(state: &'a State, inks: &'a flow::Inks) -> (Cow<'a, str>,
 /// Draw `drawn`'s footprint over the columns: falls back to the candles
 /// where there is nothing to read it from.
 pub(super) fn draw(cr: &cairo::Context, state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
-    let Params::Footprint { intensity, numbers, row_ticks, inks: chosen_inks, profile } = &drawn.indicator.params else {
+    let Params::Footprint { intensity, numbers, row_ticks, inks: chosen_inks, profile, compare } = &drawn.indicator.params else {
         return;
     };
     let profile = profile.on.then_some(profile);
@@ -489,6 +634,7 @@ pub(super) fn draw(cr: &cairo::Context, state: &State, drawn: &Drawn, columns: &
         cache.fill(state, held, columns);
         let tick_px = (to_y(0.0) - to_y(held.tick_size)).abs();
         let step = cache.step_for(*row_ticks, tick_px);
+        cache.measure(state, held, columns, step, *compare);
         paint(cr, state, &cache, held.tick_size, step, (*intensity, *numbers), chosen_inks, profile, columns, to_y);
         drew = true;
     });
@@ -597,16 +743,11 @@ fn paint(
         (top, top + row_h)
     };
 
-    // The biggest row on screen, which every row's length and strength is
-    // measured against; and the most traded, which every profile row is,
-    // in the same pass.
-    let mut on_screen = rows::Largest::default();
-    for bar in bars {
-        if let Some(cells) = cache.bars.get(&bar.ts) {
-            cells.footprint.each_row(step, |_, tick| on_screen.take(tick));
-        }
-    }
-    let (largest, most) = (on_screen.delta, on_screen.total);
+    // The biggest row each bar is measured against, which its rows' length
+    // and strength are; and the most traded, which its profile's rows are:
+    // see [`Cache::measure`].
+    let refs = &cache.references.per_bar;
+    let reference = |at: usize| refs.get(at).copied().unwrap_or_default();
 
     let (buy, sell) = inks(state, chosen_inks);
     let (buy_alpha, sell_alpha) = chosen_inks.alphas(flow::FOOTPRINT_ALPHA);
@@ -618,7 +759,7 @@ fn paint(
         let full = if buying { buy_alpha } else { sell_alpha };
         (FAINT * full, full)
     };
-    let alpha_of = |delta: i64| {
+    let alpha_of = |delta: i64, largest: u64| {
         let (faint, strong) = span(delta > 0);
         match intensity {
             true => rows::step_alpha(rows::strength(delta, largest, levels), levels, faint, strong),
@@ -639,11 +780,11 @@ fn paint(
         long.max(text.min(room)).round()
     };
     let written = numbers && row_h >= FIGURE_MIN;
-    let length = |delta: i64, room: f64| fitted(delta, room, largest, written);
+    let length = |delta: i64, room: f64, largest: u64| fitted(delta, room, largest, written);
     // A profile's rows, measured as the delta rows are, against the most
     // traded on screen, and written as they are.
     let profile_written = profile.is_some_and(|p| p.numbers) && row_h >= FIGURE_MIN;
-    let profile_length = |total: u64, room: f64| fitted(total as i64, room, most, profile_written);
+    let profile_length = |total: u64, room: f64, most: u64| fitted(total as i64, room, most, profile_written);
 
     cr.save().ok();
     // Each side's rows, a strength at a time, each strength one path.
@@ -654,13 +795,14 @@ fn paint(
             for (at, bar) in bars.iter().enumerate() {
                 let Some(cells) = cache.bars.get(&bar.ts) else { continue };
                 let (x, room) = across(columns, at, with_bar, profiled).rows;
+                let largest = reference(at).delta;
                 cells.footprint.each_row(step, |low, tick| {
                     let delta = tick.delta;
                     if delta == 0 || (delta > 0) != buying || rows::strength(delta, largest, levels) != level {
                         return;
                     }
                     let (top, bottom) = row_y(low);
-                    cr.rectangle(x, top, length(delta, room), bottom - top);
+                    cr.rectangle(x, top, length(delta, room, largest), bottom - top);
                     any = true;
                 });
             }
@@ -678,6 +820,7 @@ fn paint(
         for (at, bar) in bars.iter().enumerate() {
             let Some(cells) = cache.bars.get(&bar.ts) else { continue };
             let (x, room) = across(columns, at, with_bar, profiled).rows;
+            let largest = reference(at).delta;
             cells.footprint.each_row(step, |low, tick| {
                 let delta = tick.delta;
                 if delta == 0 || (delta > 0) != buying {
@@ -688,7 +831,7 @@ fn paint(
                 if h < 3.0 {
                     return;
                 }
-                cr.rectangle(x + 0.5, top + 0.5, (length(delta, room) - 1.0).max(0.0), h - 1.0);
+                cr.rectangle(x + 0.5, top + 0.5, (length(delta, room, largest) - 1.0).max(0.0), h - 1.0);
                 any = true;
             });
         }
@@ -709,12 +852,13 @@ fn paint(
             for (at, bar) in bars.iter().enumerate() {
                 let Some(cells) = cache.bars.get(&bar.ts) else { continue };
                 let (x, room) = across(columns, at, with_bar, true).profile;
+                let most = reference(at).total;
                 cells.footprint.each_row(step, |low, tick| {
                     if rows::strength(tick.total as i64, most, levels) != level {
                         return;
                     }
                     let (top, bottom) = row_y(low);
-                    let long = profile_length(tick.total, room);
+                    let long = profile_length(tick.total, room, most);
                     cr.rectangle(x + room - long, top, long, bottom - top);
                     any = true;
                 });
@@ -732,13 +876,14 @@ fn paint(
         for (at, bar) in bars.iter().enumerate() {
             let Some(cells) = cache.bars.get(&bar.ts) else { continue };
             let (x, room) = across(columns, at, with_bar, true).profile;
+            let most = reference(at).total;
             cells.footprint.each_row(step, |low, tick| {
                 let (top, bottom) = row_y(low);
                 let h = bottom - top;
                 if h < 3.0 {
                     return;
                 }
-                let long = profile_length(tick.total, room);
+                let long = profile_length(tick.total, room, most);
                 cr.rectangle(x + room - long + 0.5, top + 0.5, (long - 1.0).max(0.0), h - 1.0);
                 any = true;
             });
@@ -765,14 +910,14 @@ fn paint(
         let ground = luminance(&state.theme.ui.background);
         let text = luminance(&state.theme.ui.text);
         let light = luminance(ink);
-        let alpha_of = |total: u64| match intensity {
+        let alpha_of = |total: u64, most: u64| match intensity {
             true => rows::step_alpha(rows::strength(total as i64, most, levels), levels, FAINT * full, *full),
             false => *full,
         };
-        let place = |total: i64, room: f64, text_px: f64| {
-            let fill = ground + (light - ground) * alpha_of(total as u64);
+        let place = |total: i64, room: f64, text_px: f64, reference: rows::Largest| {
+            let fill = ground + (light - ground) * alpha_of(total as u64, reference.total);
             let dark = (fill - ground).abs() > (fill - text).abs();
-            (room - INSIDE - text_px, dark && profile_length(total as u64, room) >= text_px + INSIDE)
+            (room - INSIDE - text_px, dark && profile_length(total as u64, room, reference.total) >= text_px + INSIDE)
         };
         figures(cr, state, cache, (step, with_bar), Lane::Profile, columns, &row_y, &place);
     }
@@ -791,10 +936,10 @@ fn paint(
         // Where a number goes along its row, and whether it is dark: always
         // inside at the row's left, on the bar, so the figures make a column
         // down the bar; dark only where the row runs on past all of it.
-        let place = |delta: i64, room: f64, text_px: f64| {
-            let long = length(delta, room);
+        let place = |delta: i64, room: f64, text_px: f64, reference: rows::Largest| {
+            let long = length(delta, room, reference.delta);
             let light = if delta > 0 { buy_light } else { sell_light };
-            let fill = ground + (light - ground) * alpha_of(delta);
+            let fill = ground + (light - ground) * alpha_of(delta, reference.delta);
             let dark = (fill - ground).abs() > (fill - text).abs();
             (INSIDE, dark && long >= text_px + INSIDE)
         };
@@ -823,7 +968,7 @@ fn figures(
     lane: Lane,
     columns: &Columns,
     row_y: &impl Fn(i32) -> (f64, f64),
-    place: &impl Fn(i64, f64, f64) -> (f64, bool),
+    place: &impl Fn(i64, f64, f64, rows::Largest) -> (f64, bool),
 ) {
     const BATCH: usize = 256;
     let row_h = row_y(0).1 - row_y(0).0;
@@ -849,6 +994,7 @@ fn figures(
                 Lane::Delta { profiled } => across(columns, at, with_bar, profiled).rows,
                 Lane::Profile => across(columns, at, with_bar, true).profile,
             };
+            let reference = cache.references.per_bar.get(at).copied().unwrap_or_default();
             cells.footprint.each_row(step, |low, tick| {
                 let value = match lane {
                     Lane::Delta { .. } => tick.delta,
@@ -860,7 +1006,7 @@ fn figures(
                 if text_px + PAD > room {
                     return;
                 }
-                let (offset, on_dark) = place(delta, room, text_px);
+                let (offset, on_dark) = place(delta, room, text_px, reference);
                 if on_dark != dark {
                     return;
                 }
@@ -1039,6 +1185,65 @@ mod tests {
         }
         surface.flush();
         surface.data().unwrap().to_vec()
+    }
+
+    /// Sized against its session, every bar's rows are measured against
+    /// the biggest row of every bar of its day, on screen or not; against
+    /// the bars on screen, the biggest of those. A session's is read once
+    /// and kept, and the frames after read none of it again.
+    #[test]
+    fn rows_are_sized_against_what_is_chosen() {
+        let compared = |compare: flow::Compare| {
+            let mut scene = crate::flow_bench::FlowScene::ending(1_600_000_000 + 3 * 3600, 600, 20, &["footprint"], 60, 0);
+            scene.state_mut().indicators.iter_mut().for_each(|drawn| {
+                if let Params::Footprint { compare: c, .. } = &mut drawn.indicator.params {
+                    *c = compare;
+                }
+            });
+            let _ = shot_of(&scene);
+            scene
+        };
+        let largest_of = |state: &State, pick: BarPick, step: u32| {
+            let read = read_out(state, pick, Some(step)).expect("volume at price");
+            let mut largest = rows::Largest::default();
+            for bar in &read.bars {
+                for row in &bar.rows {
+                    largest.take(row.sides.tick());
+                }
+            }
+            (read, largest)
+        };
+        let scene = compared(flow::Compare::Visible);
+        let state = scene.state();
+        let cache = state.footprint.borrow();
+        let step = cache.auto_step().expect("drawn");
+        let (_, on_screen) = largest_of(state, BarPick::Visible, step);
+        assert_eq!(cache.references.per_bar, vec![on_screen; 20]);
+        drop(cache);
+
+        for compare in [flow::Compare::Session, flow::Compare::Hours] {
+            let scene = compared(compare);
+            let state = scene.state();
+            let cache = state.footprint.borrow();
+            let step = cache.auto_step().expect("drawn");
+            let (first, visible) = state.slice();
+            assert_eq!(cache.references.per_bar.len(), visible);
+            for (at, reference) in cache.references.per_bar.iter().enumerate() {
+                let day = state.bars[first + at].ts.div_euclid(86_400);
+                let (from, to) = (day * 86_400, (day + 1) * 86_400);
+                let (_, session) = largest_of(state, BarPick::Between(from, to), step);
+                assert_eq!(*reference, session, "{compare:?}: bar {at} against its day's biggest");
+            }
+            // The day on screen started before the bars on screen, so its
+            // biggest is at least theirs, and here more.
+            let (_, on_screen) = largest_of(state, BarPick::Visible, step);
+            assert!(cache.references.per_bar[0].total > on_screen.total, "{compare:?}");
+            let kept = cache.references.kept.len();
+            assert!(kept >= 1);
+            drop(cache);
+            let _ = shot_of(&scene);
+            assert_eq!(state.footprint.borrow().references.kept.len(), kept, "kept, not read again");
+        }
     }
 
     /// The footprints the volume profile beside the rows must leave as they

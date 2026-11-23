@@ -201,7 +201,13 @@ impl Ladders for Rithmic {
                         sink(update);
                     }
                 };
-                let Ok(client) = session::client(login) else { return };
+                let client = match session::client(login) {
+                    Ok(client) => client,
+                    Err(error) => {
+                        eprintln!("omacharts: Rithmic ladders of {root}: no session: {error}");
+                        return;
+                    }
+                };
                 let hear = move |live| {
                     let _ = sender.send(Event::Live(live));
                 };
@@ -252,16 +258,23 @@ impl Ladders for Rithmic {
         std::thread::Builder::new()
             .name("omacharts rithmic trades".into())
             .spawn(move || {
-                let Ok(client) = session::client(login) else { return };
+                let client = match session::client(login) {
+                    Ok(client) => client,
+                    Err(error) => {
+                        eprintln!("omacharts: Rithmic trades of {root}: no session: {error}");
+                        return;
+                    }
+                };
                 let heard = Arc::new(sink);
                 let hear = {
                     let stopping = stopping.clone();
-                    move |live| {
-                        if let rithmic::Live::Trade(trade) = live
-                            && !stopping.load(Ordering::Acquire)
-                        {
+                    let root = root.clone();
+                    move |live| match live {
+                        rithmic::Live::Trade(trade) if !stopping.load(Ordering::Acquire) => {
                             heard(&[print_of(&trade, tick_size)]);
                         }
+                        rithmic::Live::Lost(error) => eprintln!("omacharts: Rithmic trades of {root}: {error}"),
+                        _ => {}
                     }
                 };
                 let _watch = match crate::specs::root_of(&root) == root {

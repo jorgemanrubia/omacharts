@@ -130,7 +130,7 @@ Every indicator the app has, with every parameter it exposes:
 | `volume` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--opacity` (0 to 1, both bars), `--up-color`, `--down-color` (a colour given on a preset makes it `custom`), `--up-transparency`, `--down-transparency` (0 to 1, or `default` to follow `--opacity`) |
 | `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--up-color` and `--down-color` (a colour given on a preset makes it `custom`), `--height` |
 | `volume_delta` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--buy-color` and `--sell-color` (a colour, or `none` to let it go; a colour given on a preset makes it `custom`, the other side kept as drawn), `--buy-transparency` and `--sell-transparency` (0 to 1, or `default` for its own) |
-| `footprint` | `--intensity` (`on` or `off`, on by default: rows filled more solidly the bigger their delta), `--numbers` (`on` or `off`, on by default: each row's delta written in it; off draws the rows alone), `--row-ticks` (ticks to a row, 1 to 10000, or `auto`, the default: the fewest round ticks that make a row about a line of small type tall), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--buy-color` and `--sell-color` (a colour, or `none` to let it go; a colour given on a preset makes it `custom`, the other side kept as drawn), `--buy-transparency` and `--sell-transparency` (0 to 1, or `default` for its own), `--profile` (`on` or `off`, off by default: each bar's volume profile at its left, everything traded at each row's prices), `--profile-color` (a colour, or `default` for the theme's blue), `--profile-transparency` (0 to 1, or `default`), `--profile-numbers` (`on` or `off`, on by default); `list --json` reads the profile back as `params.profile` |
+| `footprint` | `--size-against` (`visible`, `session` or `hours`; `visible` by default: what a row's length and strength are measured against), `--intensity` (`on` or `off`, on by default: rows filled more solidly the bigger their delta), `--numbers` (`on` or `off`, on by default: each row's delta written in it; off draws the rows alone), `--row-ticks` (ticks to a row, 1 to 10000, or `auto`, the default: the fewest round ticks that make a row about a line of small type tall), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--buy-color` and `--sell-color` (a colour, or `none` to let it go; a colour given on a preset makes it `custom`, the other side kept as drawn), `--buy-transparency` and `--sell-transparency` (0 to 1, or `default` for its own), `--profile` (`on` or `off`, off by default: each bar's volume profile at its left, everything traded at each row's prices), `--profile-color` (a colour, or `default` for the theme's blue), `--profile-transparency` (0 to 1, or `default`), `--profile-numbers` (`on` or `off`, on by default); `list --json` reads the profile back as `params.profile` |
 | `large_orders` | `--rth-threshold` and `--eth-threshold` (the size, in contracts, an order has to be bigger than in and out of regular hours; 50 and 20 by default), `--size-against` (`visible`, `session` or `hours`; `session` by default), `--combine` (`on` or `off`, on by default: prints of one moment and one side are one order), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--buy-color` and `--sell-color` (a colour, or `none` to let it go; a colour given on a preset makes it `custom`, the other side kept as drawn), `--buy-transparency` and `--sell-transparency` (0 to 1, or `default` for its own) |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha`, `--band-transparency` |
 | `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--outline-style`, `--poc-style`, `--transparency` (0 to 1: 0 is its colour solid, 0.7 by default), `--value-area-transparency`, `--outside-transparency`, `--outline-transparency` and `--poc-transparency` (0 to 1, or `default` to follow `--transparency`, or for the point of control its own), `--last-only` (`on` or `off`), `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the rows' own), `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
@@ -999,14 +999,17 @@ symbol: every chart of it sees what every other draws.
 
 ```
 omacharts chart set --send-drawings off
-omacharts chart set --show-drawings off
+omacharts chart set --show-drawings none
+omacharts chart set --show-drawings chartbook
 ```
 
 `--send-drawings off` keeps what is drawn on that chart to that chart —
 useful for sketching on one view without it appearing on every other.
-`--show-drawings off` keeps the chart clear of what is already drawn on the
-symbol; its own, the ones it sent included, are still there either way
-(`--drawings off` hides both).
+`--show-drawings none` (Hide) keeps the chart clear of what is already drawn
+on the symbol, `chartbook` (This chartbook) shows only what the charts of its
+own chartbook sent, and `all` (All chartbooks, the default) shows every
+chart's; `on` and `off` are read as `all` and `none`. Its own, the ones it
+sent included, are still there either way (`--drawings off` hides both).
 The two are independent: a chart that shows but does not send is a reference
 view.
 
@@ -1268,7 +1271,7 @@ does not remember the scheme that was in use.
 
 What a new chart opens with is a handful of settings, the ones the preferences
 show under Charts: `bar_style`, `ohlc_thickness`, `bar_scheme`, `hollow_up`, `swap_colours`,
-`chart_session`, `show_grid`, `chart_log_scale`, `chart_shows_drawings`,
+`chart_session`, `show_grid`, `chart_log_scale`, `chart_show_drawings`,
 `chart_sends_drawings` and `chart_shows_legend`. Changing
 one chart never changes them.
 
