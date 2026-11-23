@@ -25,6 +25,15 @@ pub trait AtPrice: Ohlcv {
     /// Every price that traded, as `(tick, volume)`, lowest first. Volume
     /// whose side nobody reported is in it; it is on neither side above.
     fn each_price(&self, each: impl FnMut(i32, u64));
+
+    /// Bought less sold, piece by piece in the order it traded — a minute
+    /// at a time, say — so a running delta read from the bar shows how far
+    /// it went either way inside it. One piece, the whole bar's, unless the
+    /// bar knows its pieces.
+    #[inline]
+    fn each_delta(&self, mut each: impl FnMut(i64)) {
+        each(self.bought() as i64 - self.sold() as i64);
+    }
 }
 
 /// An indicator of volume at price, one bar at a time: [`crate::Study`]

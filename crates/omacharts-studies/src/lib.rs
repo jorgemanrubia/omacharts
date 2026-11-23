@@ -35,7 +35,7 @@
 //! | `macd` | [`MacdValue`] `{ line, signal, histogram }` |
 //! | `stochastic` | [`StochasticValue`] `{ k, d }` |
 //! | `vwap`, `bollinger` | [`Spread`] `{ center, deviation }`, a band `k` out at [`Spread::upper`] and [`Spread::lower`] |
-//! | `cvd`, `volume_delta` | [`DeltaBar`] `{ open, high, low, close, estimated, starts }`: [`CvdEstimate`] and [`BarDeltaEstimate`] from bars, [`VolumeDelta`] from volume at price |
+//! | `cvd`, `volume_delta` | [`DeltaBar`] `{ open, high, low, close, estimated, starts }`: [`CvdEstimate`] and [`BarDeltaEstimate`] from bars, [`DeltaRead`] from volume at price (and [`VolumeDelta`]'s [`DeltaReading`], its totals) |
 //! | `volume_profile` | [`volume_profile::Profile`], a whole period's |
 //! | `market_profile` | [`ProfileReading`] `{ poc, vah, val }`, so far: [`DevelopingMarketProfile`] |
 //! | `footprint` | [`footprint::BarFootprint`], a bar's rows of [`footprint::Sides`] |
@@ -87,7 +87,7 @@ pub mod vwap;
 pub use at_price::{AtPrice, AtPriceStudy, DeltaReading, DevelopingProfile, ProfileReading, VolumeDelta};
 pub use average::{Ema, EmaOf, Sma};
 pub use bollinger::Bollinger;
-pub use cvd::{BarDeltaEstimate, CvdEstimate, DeltaBar};
+pub use cvd::{BarDeltaEstimate, CvdEstimate, DeltaBar, DeltaRead};
 pub use catalog::{Form, AT_PRICE, DEVELOPING, INDICATORS};
 pub use market_profile::DevelopingMarketProfile;
 pub use orders::{Aggressor, Combiner, Order, Print, Thresholds};
