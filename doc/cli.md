@@ -999,14 +999,17 @@ symbol: every chart of it sees what every other draws.
 
 ```
 omacharts chart set --send-drawings off
-omacharts chart set --show-drawings off
+omacharts chart set --show-drawings none
+omacharts chart set --show-drawings chartbook
 ```
 
 `--send-drawings off` keeps what is drawn on that chart to that chart —
 useful for sketching on one view without it appearing on every other.
-`--show-drawings off` keeps the chart clear of what is already drawn on the
-symbol; its own, the ones it sent included, are still there either way
-(`--drawings off` hides both).
+`--show-drawings none` (Hide) keeps the chart clear of what is already drawn
+on the symbol, `chartbook` (This chartbook) shows only what the charts of its
+own chartbook sent, and `all` (All chartbooks, the default) shows every
+chart's; `on` and `off` are read as `all` and `none`. Its own, the ones it
+sent included, are still there either way (`--drawings off` hides both).
 The two are independent: a chart that shows but does not send is a reference
 view.
 
@@ -1268,7 +1271,7 @@ does not remember the scheme that was in use.
 
 What a new chart opens with is a handful of settings, the ones the preferences
 show under Charts: `bar_style`, `ohlc_thickness`, `bar_scheme`, `hollow_up`, `swap_colours`,
-`chart_session`, `show_grid`, `chart_log_scale`, `chart_shows_drawings`,
+`chart_session`, `show_grid`, `chart_log_scale`, `chart_show_drawings`,
 `chart_sends_drawings` and `chart_shows_legend`. Changing
 one chart never changes them.
 

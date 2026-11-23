@@ -4,6 +4,7 @@
 //! chart. A split is the exception, because it copies the chart it divides —
 //! two of what you were looking at is the point of splitting.
 
+use omacharts_engine::drawings::ShowDrawings;
 use omacharts_engine::theme::StoredColouring;
 use omacharts_engine::continuous::Adjustment;
 use omacharts_engine::{BarColouring, BarStyle, Session};
@@ -26,7 +27,11 @@ pub const SETTING_OHLC_THICKNESS: &str = "ohlc_thickness";
 /// The range it takes is the chart's own.
 pub use omacharts_chart::{clamp_thickness, DEFAULT_OHLC_THICKNESS, MAX_OHLC_THICKNESS, MIN_OHLC_THICKNESS};
 const SETTING_LOG_SCALE: &str = "chart_log_scale";
+/// Whether new charts show other charts' drawings, as a switch: what a
+/// version before [`SETTING_SHOW_DRAWINGS`] reads, and still written for it.
 const SETTING_SHOWS_DRAWINGS: &str = "chart_shows_drawings";
+/// Which other charts' drawings new charts show, by key.
+const SETTING_SHOW_DRAWINGS: &str = "chart_show_drawings";
 const SETTING_SENDS_DRAWINGS: &str = "chart_sends_drawings";
 /// Whether a chart draws its indicator legend at all.
 pub const SETTING_SHOWS_LEGEND: &str = "chart_shows_legend";
@@ -51,7 +56,7 @@ pub struct ChartDefaults {
     pub continuous: Adjustment,
     pub show_grid: bool,
     pub log_scale: bool,
-    pub shows_drawings: bool,
+    pub shows_drawings: ShowDrawings,
     pub sends_drawings: bool,
     /// Whether the chart draws its indicator legend. Each indicator's own
     /// `in_legend` still decides whether it is named while this is on.
@@ -73,7 +78,7 @@ impl Default for ChartDefaults {
             continuous: Adjustment::default(),
             show_grid: false,
             log_scale: false,
-            shows_drawings: true,
+            shows_drawings: ShowDrawings::All,
             sends_drawings: true,
             shows_legend: true,
             template: None,
@@ -128,7 +133,12 @@ impl ChartDefaults {
                 .unwrap_or(fallback.continuous),
             show_grid: store.setting_bool(SETTING_SHOW_GRID, fallback.show_grid),
             log_scale: store.setting_bool(SETTING_LOG_SCALE, fallback.log_scale),
-            shows_drawings: store.setting_bool(SETTING_SHOWS_DRAWINGS, fallback.shows_drawings),
+            // Written as a switch before a chartbook could be chosen, and read
+            // as what the switch did.
+            shows_drawings: store
+                .setting(SETTING_SHOW_DRAWINGS)
+                .and_then(|key| ShowDrawings::from_key(&key))
+                .unwrap_or_else(|| ShowDrawings::from_switch(store.setting_bool(SETTING_SHOWS_DRAWINGS, fallback.shows_drawings.any()))),
             sends_drawings: store.setting_bool(SETTING_SENDS_DRAWINGS, fallback.sends_drawings),
             shows_legend: store.setting_bool(SETTING_SHOWS_LEGEND, fallback.shows_legend),
             template: store.setting(SETTING_TEMPLATE).and_then(|id| id.parse().ok()),
@@ -145,7 +155,8 @@ impl ChartDefaults {
         store.set_setting(SETTING_CONTINUOUS, self.continuous.key());
         store.set_setting_bool(SETTING_SHOW_GRID, self.show_grid);
         store.set_setting_bool(SETTING_LOG_SCALE, self.log_scale);
-        store.set_setting_bool(SETTING_SHOWS_DRAWINGS, self.shows_drawings);
+        store.set_setting(SETTING_SHOW_DRAWINGS, self.shows_drawings.key());
+        store.set_setting_bool(SETTING_SHOWS_DRAWINGS, self.shows_drawings.any());
         store.set_setting_bool(SETTING_SENDS_DRAWINGS, self.sends_drawings);
         store.set_setting_bool(SETTING_SHOWS_LEGEND, self.shows_legend);
         let template = self.template.map(|id| id.to_string());
@@ -169,7 +180,7 @@ mod tests {
         assert_eq!(fresh.colouring, BarColouring::Vivid);
         assert!(!fresh.swapped && !fresh.hollow_up && !fresh.show_grid);
         assert_eq!(fresh.ohlc_thickness, DEFAULT_OHLC_THICKNESS);
-        assert!(fresh.shows_drawings && fresh.sends_drawings);
+        assert!(fresh.shows_drawings == ShowDrawings::All && fresh.sends_drawings);
         assert!(fresh.shows_legend, "the legend is shown unless somebody turns it off");
 
         let chosen = ChartDefaults {
@@ -182,7 +193,7 @@ mod tests {
             continuous: Adjustment::AsTraded,
             show_grid: true,
             log_scale: true,
-            shows_drawings: false,
+            shows_drawings: ShowDrawings::Chartbook,
             sends_drawings: false,
             shows_legend: false,
             template: None,
@@ -192,6 +203,20 @@ mod tests {
         let on_one = ChartDefaults { template: Some(7), ..chosen };
         on_one.save(&store);
         assert_eq!(ChartDefaults::load(&store), on_one);
+    }
+
+    /// Written while it was a switch, showing other charts' drawings reads
+    /// as what the switch did: on every chart's, in any chartbook, off none.
+    #[test]
+    fn showing_drawings_written_as_a_switch_reads_as_what_it_did() {
+        for (on, shows) in [(true, ShowDrawings::All), (false, ShowDrawings::Hide)] {
+            let store = Store::memory().unwrap();
+            store.set_setting_bool(SETTING_SHOWS_DRAWINGS, on);
+            assert_eq!(ChartDefaults::load(&store).shows_drawings, shows);
+        }
+        let store = Store::memory().unwrap();
+        ChartDefaults { shows_drawings: ShowDrawings::Chartbook, ..ChartDefaults::default() }.save(&store);
+        assert!(store.setting_bool(SETTING_SHOWS_DRAWINGS, false), "a version that reads the switch shows some");
     }
 
     /// An older version wrote a hollow rise and the colours the other way

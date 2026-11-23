@@ -367,7 +367,8 @@ pub fn new_pane(
             // Focus, which is where the window starts a new chartbook's
             // chart: it takes a click in the rail while it is focused.
             "link": LinkMode::default().key(),
-            "shows_drawings": defaults.shows_drawings,
+            "shows_drawings": defaults.shows_drawings.any(),
+            "show_drawings": defaults.shows_drawings.key(),
             "sends_drawings": defaults.sends_drawings,
             "shows_legend": defaults.shows_legend,
         // What the chart is called among the drawings it makes, so it can
@@ -612,4 +613,14 @@ mod tests {
         assert_eq!(back.book(0).unwrap()["panes"][0]["something_new"], json!(42));
         assert_eq!(back.name_of(0), "Rates");
     }
+}
+
+/// Which other charts' drawings a stored chart shows: its choice, or in a
+/// chart written while it was a switch, what the switch did.
+pub fn shows_drawings(pane: &serde_json::Value) -> omacharts_engine::drawings::ShowDrawings {
+    use omacharts_engine::drawings::ShowDrawings;
+    pane["show_drawings"]
+        .as_str()
+        .and_then(ShowDrawings::from_key)
+        .unwrap_or_else(|| ShowDrawings::from_switch(pane["shows_drawings"].as_bool().unwrap_or(true)))
 }

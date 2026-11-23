@@ -16,9 +16,10 @@ ignored; `--color` is its outline and `--fill` its background, and it takes no
 the last bar, whose price is ignored; it takes no `--text`), or `fib` (or
 `fibonacci`, `retracement`: a Fib retracement of the swing from `--from` to
 `--to`, with 0 at `--to`; it takes no `--text`). The tools and their
-configurations are in [Drawings](/manual/drawings/). Whether a chart shows
-other charts' drawings and sends its own is `chart set --show-drawings` and
-`--send-drawings`, each `on` or `off`:
+configurations are in [Drawings](/manual/drawings/). Which other charts' drawings a chart shows is `chart set --show-drawings`:
+`none` (Hide), `chartbook` (This chartbook) or `all` (All chartbooks, the
+default), with `on` and `off` read as `all` and `none`. Whether it sends its
+own is `--send-drawings`, `on` or `off`:
 
 ```
 $ omacharts chart set --send-drawings off

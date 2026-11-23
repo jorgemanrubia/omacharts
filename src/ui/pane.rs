@@ -372,7 +372,7 @@ pub struct ChartPane {
     /// Whether this chart shows the drawings other charts of its symbol
     /// send, and whether it sends its own. Both on by default: a drawing
     /// made on a symbol is usually a drawing about the symbol.
-    pub shows_drawings: Cell<bool>,
+    pub shows_drawings: Cell<omacharts_engine::drawings::ShowDrawings>,
     pub sends_drawings: Cell<bool>,
     /// Whether this chart draws its indicator legend at all. On, each
     /// indicator's own `in_legend` decides whether it is named.
@@ -963,7 +963,7 @@ impl ChartPane {
             continuous: Cell::new(Default::default()),
             show_grid: Cell::new(show_grid),
             mode: Cell::new(mode),
-            shows_drawings: Cell::new(true),
+            shows_drawings: Cell::new(omacharts_engine::drawings::ShowDrawings::All),
             sends_drawings: Cell::new(true),
             shows_legend: Cell::new(true),
             uid: RefCell::new(gtk::glib::uuid_string_random().to_string()),

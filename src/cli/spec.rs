@@ -441,6 +441,9 @@ const TPO_STYLES: &[&str] = &["letters", "blocks"];
 const PROFILE_METHODS: &[&str] = &["total", "delta"];
 const VWAP_SOURCES: &[&str] = &["hlc3", "hl2", "ohlc4", "close"];
 const SWITCHES: &[&str] = &["on", "off"];
+/// Which other charts' drawings a chart shows; `on` and `off` are what the
+/// switch it was took, read as `all` and `none`.
+const SHOW_DRAWINGS: &[&str] = &["none", "chartbook", "all", "on", "off"];
 const LINKS: &[&str] = &["focus", "follow", "pinned"];
 /// The answers `config bars` gives and takes. `coloured`, `hollow` and
 /// `red-up` are what a released version took: `coloured` is `vivid`, and the
@@ -1242,8 +1245,12 @@ pub const SURFACE: &[Noun] = &[
                     )
                     .of(LINKS),
                     Flag::valued("grid", "BOOL", "draw the grid").of(&["on", "off"]),
-                    Flag::valued("show-drawings", "BOOL", "whether the chart shows what other charts of its symbol draw")
-                        .of(SWITCHES),
+                    Flag::valued(
+                        "show-drawings",
+                        "WHICH",
+                        "drawings from other charts of its symbol: none (Hide), chartbook (This chartbook: the charts in its own chartbook) or all (All chartbooks); on and off are all and none",
+                    )
+                    .of(SHOW_DRAWINGS),
                     Flag::valued("send-drawings", "BOOL", "whether what is drawn here goes to the symbol's other charts")
                         .of(SWITCHES),
                     Flag::valued("auto-scale", "BOOL", "fit the price axis to the visible bars, or hold it still")
@@ -2207,6 +2214,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("show_grid", "chart set", "--grid"),
     ("link", "chart set", "--link"),
     ("shows_drawings", "chart set", "--show-drawings"),
+    ("show_drawings", "chart set", "--show-drawings"),
     ("sends_drawings", "chart set", "--send-drawings"),
     ("shows_legend", "chart set", "--legend"),
     ("drawings", "chart drawing", ""),

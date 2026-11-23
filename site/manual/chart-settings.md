@@ -50,7 +50,7 @@ crop: 700,84,1160,1276
 | **Compare** › **Lines only** | Draws the chart's own symbol as a line. Only while the chart compares something |
 | **Compare** › **Measured from** | **Left edge**, or the day the lines are pinned to, with a **Left edge** button to unpin |
 | **Session** › **Hours** | **Extended hours** or **Regular hours only** ([Sessions](/manual/charts/#sessions)) |
-| **Drawings** › **Show drawings from other charts** | Off, the chart shows only its own drawings |
+| **Drawings** › **Drawings from other charts** | **Hide**, **This chartbook** or **All chartbooks**: which other charts' drawings of its symbol the chart shows, besides its own ([Sharing drawings between charts](/manual/drawings/#sharing-drawings-between-charts)) |
 | **Drawings** › **Send drawings to other charts** | Off, what is drawn on this chart stays on this chart ([Sharing drawings between charts](/manual/drawings/#sharing-drawings-between-charts)) |
 | **Reset to defaults** › **Reset** | Puts this chart back on the defaults. See [Putting one chart back on the defaults](#putting-one-chart-back-on-the-defaults) |
 
@@ -85,7 +85,8 @@ crop: 292,76,1976,1288   (the whole dialog; the Defaults page scrolls inside it)
 | **Session** › **Hours** | **Extended hours**, **Regular hours only** | **Extended hours** |
 | **Indicators** › **Template** | A chart template, or **None** ([Chart templates](/manual/chart-templates/)) | **Default** |
 | **Indicators** › **Show legend for indicators** | On or off ([The legend](/manual/indicators/#the-legend)) | On |
-| **Drawings** › **Show drawings from other charts**, **Send drawings to other charts** | On or off ([Drawings](/manual/drawings/)) | On |
+| **Drawings** › **Drawings from other charts** | **Hide**, **This chartbook** or **All chartbooks** ([Drawings](/manual/drawings/#sharing-drawings-between-charts)) | All chartbooks |
+| **Drawings** › **Send drawings to other charts** | On or off ([Drawings](/manual/drawings/)) | On |
 
 A new chart's price scale starts by fitting the bars.
 

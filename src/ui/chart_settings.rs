@@ -824,12 +824,18 @@ fn drawings_group(window: &Rc<Window>) -> adw::PreferencesGroup {
 
     let pane = window.focused_pane();
 
-    let shows = adw::SwitchRow::new();
-    shows.set_title("Show drawings from other charts");
-    shows.set_active(pane.shows_drawings.get());
+    let shows = adw::ComboRow::new();
+    shows.set_title(SHOW_DRAWINGS_LABEL);
     {
+        use omacharts_engine::drawings::ShowDrawings;
+        let choices: Vec<&str> = ShowDrawings::ALL.iter().map(|s| s.label()).collect();
+        shows.set_model(Some(&gtk::StringList::new(&choices)));
+        shows.set_selected(ShowDrawings::ALL.iter().position(|s| *s == pane.shows_drawings.get()).unwrap_or(0) as u32);
         let window = window.clone();
-        shows.connect_active_notify(move |row| window.set_shows_drawings(row.is_active()));
+        shows.connect_selected_notify(move |row| {
+            let Some(chosen) = ShowDrawings::ALL.get(row.selected() as usize).copied() else { return };
+            window.set_shows_drawings(chosen);
+        });
     }
     group.add(&shows);
 
@@ -2813,6 +2819,9 @@ pub const FOOTPRINT_PROFILE_NUMBERS_LABEL: &str = "Profile numbers";
 pub const LARGE_RTH_LABEL: &str = "RTH threshold";
 pub const LARGE_ETH_LABEL: &str = "ETH threshold";
 pub const LARGE_COMPARE_LABEL: &str = "Size against";
+/// Which other charts' drawings a chart shows: see
+/// [`omacharts_engine::drawings::ShowDrawings`].
+pub const SHOW_DRAWINGS_LABEL: &str = "Drawings from other charts";
 pub const LARGE_COMBINE_LABEL: &str = "Combine same-time prints";
 pub const FLOW_BUY_LABEL: &str = "Buying";
 pub const FLOW_SELL_LABEL: &str = "Selling";

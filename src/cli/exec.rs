@@ -2378,7 +2378,15 @@ fn chart_set(
     let thickness = arg(m, "thickness").map(|text| parse_thickness(text, "--thickness")).transpose()?;
     // Blank takes the title away, as clearing it in the header does.
     let title = arg(m, "title").map(|text| crate::ui::window::clean_title(text));
-    let shows_drawings = switch("show-drawings")?;
+    use omacharts_engine::drawings::ShowDrawings;
+    let shows_drawings = match arg(m, "show-drawings").map(String::as_str) {
+        None => None,
+        Some("on") => Some(ShowDrawings::All),
+        Some("off") => Some(ShowDrawings::Hide),
+        Some(text) => Some(ShowDrawings::from_key(text).ok_or_else(|| {
+            Fault::usage(format!("--show-drawings takes none, chartbook or all, not {text:?}"))
+        })?),
+    };
     let sends_drawings = switch("send-drawings")?;
     let legend = switch("legend")?;
     let template = match arg(m, "template") {
@@ -2494,8 +2502,10 @@ fn chart_set(
         changed.push(format!("grid {grid}"));
     }
     if let Some(shows) = shows_drawings {
-        chart["shows_drawings"] = json!(shows);
-        changed.push(format!("shows other charts' drawings {}", on_off(shows)));
+        // The switch beside it for a version that reads only that.
+        chart["shows_drawings"] = json!(shows.any());
+        chart["show_drawings"] = json!(shows.key());
+        changed.push(format!("drawings from other charts {}", shows.key()));
     }
     if let Some(sends) = sends_drawings {
         let was = chart["sends_drawings"].as_bool().unwrap_or(true);
@@ -3423,7 +3433,11 @@ fn chart_drawing(
     if symbol.is_empty() {
         return Err(Fault::refused("that chart has no symbol to draw on".into()));
     }
-    let shows = chart["shows_drawings"].as_bool().unwrap_or(true);
+    let shows = charts::shows_drawings(&chart);
+    // The chartbook's charts by name, whose drawings it shows when it shows
+    // its chartbook's.
+    let book_uids: Vec<String> =
+        charts::panes(&book).iter().filter_map(|p| p["drawing_uid"].as_str().map(str::to_string)).collect();
     let sends = chart["sends_drawings"].as_bool().unwrap_or(true);
     let configs = store.drawing_configurations();
     let zone = chart_zone(store, &symbol, suffix.as_deref());
@@ -3436,7 +3450,7 @@ fn chart_drawing(
         .unwrap_or_default();
     let mine = chart["drawing_uid"].as_str().unwrap_or("").to_string();
     let shown = |store: &Store, locals: &[Drawing]| -> Vec<Drawing> {
-        omacharts_engine::drawings::seen_by(&store.drawings(&symbol, suffix.as_deref()), locals, &mine, shows)
+        omacharts_engine::drawings::seen_by(&store.drawings(&symbol, suffix.as_deref()), locals, &mine, shows, &book_uids)
     };
 
     if action == "list" {
@@ -3447,8 +3461,10 @@ fn chart_drawing(
         }
         return match as_json {
             true => Ok(format!(
-                "{{\"chart\":{pane},\"symbol\":{},\"shows_drawings\":{shows},\"sends_drawings\":{sends},\"drawings\":[{}]}}\n",
+                "{{\"chart\":{pane},\"symbol\":{},\"shows_drawings\":{},\"show_drawings\":{},\"sends_drawings\":{sends},\"drawings\":[{}]}}\n",
                 json!(spell(&symbol, suffix.as_deref())),
+                shows.any(),
+                json!(shows.key()),
                 listed
                     .iter()
                     .map(|d| {
@@ -6800,7 +6816,8 @@ fn pane_json(pane: &Value) -> String {
         // And with its legend, before it could be turned off.
         "legend": pane["shows_legend"].as_bool().unwrap_or(true),
         "link": stored_mode(pane).key(),
-        "shows_drawings": pane["shows_drawings"].as_bool().unwrap_or(true),
+        "shows_drawings": charts::shows_drawings(pane).any(),
+        "show_drawings": charts::shows_drawings(pane).key(),
         "sends_drawings": pane["sends_drawings"].as_bool().unwrap_or(true),
         "indicators": pane["indicators"]
             .as_array()

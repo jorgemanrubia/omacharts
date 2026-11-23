@@ -2310,27 +2310,90 @@ impl Drawing {
         !uid.is_empty() && self.origin.as_deref() == Some(uid)
     }
 
-    /// Whether a chart named `uid` sees this shared drawing: all of them
-    /// when it is shown what other charts send, and only the ones it sent
-    /// itself when it is not.
-    pub fn seen_by(&self, uid: &str, shows_others: bool) -> bool {
-        shows_others || self.made_by(uid)
+    /// Whether a chart named `uid` sees this shared drawing: the ones it
+    /// sent itself always, and of other charts' what `shows` lets through,
+    /// `book` naming the charts of its own chartbook.
+    pub fn seen_by(&self, uid: &str, shows: ShowDrawings, book: &[String]) -> bool {
+        self.made_by(uid)
+            || match shows {
+                ShowDrawings::Hide => false,
+                ShowDrawings::Chartbook => self.origin.as_ref().is_some_and(|origin| book.contains(origin)),
+                ShowDrawings::All => true,
+            }
+    }
+}
+
+/// Which other charts' drawings of its symbol a chart shows: none, those of
+/// the charts in its own chartbook, or every chart's, in any chartbook.
+/// A chart's own are shown whichever.
+///
+/// Every chart showed every other's, or none, before a chartbook could be
+/// chosen: on is [`ShowDrawings::All`], off [`ShowDrawings::Hide`]
+/// ([`ShowDrawings::from_switch`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShowDrawings {
+    #[serde(rename = "none")]
+    Hide,
+    Chartbook,
+    #[default]
+    All,
+}
+
+impl ShowDrawings {
+    pub const ALL: [ShowDrawings; 3] = [ShowDrawings::Hide, ShowDrawings::Chartbook, ShowDrawings::All];
+
+    /// The row it is chosen in, "Drawings from other charts", says it so.
+    pub fn label(self) -> &'static str {
+        match self {
+            ShowDrawings::Hide => "Hide",
+            ShowDrawings::Chartbook => "This chartbook",
+            ShowDrawings::All => "All chartbooks",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            ShowDrawings::Hide => "none",
+            ShowDrawings::Chartbook => "chartbook",
+            ShowDrawings::All => "all",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<ShowDrawings> {
+        ShowDrawings::ALL.into_iter().find(|shows| shows.key() == key)
+    }
+
+    /// What the switch it replaced meant: on showed every other chart's
+    /// drawings, in any chartbook, and off none.
+    pub fn from_switch(on: bool) -> ShowDrawings {
+        match on {
+            true => ShowDrawings::All,
+            false => ShowDrawings::Hide,
+        }
+    }
+
+    /// Whether any other chart's drawings are shown: the switch's answer,
+    /// for what reads only that.
+    pub fn any(self) -> bool {
+        self != ShowDrawings::Hide
     }
 }
 
 /// What one chart sees, painting order: the symbol's shared drawings that
 /// [`Drawing::seen_by`] lets through, and the chart's own local ones always.
 ///
-/// "Show drawings from other charts" turned off hides other charts' work,
-/// never the chart's own. A chart sends what it draws by default, so its own
+/// "Drawings from other charts" set to Hide hides other charts' work, and
+/// This chartbook hides that of the charts in other chartbooks, never the
+/// chart's own. A chart sends what it draws by default, so its own
 /// drawings sit with the symbol beside everybody else's, and only the origin
 /// tells them apart. A drawing with no origin, written before charts had
 /// names, belongs to no chart: it counts as another chart's, and is hidden
 /// with them. Claiming it for every chart would put it back on each chart
 /// somebody had asked to keep clean, and sending works the same way — no
 /// chart can withdraw it either.
-pub fn seen_by(shared: &[Drawing], own: &[Drawing], uid: &str, shows_others: bool) -> Vec<Drawing> {
-    let mut all: Vec<Drawing> = shared.iter().filter(|d| d.seen_by(uid, shows_others)).cloned().collect();
+pub fn seen_by(shared: &[Drawing], own: &[Drawing], uid: &str, shows: ShowDrawings, book: &[String]) -> Vec<Drawing> {
+    let mut all: Vec<Drawing> = shared.iter().filter(|d| d.seen_by(uid, shows, book)).cloned().collect();
     all.extend(own.iter().cloned());
     sort_for_painting(&mut all);
     all
@@ -3384,6 +3447,20 @@ mod shape_tests {
         assert_eq!(serde_json::from_str::<Drawing>(old).unwrap().scope, Scope::Shared);
     }
 
+    /// The switch it replaced reads back as what it did: on showed every
+    /// chart's, off none; and each choice writes its key.
+    #[test]
+    fn showing_drawings_reads_from_the_switch_it_replaced() {
+        assert_eq!(ShowDrawings::from_switch(true), ShowDrawings::All);
+        assert_eq!(ShowDrawings::from_switch(false), ShowDrawings::Hide);
+        assert_eq!(ShowDrawings::default(), ShowDrawings::All);
+        for shows in ShowDrawings::ALL {
+            assert_eq!(ShowDrawings::from_key(shows.key()), Some(shows));
+            assert_eq!(serde_json::to_string(&shows).unwrap(), format!("\"{}\"", shows.key()));
+        }
+        assert_eq!(ShowDrawings::ALL.map(ShowDrawings::label), ["Hide", "This chartbook", "All chartbooks"]);
+    }
+
     /// A chart not shown other charts' drawings keeps the ones it sent
     /// itself and its local ones; a drawing with no origin, from before
     /// charts had names, is nobody's and goes with the others. Shown
@@ -3400,11 +3477,14 @@ mod shape_tests {
         let mut local = at(-1, Some("mine"));
         local.scope = Scope::Local;
         let ids = |seen: Vec<Drawing>| seen.iter().map(|d| d.id).collect::<Vec<_>>();
-        assert_eq!(ids(seen_by(&shared, &[local.clone()], "mine", false)), vec![1, -1]);
-        assert_eq!(ids(seen_by(&shared, &[local.clone()], "mine", true)), vec![1, -1, 2, 3]);
+        let book = ["mine".to_string(), "beside".to_string()];
+        let shared = [shared, vec![at(4, Some("beside"))]].concat();
+        assert_eq!(ids(seen_by(&shared, &[local.clone()], "mine", ShowDrawings::Hide, &book)), vec![1, -1]);
+        assert_eq!(ids(seen_by(&shared, &[local.clone()], "mine", ShowDrawings::Chartbook, &book)), vec![1, -1, 4]);
+        assert_eq!(ids(seen_by(&shared, &[local.clone()], "mine", ShowDrawings::All, &book)), vec![1, -1, 2, 3, 4]);
         // A chart with no name yet claims nothing, even the drawings that
         // have none either.
-        assert_eq!(ids(seen_by(&shared, &[], "", false)), Vec::<i64>::new());
+        assert_eq!(ids(seen_by(&shared, &[], "", ShowDrawings::Hide, &[])), Vec::<i64>::new());
         // And an old drawing with no origin still reads.
         let old = r#"{"kind":"horizontal","from":{"ts":1,"price":2.0},"to":{"ts":3,"price":2.0}}"#;
         assert_eq!(serde_json::from_str::<Drawing>(old).unwrap().origin, None);
