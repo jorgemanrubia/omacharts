@@ -897,6 +897,9 @@ pub(crate) mod tests {
         stops: Option<i64>,
         /// Where it says it reads the trades from.
         source: Option<String>,
+        /// When set, a request for minute ladders waits until this hears
+        /// something or its sender goes: a history plant slow to answer.
+        pub(crate) ladders_held: Option<std::sync::mpsc::Receiver<()>>,
         /// How long a day from before `slow_before` takes to come, as a day
         /// of ES takes from Rithmic's history plant.
         slow: Duration,
@@ -930,6 +933,10 @@ pub(crate) mod tests {
             30
         }
         fn minutes(&self, _: &str, _: f64, _: i64, _: i64) -> Result<Vec<omacharts_engine::ladders::Minute>, ProviderError> {
+            let held = self.0.lock().unwrap().ladders_held.take();
+            if let Some(held) = held {
+                let _ = held.recv();
+            }
             Ok(Vec::new())
         }
         fn watch(&self, _: &str, _: f64, _: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {

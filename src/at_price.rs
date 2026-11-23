@@ -27,7 +27,11 @@
 //! which minutes from the chart's first bar to now it knows nothing about —
 //! [`Store::missing_ladders`] — and only those spans go to the provider, one
 //! request each, which is what spares a provider with a data quota. A span
-//! the store knows complete is never asked for again. The provider is asked
+//! the store knows complete is never asked for again. While the provider
+//! is asked, what the store kept is already drawn: the load answers twice,
+//! from the store first and again once the holes are filled, so a chart
+//! opened after a restart never waits on the provider for what it had. The
+//! provider is asked
 //! no further back than its history goes, but the store is read as far back
 //! as the chart reaches: days kept on earlier runs, older than the provider
 //! still serves, are drawn from what traded too. Nor is a root asked for
@@ -109,7 +113,10 @@ enum Job {
 
 /// What the thread hands back.
 pub enum Done {
-    Loaded { key: String, stored: String, from: i64, held: Box<Held>, asked: Vec<(i64, i64)>, seq: u64 },
+    /// `cached`: what the store held before the provider was asked about
+    /// its holes, sent ahead so the charts draw from it at once. The same
+    /// load answers again, `cached` false, once the provider has answered.
+    Loaded { key: String, stored: String, from: i64, held: Box<Held>, asked: Vec<(i64, i64)>, seq: u64, cached: bool },
     /// Pieces of one day, summed; `missing`, those of a day the store does
     /// not have.
     Pieces { key: String, stored: String, pieces: Vec<(Piece, Ladder)>, missing: Vec<Piece> },
@@ -498,10 +505,15 @@ impl AtPrice {
         let now = (self.clock.get())();
         let mut entries = self.entries.borrow_mut();
         match done {
-            Done::Loaded { key, stored, from, mut held, asked, seq } => {
+            Done::Loaded { key, stored, from, mut held, asked, seq, cached } => {
                 // Of the month before a roll.
                 let Some(entry) = entries.get_mut(&key).filter(|entry| entry.stored == stored) else { return Vec::new() };
-                entry.answered = entry.answered.max(seq);
+                // What the store held is drawn while the provider is asked,
+                // but the load is not answered until it has been: minutes
+                // sealed meanwhile go on top of its second answer too.
+                if !cached {
+                    entry.answered = entry.answered.max(seq);
+                }
                 if from > entry.from && entry.loaded {
                     // A later load from further back is on its way.
                     return Vec::new();
@@ -516,16 +528,19 @@ impl AtPrice {
                 for (_, minute) in entry.early.iter().filter(|(asked, _)| *asked >= seq) {
                     held.seal(entry.days.of(minute.ts), minute.clone());
                 }
-                entry.early.retain(|(asked, _)| *asked > seq);
+                if !cached {
+                    entry.early.retain(|(asked, _)| *asked > seq);
+                }
+                // Days the provider was just asked about may have changed:
+                // what is held of them is let go for what was read.
+                let changed = |day: i64| asked.iter().any(|(a, b)| (entry.days.of(*a)..=entry.days.of(b - 1)).contains(&day));
                 // Days whose minutes were loaded are kept whole.
-                for day in entry.held.days.drain(..).filter(|d| d.whole) {
+                for day in entry.held.days.drain(..).filter(|d| d.whole && !changed(d.day.day)) {
                     if held.days.iter().any(|h| h.day.day == day.day.day && !h.whole) {
                         held.load(day.day);
                     }
                 }
-                // Pieces are kept but for days the provider was just asked
-                // about, which may have changed.
-                let changed = |day: i64| asked.iter().any(|(a, b)| (entry.days.of(*a)..=entry.days.of(b - 1)).contains(&day));
+                // Pieces likewise.
                 let order = std::mem::take(&mut entry.pieces);
                 for piece in order {
                     if changed(piece.day) {
@@ -815,9 +830,26 @@ impl Entry {
     }
 }
 
-/// Ask the provider for the minutes of `from..now` the store knows nothing
-/// about, one request a hole, and keep them. The spans it got.
-#[allow(clippy::too_many_arguments)]
+/// What the store knows nothing about of `key` from `from` up to the
+/// minute trading now, which is the live feed's. A stitched root's holes
+/// are cut a month at a time: a span its feed cannot move just now waits,
+/// and the others, the front month's own among them, are kept.
+fn holes(store: &Store, key: &str, symbol: &str, from: i64, now: i64) -> Vec<(i64, i64)> {
+    let to = now.div_euclid(60) * 60;
+    store
+        .missing_ladders(key, from, to)
+        .into_iter()
+        .flat_map(|(a, b)| {
+            let mut edges = vec![a];
+            edges.extend(omacharts_engine::continuous::roll_cuts(symbol, a, b));
+            edges.push(b);
+            edges.windows(2).map(|pair| (pair[0], pair[1])).collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Ask the provider for the minutes of each of `holes`, one request a hole,
+/// and keep them. The spans it got.
 fn fill(
     store: &Store,
     ladders: &dyn omacharts_engine::Ladders,
@@ -825,21 +857,9 @@ fn fill(
     symbol: &str,
     tick_size: f64,
     days: &Days,
-    from: i64,
-    now: i64,
+    holes: Vec<(i64, i64)>,
 ) -> Vec<(i64, i64)> {
-    // The minute trading now is the live feed's.
-    let to = now.div_euclid(60) * 60;
     let mut asked = Vec::new();
-    // A stitched root's holes asked a month at a time: a span its feed
-    // cannot move just now waits, and the others, the front month's own
-    // among them, are kept.
-    let holes = store.missing_ladders(key, from, to).into_iter().flat_map(|(a, b)| {
-        let mut edges = vec![a];
-        edges.extend(omacharts_engine::continuous::roll_cuts(symbol, a, b));
-        edges.push(b);
-        edges.windows(2).map(|pair| (pair[0], pair[1])).collect::<Vec<_>>()
-    });
     for (a, b) in holes {
         match ladders.minutes(symbol, tick_size, a, b) {
             Ok(minutes) => {
@@ -888,14 +908,40 @@ fn work(path: &std::path::Path, provider: &dyn Provider, inbox: &mpsc::Receiver<
                 // goes; what the store kept from before that, on earlier
                 // runs, is read all the same.
                 let reach = asks_from(ladders, &symbol, from, now);
-                let asked = fill(&store, ladders, &stored, &symbol, tick_size, &days, reach, now);
+                let holes = holes(&store, &stored, &symbol, reach, now);
+                // A provider can take its time over the holes — a session to
+                // sign in, a plant to replay minutes from — and what the
+                // store kept on earlier runs is drawn meanwhile, the charts'
+                // large orders asked for on top of it, rather than nothing
+                // until every hole is filled.
+                if !holes.is_empty() {
+                    let held = store.load_ladder_held(&stored, &days, days.of(from), days.of(now) + 1);
+                    let cached = Done::Loaded {
+                        key: key.clone(),
+                        stored: stored.clone(),
+                        from,
+                        held: Box::new(held),
+                        asked: Vec::new(),
+                        seq,
+                        cached: true,
+                    };
+                    if done.send_blocking(cached).is_err() {
+                        return;
+                    }
+                }
+                let started = std::time::Instant::now();
+                let asked = fill(&store, ladders, &stored, &symbol, tick_size, &days, holes);
+                if !asked.is_empty() {
+                    eprintln!("omacharts: ladders of {key}: the provider answered in {:.1}s", started.elapsed().as_secs_f64());
+                }
                 let held = store.load_ladder_held(&stored, &days, days.of(from), days.of(now) + 1);
-                Done::Loaded { key, stored, from, held: Box::new(held), asked, seq }
+                Done::Loaded { key, stored, from, held: Box::new(held), asked, seq, cached: false }
             }
             Job::Fill { key, stored, symbol, instrument, tick_size, from, now } => {
                 let days = Days::new(&instrument);
                 let from = asks_from(ladders, &symbol, from, now);
-                let asked = fill(&store, ladders, &stored, &symbol, tick_size, &days, from, now);
+                let holes = holes(&store, &stored, &symbol, from, now);
+                let asked = fill(&store, ladders, &stored, &symbol, tick_size, &days, holes);
                 let mut numbers: Vec<i64> = asked.iter().flat_map(|(a, b)| days.of(*a)..=days.of(b - 1)).collect();
                 numbers.sort_unstable();
                 numbers.dedup();
@@ -1072,9 +1118,22 @@ mod tests {
         dir.join("omacharts.db")
     }
 
+    /// The thread's next answer put in place; a load's answer from the
+    /// store alone is followed by its last.
     fn settle(at_price: &AtPrice) -> Vec<u32> {
-        let done = at_price.done().recv_blocking().expect("the thread answers");
-        at_price.finished(done)
+        let mut panes = Vec::new();
+        loop {
+            let done = at_price.done().recv_blocking().expect("the thread answers");
+            let cached = matches!(done, Done::Loaded { cached: true, .. });
+            for pane in at_price.finished(done) {
+                if !panes.contains(&pane) {
+                    panes.push(pane);
+                }
+            }
+            if !cached {
+                return panes;
+            }
+        }
     }
 
     /// The store knows two hours of the last three; a chart reaching back

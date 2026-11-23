@@ -724,6 +724,70 @@ fn thresholds_changed_in_the_settings_draw_their_bubbles_once_built() {
     });
 }
 
+/// The author's report: after a restart a session volume profile and the
+/// large orders beside it drew nothing for a long while, though the
+/// ladders were kept from the run before, and a market profile, drawn from
+/// the bars, was there at once. The ladders' load filled the store's holes
+/// from the provider before it answered with anything, and the large
+/// orders wait for the ladders: both waited on a history plant slow to
+/// answer. With what the store kept and the provider still holding back,
+/// the profile and the bubbles are drawn, with nothing done to the chart.
+#[test]
+fn a_chart_restored_draws_its_profile_and_large_orders_from_the_store_before_the_feed_answers() {
+    use crate::large_orders::tests::{es, scratch, Asked, Fake};
+    use omacharts_engine::ladders::{Days, Minute, Side};
+    crate::ui::on_gtk(|| {
+        let store = Rc::new(Store::memory().expect("a store"));
+        let window = window(&store);
+        let pane = window.focused_pane();
+        assert!(settle(|| pane.view.with_bars(|bars| bars.len() > 50)), "bars on the chart");
+        // The run before kept the ladders of the newest bars' hours; the
+        // older ones are a hole the provider is asked about, slowly.
+        let path = scratch("window-restored");
+        let last = pane.view.with_bars(|bars| bars.last().map(|bar| bar.ts)).unwrap();
+        let (a, b) = ((last - 3 * 3_600).div_euclid(60) * 60, last.div_euclid(60) * 60);
+        let minutes: Vec<Minute> = (a..b)
+            .step_by(60)
+            .map(|ts| {
+                let mut minute = Minute::opening(ts, 7_625.0);
+                minute.add_trade(30_500, 7_625.0, 3, Side::Buy, 1);
+                minute
+            })
+            .collect();
+        Store::open_at(&path).unwrap().save_ladder_history("fake:ES", 0.25, &Days::new(&es()), a, b, &minutes).unwrap();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let mut asked = Asked::default();
+        asked.ladders_held = Some(held);
+        let provider: std::sync::Arc<dyn omacharts_engine::Provider> =
+            std::sync::Arc::new(Fake(std::sync::Arc::new(std::sync::Mutex::new(asked))));
+        let at_price = Rc::new(crate::at_price::AtPrice::new(provider.clone(), Some(path.clone())).unwrap());
+        at_price.set_clock(frozen);
+        let large = Rc::new(crate::large_orders::LargeOrders::new(provider, Some(path)).unwrap());
+        large.set_clock(frozen);
+        window.wire_at_price(at_price.clone());
+        window.wire_large_orders(large.clone());
+        *pane.instrument.borrow_mut() = Some(es());
+        *pane.ladders.borrow_mut() = Some(crate::ui::pane::LadderSource {
+            at_price: at_price.clone(),
+            large_orders: Some(large.clone()),
+            key: "fake:ES".into(),
+            symbol: "ES".into(),
+        });
+        let mut orders = Indicator::new(2, IndicatorKind::LargeOrders);
+        if let Params::LargeOrders { regular, extended, .. } = &mut orders.params {
+            (*regular, *extended) = (5, 5);
+        }
+        window.set_indicators(vec![Indicator::new(1, IndicatorKind::VolumeProfile), orders]);
+
+        assert!(settle(|| profiles(&pane, 1) > 0), "the profile drawn from the store");
+        assert!(at_price.with_held("fake:ES", |held| held.is_some()), "the ladders the store kept");
+        assert!(!all_bubbles(&pane, 2).is_empty(), "the bubbles, the ladders' feed still asked");
+        drop(release);
+        at_price.shutdown();
+        large.shutdown();
+    });
+}
+
 /// A chart draws one footprint. The author's chart had two, the second with
 /// its volume profile on and never drawn: pasting a footprint onto a chart
 /// with one changes the one there, in its place, instead of adding another.
