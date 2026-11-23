@@ -69,7 +69,7 @@ A colour and its opacity share one row: the colour's name, the swatch, then **Op
 |---|---|---|
 | **Display** | Filled | Filled, or Outline: only the edge of the rows, so the candles under it stay clear |
 | **Alignment** | Left | Left, or Right: the rows grow back from the end of the period ([Aligned right](#aligned-right)). Beside a market profile with the same period each keeps its own ([Beside a volume profile](/manual/indicators/volume/market-profile/#beside-a-volume-profile)) |
-| **Width %** | 40% | 10 to 100%: how far the longest row reaches, of the period's width, or of the empty space past the last bar for the session drawn there |
+| **Width %** | 40% | 10 to 100%: how far the longest row reaches, of the whole period's width, on screen or not, or of the empty space past the last bar for the session drawn there. Scrolling moves a profile with its bars and never changes its width |
 | **Colour** | The next free colour, at 30% opacity | A palette name, or a custom colour, greyed for Ask volume - bid volume, whose rows are in its **Colouring**. Its **Opacity** is how solid the rows are drawn, 0 to 100%: at 100% they are solid, and at 0% the profile is gone. The value area's two opacities follow it until they are set |
 | **Outline** | Off | On for an edge round filled rows. Always on, and greyed, while **Display** is Outline |
 | **Outline colour** | The profile's **Colour**, at 45% opacity round filled rows; in the Outline display its opacity follows the rows' | A palette name, or a custom colour. Its **Opacity** is how solid the edge is drawn, 0 to 100%; once set, it stays put when the rows' moves |

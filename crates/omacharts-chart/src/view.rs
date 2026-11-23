@@ -1117,6 +1117,11 @@ impl<'a> Columns<'a> {
         self.start + index.saturating_sub(self.first) as f64 * self.bar_px
     }
 
+    /// Where bar `index` starts, on screen or off it either side.
+    fn left_at(&self, index: usize) -> f64 {
+        self.start + (index as f64 - self.first as f64) * self.bar_px
+    }
+
     /// How wide the bars from `from` up to but not including `to` are.
     fn width_of(&self, from: usize, to: usize) -> f64 {
         self.left_of(to) - self.left_of(from)

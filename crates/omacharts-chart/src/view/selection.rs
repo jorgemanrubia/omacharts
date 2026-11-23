@@ -545,7 +545,9 @@ pub(super) const PROFILE_ROOM_MIN: f64 = 48.0;
 /// Where a profile is drawn across, the arithmetic the profile is drawn
 /// with. Nothing for one off screen.
 ///
-/// A share of its period's width, from the edge it is aligned to — except
+/// A share of its whole period's width, from the edge it is aligned to,
+/// however much of the period is on screen, so scrolling never changes it —
+/// except
 /// the period still forming at the live edge, aligned right: that one is
 /// drawn back from the plot's right edge across the empty space past the
 /// last bar, so it describes the session without sitting on the bars it is
@@ -574,15 +576,17 @@ pub(super) fn profile_box(profile: &Profile, columns: &Columns, look: &ProfileLo
     if profile.last_bar < first || profile.first_bar >= last {
         return NONE;
     }
-    let from = profile.first_bar.max(first);
-    let to = profile.last_bar.min(last - 1) + 1;
-    let width = columns.width_of(from, to).max(columns.bar_w);
+    // The whole period, on screen or not: measured on what of it is on
+    // screen, a profile grew and shrank as the view scrolled across it.
+    let (from, to) = (profile.first_bar, profile.last_bar + 1);
+    let left = columns.left_at(from);
+    let width = ((to - from) as f64 * columns.bar_px).max(columns.bar_w);
     // Of the period, what a share of one is once they all fit in it.
     let share = width / look.total.max(1.0);
     let span = share * look.width;
     match look.align {
-        Align::Left => ProfileBox { edge: columns.left_of(from) + share * look.before, span, towards: 1.0 },
-        Align::Right => ProfileBox { edge: columns.left_of(from) + width - share * look.after, span, towards: -1.0 },
+        Align::Left => ProfileBox { edge: left + share * look.before, span, towards: 1.0 },
+        Align::Right => ProfileBox { edge: left + width - share * look.after, span, towards: -1.0 },
     }
 }
 
@@ -1068,7 +1072,7 @@ mod tests {
             .iter()
             .map(|p| {
                 let area = profile_box(p, &frame.columns, &look);
-                let period = (frame.columns.left_of(p.first_bar.max(frame.columns.first)), frame.columns.left_of(p.last_bar + 1));
+                let period = (frame.columns.left_at(p.first_bar), frame.columns.left_of(p.last_bar + 1));
                 (p.clone(), area, period.0, period.1)
             })
             .collect()
@@ -1512,7 +1516,7 @@ mod tests {
         let Output::Profiles(profiles) = &state.indicators[0].output else { panic!("profiles") };
         let p = &profiles[period];
         let area = profile_box(p, &frame.columns, &super::placed_look(state, &state.indicators[0]));
-        (p.clone(), area, frame.columns.left_of(p.first_bar.max(frame.columns.first)), frame.columns.left_of(p.last_bar + 1))
+        (p.clone(), area, frame.columns.left_at(p.first_bar), frame.columns.left_of(p.last_bar + 1))
     }
 
     /// A profile study as the legend lists it: its kind, the edge it is set
@@ -1548,6 +1552,51 @@ mod tests {
         state
     }
 
+    /// Scrolled sideways, every profile keeps its width on screen and moves
+    /// with its bars, pixel for pixel: it is measured on its whole period,
+    /// not on what of the period is on screen nor on the plot. A volume
+    /// profile and a market profile, aligned either way, alone or beside
+    /// each other, with the period they are drawn in part off the plot's
+    /// left edge.
+    #[test]
+    fn scrolling_moves_a_profile_and_never_resizes_it() {
+        use omacharts_engine::Reset;
+        use profile::Align::{Left, Right};
+        let vp = |align| (Kind::VolumeProfile, align, 0.4, Reset::Session);
+        let mp = |align| (Kind::MarketProfile, align, 0.4, Reset::Session);
+        for legend in [vec![vp(Left)], vec![vp(Right)], vec![mp(Left)], vec![mp(Right)], vec![vp(Right), mp(Left)], vec![mp(Right), vp(Right)]] {
+            let mut state = with_studies(&legend);
+            let plot_w = frame(&state, W, H).expect("a frame").plan.plot_w;
+            let periods = state.indicators[0].output.periods().expect("profiles").len();
+            let drawn = |state: &State| {
+                let frame = frame(state, W, H).expect("a frame");
+                let bars: Vec<f64> = (0..state.bars.len()).map(|at| frame.columns.left_at(at)).collect();
+                let boxes: Vec<Vec<((f64, f64), f64)>> = (0..periods - 1).map(|period| study_boxes(state, period)).collect();
+                (bars, boxes)
+            };
+            let (bars, boxes) = drawn(&state);
+            for by in [7.0, 23.0, -11.0] {
+                state.pan_by(by, plot_w);
+                let (bars_now, boxes_now) = drawn(&state);
+                let shift = bars_now[0] - bars[0];
+                assert!(shift.abs() > 1.0, "{legend:?}: scrolled {by}");
+                assert!(bars.iter().zip(&bars_now).all(|(was, now)| (now - was - shift).abs() < 1e-6), "the bars move as one");
+                for (period, (was, now)) in boxes.iter().zip(&boxes_now).enumerate() {
+                    for (study, (((a, b), towards), ((c, d), towards_now))) in was.iter().zip(now).enumerate() {
+                        if b - a <= 0.0 || d - c <= 0.0 {
+                            continue;
+                        }
+                        let what = format!("{legend:?} study {study} period {period} scrolled {by}");
+                        assert_eq!(towards, towards_now, "{what}");
+                        assert!(((d - c) - (b - a)).abs() < 1e-6, "{what}: {} wide, was {}", d - c, b - a);
+                        assert!((c - a - shift).abs() < 1e-6, "{what}: moved {} with the bars' {shift}", c - a);
+                    }
+                }
+                state.pan_by(-by, plot_w);
+            }
+        }
+    }
+
     /// Each study's box in period `period` as drawn, in legend order: the
     /// span its longest row reaches, and which way its rows grow.
     fn study_boxes(state: &State, period: usize) -> Vec<((f64, f64), f64)> {
@@ -1568,7 +1617,7 @@ mod tests {
         let frame = frame(state, W, H).expect("a frame");
         let profiles = state.indicators[0].output.periods().expect("profiles");
         let p = profiles[period];
-        (frame.columns.left_of(p.first_bar.max(frame.columns.first)), frame.columns.left_of(p.last_bar + 1))
+        (frame.columns.left_at(p.first_bar), frame.columns.left_of(p.last_bar + 1))
     }
 
     /// Expanded, a market profile's TPOs are laid out over time: each TPO
