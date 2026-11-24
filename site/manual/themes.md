@@ -8,17 +8,19 @@ nav_order: 25
 A theme is the set of colours the window is drawn in. It includes the palette, the named colours that indicators and drawings use. On an Omarchy desktop the window follows the desktop theme and changes with it.
 
 <!-- regenerate:
-theme: tokyo-night, everforest, catppuccin-latte, gruvbox (one capture each, the desktop theme switched between them)
-window: 2560x1600 @2, $SP/kit/hw
+theme: omarchy:tokyo-night (crates/omacharts-engine/tests/fixtures/omarchy/tokyo-night.toml copied to $HOME/.config/omarchy/themes/tokyo-night/colors.toml)
+window: 2800x1800 @2, bin/headless-window start (fresh session, HOME sandboxed)
 state:
-  omacharts chart set --symbol NVDA --resolution 1D
+  omacharts config set providers '["fake","yahoo"]'; app --provider fake; sign in to the fake feed (Preferences, Data)
+  a chart of ES 1m on the fake feed
   omacharts chart indicator add sma --period 50 --color Amber
-  omacharts chart indicator add ema --period 21 --color Blue
-  omacharts chart indicator add rsi
-  move 1270 790
-  for each theme: $SP/kit/theme THEME; sleep 4
-capture: bin/headless-window cli chart screenshot --output /tmp/theme-THEME.png   (four, joined 2x2 with magick +append/-append, resized to 1600 wide)
-crop: none
+  move 700 450
+  key ctrl+i              # twice: a fresh window swallows its first chord
+  click 579 410          # the SMA 50 row
+  click 569 323          # its Colour swatch
+  move 1300 800
+capture: bin/headless-window shot /tmp/picker.png
+crop: 1112x688+841+503, the Line group and the palette with a margin round both
 -->
 {% include figure.html src="/assets/manual/themes/four-themes.jpg" alt="The same NVDA daily chart under four desktop themes" caption="The same chart under Tokyo Night, Everforest, Catppuccin Latte and Gruvbox." %}
 
