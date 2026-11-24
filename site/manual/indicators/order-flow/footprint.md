@@ -18,6 +18,7 @@ A chart has one footprint. Picking **Footprint** again in the indicator picker o
 theme: midnight, the fallback when the sandboxed HOME has no Omarchy theme
 window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
 state:
+  omacharts config set providers '["fake","yahoo"]'   (before the window opens, so the Data page lists the fake feed)
   key ctrl+comma; click 267 252 (Data); click 939 222 (Sign in, Fake Rich Feed)
   click 643 419; type 12345; click 606 473; type demo; click 767 542; click 1166 91; key Escape
   omacharts chartbook create "Order flow" --symbol ES --switch; omacharts chartbook sidebar off
@@ -57,7 +58,7 @@ With **Volume profile** on, each bar also shows everything that traded at each o
 A footprint with its profile needs room for both sides, so it comes on at about twice the bar width: about 130 px with both sides' numbers, less with either turned off. A chart with a footprint on can be zoomed in to four bars across, rather than twelve, to give it that room. With **Volume profile** off, nothing of it is drawn or measured and the footprint is exactly as it was.
 
 <!-- regenerate:
-as the footprint picture above, then:
+as the footprint picture above, with two more notches (scroll 1000 400 -2, eleven times), then:
   omacharts chart indicator set footprint --profile on
 capture: bin/headless-window cli chart screenshot --output /tmp/footprint-profile.png; magick /tmp/footprint-profile.png -quality 88 site/assets/manual/indicators/footprint-profile.jpg
 then:
