@@ -19,8 +19,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::glib;
 
-use crate::ui::dialogs;
-use crate::ui::pane::ChartPane;
+use crate::dialogs;
 
 /// The narrowest and widest the frame is drawn.
 const MIN_WIDTH: i32 = 360;
@@ -45,10 +44,11 @@ pub enum Over {
 }
 
 impl Over {
-    /// Over `pane`, among `all`, the charts on screen.
-    pub fn chart<'a>(pane: &ChartPane, all: impl IntoIterator<Item = &'a ChartPane>) -> Over {
-        let shades = all.into_iter().map(|pane| pane.shade.clone().upcast()).collect();
-        Over::Chart { inside: window_content(&pane.root), shades, ring: pane.root.clone().upcast() }
+    /// Over the chart `ring` holds, with `shades` laid over every chart on
+    /// screen, its own included, to fade them.
+    pub fn chart(ring: &impl IsA<gtk::Widget>, shades: impl IntoIterator<Item = gtk::Widget>) -> Over {
+        let shades = shades.into_iter().collect();
+        Over::Chart { inside: window_content(ring), shades, ring: ring.clone().upcast() }
     }
 
     /// Centred on the window `from` is in, naming `name`.
@@ -204,7 +204,7 @@ impl PickFrame {
     }
 
     /// What the line between the box and the list says, while it shows.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn note(&self) -> Option<String> {
         self.note.get_visible().then(|| self.note.label().to_string())
     }

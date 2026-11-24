@@ -1,4 +1,6 @@
-//! Omarchy's default agent, run for a dictation.
+//! Omarchy's default agent, run headless: a turn in the background, its
+//! answer read back, the next turn continuing the same conversation. Written
+//! for a dictation, and for anything else that asks an agent in words.
 //!
 //! Omarchy keeps one coding agent as the default (`omarchy default agent`,
 //! stored in `~/.config/omarchy/defaults/agent`), and `omarchy agent` opens it
@@ -27,7 +29,7 @@
 //! is that process. The others have no such mode in their help that a turn
 //! can be read back from, and run one process a turn as above.
 //!
-//! Only a dictation runs an agent's command: [`run`] for a turn, [`launch`]
+//! Only somebody asking runs an agent's command: [`run`] for a turn, [`launch`]
 //! for Omarchy's terminal. The models Preferences offers are kept here, and
 //! the one an agent uses by default is read from its settings file.
 //!
@@ -234,7 +236,7 @@ impl Agent {
 
     /// The models Preferences offers after the agent's own, by name and by
     /// what the agent takes. Kept here rather than asked of the agent: its
-    /// command is run for a dictation and for nothing else. The ids are the
+    /// command is run for a question asked and for nothing else. The ids are the
     /// ones each agent's own help, docs or model list give.
     pub fn models(self) -> &'static [(&'static str, &'static str)] {
         match self {
@@ -673,14 +675,14 @@ pub fn omarchy_account_home(agent: Agent) -> Option<String> {
 
 
 /// Every program [`run`], [`warm`] and [`launch`] started, for the tests to check
-/// that only a dictation starts an agent.
-#[cfg(test)]
+/// that nothing but a question asked starts an agent.
+#[cfg(any(test, feature = "testing"))]
 pub static SPAWNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 /// Note that `invocation` is about to start. These three are the only places
-/// an agent's command is started, and only a dictation calls them.
+/// an agent's command is started, and only a question asked calls them.
 fn spawned(_invocation: &Invocation) {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     SPAWNED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(_invocation.program.clone());
 }
 

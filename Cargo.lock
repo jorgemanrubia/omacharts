@@ -1457,8 +1457,10 @@ dependencies = [
  "gio",
  "gtk4",
  "libadwaita",
+ "omacharts-agent",
  "omacharts-chart",
  "omacharts-engine",
+ "omacharts-widgets",
  "pangocairo",
  "rithmic",
  "rusqlite",
@@ -1466,6 +1468,13 @@ dependencies = [
  "serde_json",
  "sha2",
  "ureq",
+]
+
+[[package]]
+name = "omacharts-agent"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -1507,6 +1516,17 @@ name = "omacharts-ticks"
 version = "0.1.0"
 dependencies = [
  "omacharts-studies",
+]
+
+[[package]]
+name = "omacharts-widgets"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "gtk4",
+ "libadwaita",
+ "omacharts-chart",
+ "omacharts-engine",
 ]
 
 [[package]]

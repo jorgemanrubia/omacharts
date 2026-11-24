@@ -22,7 +22,9 @@
 //! dictation does not run itself is opened in a terminal by Omarchy instead,
 //! and each dictation there is a conversation of its own.
 
-pub mod agent;
+/// Omarchy's default agent, run headless: a crate of its own, so that
+/// anything else asking an agent in words runs it the same way.
+pub use omacharts_agent as agent;
 pub mod superwhisper;
 
 use std::sync::atomic::{AtomicUsize, Ordering};

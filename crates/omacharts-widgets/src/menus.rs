@@ -90,7 +90,7 @@ fn insert(button: &gtk::MenuButton, prefix: &str, group: &gio::SimpleActionGroup
 
 const GROUP: &str = "omacharts-menu-group";
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 fn group_of(button: &gtk::MenuButton) -> Option<gio::SimpleActionGroup> {
     // SAFETY: only `insert` writes this key, with this type.
     unsafe { button.data::<gio::SimpleActionGroup>(GROUP).map(|group| group.as_ref().clone()) }
@@ -180,7 +180,7 @@ fn open(button: &gtk::MenuButton) {
 
 /// The labels a button's menu shows, in order, and whether each can be
 /// picked now: what a test asks of it.
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub fn rows(button: &gtk::MenuButton) -> Vec<(String, bool)> {
     let Some(model) = button.menu_model() else { return Vec::new() };
     (0..model.n_items())
@@ -203,7 +203,7 @@ pub fn rows(button: &gtk::MenuButton) -> Vec<(String, bool)> {
 }
 
 /// Pick a button's menu row by its label, as a click on it would.
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub fn pick(button: &gtk::MenuButton, label: &str) {
     let model = button.menu_model().expect("a menu");
     let at = (0..model.n_items())
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn an_action_menu_runs_the_row_picked_and_greys_the_ones_that_cannot_be() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let button = gtk::MenuButton::new();
             let picked = Rc::new(RefCell::new(Vec::new()));
             let (first, second) = (picked.clone(), picked.clone());
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn a_choice_menu_marks_what_is_in_force_each_time_it_opens() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let button = gtk::MenuButton::new();
             let now = Rc::new(RefCell::new("a".to_string()));
             let chosen = Rc::new(RefCell::new(String::new()));

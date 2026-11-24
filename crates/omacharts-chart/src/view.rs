@@ -449,6 +449,9 @@ struct State {
     /// What has been drawn on this symbol, in the order it was drawn. The
     /// chart draws what it is handed; the store is where they live.
     drawings: Vec<Drawing>,
+    /// Drawings the program puts on the chart itself: drawn with the rest,
+    /// and never selected, moved or answered to.
+    annotations: Vec<Drawing>,
     /// Whether the drawings are drawn. Off hides every one of them, the
     /// chart's own and the shared, and none answers the pointer or a key;
     /// they are still held, so turning it back on finds them as they were.
@@ -1616,6 +1619,7 @@ impl State {
             strip_kinds: BTreeMap::new(),
             price_log: false,
             drawings: Vec::new(),
+            annotations: Vec::new(),
             show_drawings: true,
             sticky: false,
             editing: None,
@@ -3704,6 +3708,14 @@ impl ChartView {
 
     pub fn drawings(&self) -> Vec<Drawing> {
         self.state.borrow().drawings.clone()
+    }
+
+    /// Put drawings on the chart that are the program's rather than the
+    /// hand's: drawn like any other, over the ones drawn by hand, and never
+    /// selected, moved, copied or deleted. Hidden with the rest.
+    pub fn set_annotations(&self, annotations: Vec<Drawing>) {
+        self.state.borrow_mut().annotations = annotations;
+        self.redraw();
     }
 
     /// Arm a tool: the next press on the plot starts a drawing of this kind.
@@ -10473,7 +10485,7 @@ enum Lit {
 /// them for the rest — with the grips of the shaded ones, since a grip under
 /// a candle is one nobody can find.
 fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, scale: &PriceScale, under: bool) {
-    if state.drawings.is_empty() || !state.show_drawings {
+    if (state.drawings.is_empty() && state.annotations.is_empty()) || !state.show_drawings {
         return;
     }
     cr.save().ok();
@@ -10506,6 +10518,19 @@ fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pric
         if typing {
             draw_editing_ground(cr, state, drawing);
         }
+    }
+    // The program's own, over the hand's: never selected, so no grips.
+    for drawing in &state.annotations {
+        let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+        let projected = state.project(plan, scale, drawing);
+        if under && drawing.kind == DrawingKind::Vwap {
+            draw_vwap_shading(cr, state, &projected, drawing, &to_y);
+            continue;
+        }
+        if drawing.kind.under_bars() != under {
+            continue;
+        }
+        draw_drawing(cr, state, &projected, drawing, false, false, None, &to_y);
     }
     cr.restore().ok();
 }
