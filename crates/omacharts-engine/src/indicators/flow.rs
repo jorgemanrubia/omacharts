@@ -171,6 +171,9 @@ pub fn footprint_compare() -> Compare {
 pub const REGULAR_THRESHOLD: u64 = 50;
 pub const EXTENDED_THRESHOLD: u64 = 20;
 
+/// The biggest size a threshold can be set to.
+pub const MAX_THRESHOLD: u64 = 1_000_000;
+
 pub(super) fn regular_threshold() -> u64 {
     REGULAR_THRESHOLD
 }

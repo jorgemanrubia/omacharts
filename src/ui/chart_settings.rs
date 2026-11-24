@@ -2826,7 +2826,7 @@ pub const LARGE_COMBINE_LABEL: &str = "Combine same-time prints";
 pub const FLOW_BUY_LABEL: &str = "Buying";
 pub const FLOW_SELL_LABEL: &str = "Selling";
 /// The biggest threshold the box takes: past any single order's size.
-pub const LARGE_MAX_THRESHOLD: u64 = 1_000_000;
+pub const LARGE_MAX_THRESHOLD: u64 = omacharts_engine::indicators::flow::MAX_THRESHOLD;
 
 /// A switch of an order flow indicator's.
 fn flow_switch(

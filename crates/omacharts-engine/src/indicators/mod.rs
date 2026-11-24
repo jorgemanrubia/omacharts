@@ -20,6 +20,7 @@ pub mod periods;
 pub mod profile;
 pub mod time;
 pub mod vwap;
+pub mod written;
 
 use serde::{Deserialize, Serialize};
 
