@@ -1,0 +1,13 @@
+[package]
+name = "omacharts-agent"
+version = "0.1.0"
+edition = "2024"
+description = "Omarchy's default coding agent, run headless: one turn at a time or kept warm, its answer read back, the conversation resumed."
+license = "MIT"
+
+[dependencies]
+serde_json = "1.0.151"
+
+[features]
+# Which agents were started, for the tests of a program that runs them.
+testing = []

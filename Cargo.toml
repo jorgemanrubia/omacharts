@@ -9,7 +9,7 @@ description = "Fast, beautiful charting software for Omarchy"
 license = "MIT"
 
 [workspace]
-members = [".", "crates/omacharts-studies", "crates/omacharts-ticks", "crates/omacharts-engine", "crates/omacharts-chart", "crates/omacharts-widgets", "crates/tos-market", "crates/rithmic", "crates/sierra", "crates/dtc"]
+members = [".", "crates/omacharts-studies", "crates/omacharts-ticks", "crates/omacharts-engine", "crates/omacharts-chart", "crates/omacharts-widgets", "crates/omacharts-agent", "crates/tos-market", "crates/rithmic", "crates/sierra", "crates/dtc"]
 # Somebody else's crate, patched in below: built, never tested here.
 exclude = ["vendor/rithmic-rs"]
 
@@ -29,6 +29,8 @@ omacharts-chart = { path = "crates/omacharts-chart" }
 # What the chart's window puts round it — the drawing tools, the pickers,
 # the keys — in a crate of its own for the same reason.
 omacharts-widgets = { path = "crates/omacharts-widgets" }
+# Omarchy's default agent, run headless, for dictation.
+omacharts-agent = { path = "crates/omacharts-agent" }
 # A broker login's trading session, which the app keeps one of per login.
 rithmic = { path = "crates/rithmic" }
 # Sierra Chart's DTC server, a broker login's trading session too.
@@ -71,6 +73,8 @@ omacharts-engine = { path = "crates/omacharts-engine", features = ["fakes"] }
 dtc = { path = "crates/dtc", features = ["fake"] }
 # What the tests look inside the pickers with.
 omacharts-widgets = { path = "crates/omacharts-widgets", features = ["testing"] }
+# Which agents were started, for the tests that none was.
+omacharts-agent = { path = "crates/omacharts-agent", features = ["testing"] }
 
 [profile.release]
 opt-level = 3

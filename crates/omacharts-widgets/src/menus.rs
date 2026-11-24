@@ -171,7 +171,7 @@ const OPENING: &str = "omacharts-menu-opening";
 
 /// What opening the menu does, without opening it: showing a popover needs
 /// a mapped window around its button, which a test's bare button has not.
-#[cfg(any(test, feature = "testing"))]
+#[cfg(test)]
 fn open(button: &gtk::MenuButton) {
     // SAFETY: only `attach` writes this key, with this type.
     let opened = unsafe { button.data::<Rc<dyn Fn()>>(OPENING).map(|opened| opened.as_ref().clone()) };

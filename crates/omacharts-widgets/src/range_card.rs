@@ -51,6 +51,43 @@ type PlanFn = Rc<dyn Fn(Range, Option<Timeframe>) -> Plan>;
 type OnDay = Rc<dyn Fn(NaiveDate)>;
 
 impl Context {
+    /// What a card needs from `view`, a chart of `instrument` at `current`
+    /// with `ladder` on its strip, whose feed reaches back `reach` days at a
+    /// resolution, if it says: for a program with one chart to point a card
+    /// at. `apply` shows a range, at a resolution set by hand or at the pick;
+    /// `resolution` changes the resolution and nothing else.
+    pub fn of_view(
+        view: &Rc<omacharts_chart::ChartView>,
+        instrument: Option<omacharts_engine::Instrument>,
+        current: Timeframe,
+        mut ladder: Vec<Timeframe>,
+        reach: Rc<dyn Fn(Timeframe) -> Option<u32>>,
+        apply: Rc<dyn Fn(Range, Option<Timeframe>)>,
+        resolution: Rc<dyn Fn(Timeframe)>,
+    ) -> Context {
+        let today = chrono::Local::now().date_naive();
+        let showing = view.days_shown().unwrap_or((today, today));
+        let first = view.first_day().unwrap_or(showing.0);
+        ladder.sort_by_key(|tf| tf.seconds());
+        ladder.dedup();
+        let lasting = {
+            let view = Rc::downgrade(view);
+            Rc::new(move |range| match view.upgrade() {
+                Some(view) => as_shown(&view, range),
+                None => range,
+            })
+        };
+        let plan = {
+            let view = Rc::downgrade(view);
+            let ladder = ladder.clone();
+            Rc::new(move |range, forced: Option<Timeframe>| match view.upgrade() {
+                Some(view) => plan(&view, instrument.as_ref(), current, &ladder, &*reach, range, forced),
+                None => Plan { timeframe: forced.unwrap_or(current), auto: forced.is_none(), fits: true },
+            })
+        };
+        Context { today, showing, lasting, first, current, ladder, plan, apply, resolution }
+    }
+
     /// A day on its own as the chart would show it, for as long as it shows
     /// now.
     fn on_screen(&self, range: Range) -> Range {
