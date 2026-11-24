@@ -9081,41 +9081,16 @@ impl Window {
     }
 
     fn rebuild_strip_of(self: &Rc<Self>, pane: &Rc<ChartPane>) {
-        while let Some(child) = pane.strip.first_child() {
-            pane.strip.remove(&child);
-        }
-        let current = pane.timeframe.get();
-        let mut first: Option<gtk::ToggleButton> = None;
-        let mut buttons = Vec::new();
-
-        for timeframe in self.timeframes.borrow().iter().copied() {
-            let button = gtk::ToggleButton::with_label(&timeframe.label());
-            button.add_css_class("flat");
-            button.set_tooltip_text(Some(&timeframe.description()));
-            // A click picks a resolution; it does not move the keyboard. Taking
-            // the focus left a ring on the button that outlived the click, and
-            // the keys meant for the chart went to the strip instead.
-            button.set_focus_on_click(false);
-            match &first {
-                Some(anchor) => button.set_group(Some(anchor)),
-                None => first = Some(button.clone()),
-            }
-            button.set_active(timeframe == current);
-
-            // The strip belongs to its own chart, so clicking one focuses that
-            // chart first: changing a resolution is not a reason to leave the
-            // keyboard pointing somewhere else.
-            let this = self.clone();
-            let owner = pane.id;
-            button.connect_toggled(move |button| {
-                if button.is_active() {
-                    this.focus(owner);
-                    this.set_timeframe(timeframe);
-                }
-            });
-            pane.strip.append(&button);
-            buttons.push((timeframe, button));
-        }
+        // The strip belongs to its own chart, so clicking one focuses that
+        // chart first: changing a resolution is not a reason to leave the
+        // keyboard pointing somewhere else.
+        let this = self.clone();
+        let owner = pane.id;
+        let ladder = self.timeframes.borrow().clone();
+        let buttons = crate::ui::strip::fill(&pane.strip, &ladder, pane.timeframe.get(), move |timeframe| {
+            this.focus(owner);
+            this.set_timeframe(timeframe);
+        });
         *pane.buttons.borrow_mut() = buttons;
 
         // The same list behind the resolution beside the symbol, which stays
@@ -9906,7 +9881,7 @@ impl Window {
     fn over_focused(&self) -> Over {
         let pane = self.focused_pane();
         let panes = self.panes.borrow();
-        Over::chart(&pane, panes.iter().map(|pane| pane.as_ref()))
+        Over::chart(&pane.root, panes.iter().map(|pane| pane.shade.clone().upcast()))
     }
 
     /// The resolution box: type "3", "15", "4h", "1D".
@@ -14140,94 +14115,24 @@ impl Window {
     /// as long as the chart shows now, from the start of that day or up to
     /// now when that comes first, and anything else is as it says.
     pub fn as_shown(&self, range: omacharts_engine::Range) -> omacharts_engine::Range {
-        let view = &self.focused_pane().view;
-        match view.seconds_shown().zip(view.now()) {
-            Some((seconds, now)) => range.lasting(seconds, chrono::Local::now().date_naive(), now),
-            None => range,
-        }
+        crate::ui::range_card::as_shown(&self.focused_pane().view, range)
     }
 
     /// The resolution `range` would show at on the focused chart — `forced`,
     /// or the window's pick — and how many bars that makes.
     pub fn plan_range(&self, range: omacharts_engine::Range, forced: Option<Timeframe>) -> crate::ui::range_card::Plan {
-        use omacharts_engine::range::{bars_in, resolution_for, Fit, AIM_BARS};
         let pane = self.focused_pane();
-        let today = chrono::Local::now().date_naive();
-        let range = self.as_shown(range);
-        let current = pane.timeframe.get();
         let instrument = pane.instrument.borrow().clone();
-        let Some(instrument) = instrument else {
-            return crate::ui::range_card::Plan {
-                timeframe: forced.unwrap_or(current),
-                auto: forced.is_none(),
-                fits: true,
-            };
-        };
-        let provider = match self.route_pane(&pane, &instrument) {
+        let provider = match instrument.as_ref().and_then(|instrument| self.route_pane(&pane, instrument)) {
             Some(routed) => routed.feed.provider.clone(),
             None => self.provider(),
         };
-        let (intraday, daily) = omacharts_engine::session::week_share(&instrument, omacharts_engine::Session::Regular);
-        // What the feed actually delivers beats the guess, when the chart
-        // already holds intraday bars to measure it on.
-        let measured = current.is_intraday().then(|| {
-            pane.view.with_bars(|bars| match (bars.first(), bars.last()) {
-                (Some(first), Some(last)) if bars.len() > 50 => {
-                    let span = (last.ts - first.ts + current.seconds()) as f64;
-                    Some(bars.len() as f64 * current.seconds() as f64 / span)
-                }
-                _ => None,
-            })
-        });
-        let share = (measured.flatten().unwrap_or(intraday), daily);
-        let ladder = self.timeframes.borrow().clone();
-        // Every feed charts every symbol at every resolution on the strip.
-        let offers = |_: Timeframe| true;
         let reach = |tf: Timeframe| {
             let native = tf.native();
             provider.capabilities().iter().find(|c| c.timeframe == native).and_then(|c| c.history_days)
         };
-        let fit = Fit { ladder: &ladder, bars: AIM_BARS, share, offers: &offers, reach: &reach };
-        // A day on its own keeps the resolution, as it keeps the length of
-        // time on screen, unless the feed does not reach back to the day
-        // there: the day, not the start of a window moved earlier to end at
-        // now, so that moving it never changes the resolution.
-        let keeps = match range {
-            omacharts_engine::Range::Lasting(day, ..) => {
-                match (reach(current), omacharts_engine::Range::Day(day).reach(today)) {
-                    (Some(limit), Some(back)) => i64::from(limit) >= back,
-                    _ => true,
-                }
-            }
-            _ => false,
-        };
-        let timeframe = forced.unwrap_or_else(|| match keeps {
-            true => current,
-            false => resolution_for(range, today, current, &fit),
-        });
-        // A range from the first bar counts from the first bar the chart has.
-        let counted = match range.start(today) {
-            Some(_) => range,
-            None => match pane.view.first_day() {
-                Some(first) => omacharts_engine::Range::Slice(
-                    Some(omacharts_engine::range::End::Day(first)),
-                    range.end(today).map(omacharts_engine::range::End::Day),
-                ),
-                None => range,
-            },
-        };
-        let bars = bars_in(counted, today, timeframe, share);
-        let reaches = match (reach(timeframe), counted.reach(today)) {
-            (Some(limit), Some(back)) => i64::from(limit) >= back,
-            _ => true,
-        };
-        let (fewest, most) = crate::ui::chart::VISIBLE_BARS;
-        let readable = bars.is_none_or(|bars| (fewest as f64..=most as f64).contains(&bars.round()));
-        crate::ui::range_card::Plan {
-            timeframe,
-            auto: forced.is_none(),
-            fits: offers(timeframe) && reaches && readable,
-        }
+        let ladder = self.timeframes.borrow().clone();
+        crate::ui::range_card::plan(&pane.view, instrument.as_ref(), pane.timeframe.get(), &ladder, &reach, range, forced)
     }
 
     /// A chart named the way a command's answer names it:

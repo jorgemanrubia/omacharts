@@ -306,7 +306,7 @@ mod tests {
         // part that goes wrong.
         // A typo here is a shortcut that silently does nothing, and a
         // menu row that confidently advertises it.
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             for binding in BINDINGS {
                 for accel in binding.accels {
                     assert!(gtk::accelerator_parse(*accel).is_some(), "{} cannot be parsed, for {}", accel, binding.action);
@@ -324,7 +324,7 @@ mod tests {
     /// half somebody hovered for.
     #[test]
     fn the_keys_no_action_owns_are_accelerators_too() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             for accel in [ADD_SYMBOL, ADD_SECTION, REMOVE_SYMBOL, ADD_INDICATOR, MAIN_MENU] {
                 assert!(accel_label(accel).is_some(), "{accel} spells nothing");
             }
@@ -336,7 +336,7 @@ mod tests {
     /// extra when there is no key, rather than inventing one.
     #[test]
     fn a_tooltip_carries_the_key_it_was_given() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             assert_eq!(tooltip("Watchlist", "win.watchlist"), "Watchlist (Shift+Ctrl+B)");
             assert_eq!(tooltip_with_key("Add a symbol", ADD_SYMBOL), "Add a symbol (Ctrl+N)");
             assert_eq!(tooltip("Turn into a watchlist", "section.promote"), "Turn into a watchlist");
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn the_keys_moved_to_shift_reach_their_actions() {
         use gtk::gdk::{Key, ModifierType};
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let _ = adw::init();
             let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
             install(&app);
@@ -409,7 +409,7 @@ mod tests {
     /// moved beside the chart's, on Alt.
     #[test]
     fn the_chartbook_screenshot_moved_to_alt() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let _ = adw::init();
             let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
             install(&app);
@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(binding("chart.zoom").unwrap().accels, ["<Alt>z"]);
         assert_eq!(binding("chart.zoom-back").unwrap().accels, ["<Alt><Shift>z"]);
         assert_eq!(binding("chart.draw-zigzag").unwrap().accels, ["<Alt>g"]);
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let _ = adw::init();
             let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
             install(&app);

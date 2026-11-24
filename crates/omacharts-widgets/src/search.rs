@@ -36,7 +36,7 @@ use gtk::glib;
 use omacharts_engine::contracts::{self, Listing, Month};
 use omacharts_engine::{Instrument, InstrumentKind, SearchIndex};
 
-use crate::ui::pick_frame::{Over, PickFrame};
+use crate::pick_frame::{Over, PickFrame};
 
 /// Rows beyond this are noise — nobody scrolls a symbol picker.
 const LIMIT: usize = 24;
@@ -111,13 +111,13 @@ impl SymbolSearch {
     }
 
     /// The frame it is drawn in, for tests that look inside it.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn frame(&self) -> &Rc<PickFrame> {
         &self.frame
     }
 
     /// The symbols listed now, in order.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn listed(&self) -> Vec<String> {
         self.shown.borrow().iter().map(|instrument| instrument.symbol.clone()).collect()
     }
@@ -840,7 +840,7 @@ mod tests {
     /// as itself; and a contract typed comes first.
     #[test]
     fn a_futures_root_unfolds_its_contracts() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let today = contracts::today();
             contracts::forget("ES");
             let index = crate::inventory::Inventory::curated();
@@ -948,7 +948,7 @@ mod tests {
     /// nothing is picked.
     #[test]
     fn a_ticker_nobody_listed_is_offered_and_asked_about() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let index = crate::inventory::Inventory::curated();
             let mut items = omacharts_engine::symbols::seed();
             let mut near = items[0].clone();
@@ -1039,7 +1039,7 @@ mod tests {
     /// A gesture or a key sent by the compositor the tests run under, as a
     /// hand would send it: `bin/headless-window click X Y`, `key Right`.
     fn send(args: &[&str]) {
-        let tool = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bin/headless-window");
+        let tool = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bin/headless-window");
         let done = std::process::Command::new(tool).args(args).output().expect("bin/headless-window runs");
         assert!(done.status.success(), "headless-window {args:?}: {}", String::from_utf8_lossy(&done.stderr));
         arrive();
@@ -1057,7 +1057,7 @@ mod tests {
             eprintln!("not under bin/headless-window: nothing to click");
             return;
         }
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let today = contracts::today();
             contracts::forget("ES");
             let index = crate::inventory::Inventory::curated();

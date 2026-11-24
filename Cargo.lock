@@ -1459,6 +1459,7 @@ dependencies = [
  "libadwaita",
  "omacharts-chart",
  "omacharts-engine",
+ "omacharts-widgets",
  "pangocairo",
  "rithmic",
  "rusqlite",
@@ -1507,6 +1508,17 @@ name = "omacharts-ticks"
 version = "0.1.0"
 dependencies = [
  "omacharts-studies",
+]
+
+[[package]]
+name = "omacharts-widgets"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "gtk4",
+ "libadwaita",
+ "omacharts-chart",
+ "omacharts-engine",
 ]
 
 [[package]]

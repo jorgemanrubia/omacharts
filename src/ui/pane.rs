@@ -474,11 +474,7 @@ impl ChartPane {
         symbol_button.set_valign(gtk::Align::Center);
         symbol_button.set_tooltip_text(Some(&shortcuts::tooltip("Find a symbol", "win.find")));
 
-        let strip = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        strip.add_css_class("linked");
-        strip.add_css_class("timeframe-strip");
-        strip.set_valign(gtk::Align::Center);
-        strip.set_visible(false);
+        let strip = crate::ui::strip::new();
 
         let timeframe_menu = gtk::MenuButton::new();
         timeframe_menu.add_css_class("flat");
@@ -1079,23 +1075,7 @@ impl ChartPane {
     /// resolution it is showing.
     pub fn sync_strip(&self) {
         let current = self.timeframe.get();
-        // Keep the keyboard with the resolution it is choosing. Clicking the
-        // strip leaves the focus ring on the button clicked, and stepping with
-        // the keys from there moved the pressed state along while the ring
-        // stayed put — two answers to "which one is this", a button apart.
-        // Only when the strip already has the keyboard: taking it from the
-        // chart would send the arrow keys somewhere nobody pointed them.
-        let chosen = {
-            let buttons = self.buttons.borrow();
-            let holds_keyboard = buttons.iter().any(|(_, button)| button.has_focus());
-            for (listed, button) in buttons.iter() {
-                button.set_active(*listed == current);
-            }
-            holds_keyboard
-                .then(|| buttons.iter().find(|(listed, _)| *listed == current))
-                .flatten()
-                .map(|(_, button)| button.clone())
-        };
+        let chosen = crate::ui::strip::mark(&self.buttons.borrow(), current);
         if let Some(button) = chosen {
             button.grab_focus();
         }

@@ -59,7 +59,7 @@ enum Button {
 /// the window writes one. How to use a tool is the manual's to say, not a
 /// sentence that pops up every time the hand passes over it.
 fn tooltip(button: Button) -> String {
-    use crate::ui::shortcuts;
+    use crate::shortcuts;
     match button {
         Button::Pointer => shortcuts::tooltip_with_key("Pointer", "Escape"),
         Button::Measure => shortcuts::tooltip("Measure", "chart.measure"),
@@ -73,13 +73,13 @@ fn tooltip(button: Button) -> String {
 const TOOLS_TOP: i32 = 8;
 /// What the column leaves free at the bar's foot for the toggle there: the
 /// time axis's height, and some air.
-const TOOLS_FOOT: i32 = crate::ui::chart::TIME_AXIS_H as i32 + 8;
+const TOOLS_FOOT: i32 = omacharts_chart::TIME_AXIS_H as i32 + 8;
 /// The column's margin either side.
 const COLUMN_SIDE: i32 = 4;
 /// Where the middle of the column of tools stands, from the bar's left
 /// edge and so from the window's: the bar's ring of padding, the column's
 /// margin and half a tool. The toggle centres on it, open or shut.
-pub(crate) const COLUMN_CENTRE: i32 = omacharts_engine::frame::RING_WIDTH as i32 + COLUMN_SIDE + TOOL / 2;
+pub const COLUMN_CENTRE: i32 = omacharts_engine::frame::RING_WIDTH as i32 + COLUMN_SIDE + TOOL / 2;
 
 pub struct DrawingBar {
     /// What goes in the layout: the bar with its ground, shown and hidden.
@@ -266,7 +266,7 @@ impl DrawingBar {
         bar.root.set_visible(false);
 
         bar.toggle.set_icon_name("sidebar-show-symbolic");
-        bar.toggle.set_tooltip_text(Some(&crate::ui::shortcuts::tooltip("Drawing tools", "win.drawing-tools")));
+        bar.toggle.set_tooltip_text(Some(&crate::shortcuts::tooltip("Drawing tools", "win.drawing-tools")));
         bar.toggle.add_css_class("flat");
         // `set_shown` lights the button too, which toggles it again; only a
         // press that disagrees with the bar is somebody asking for a change.
@@ -671,7 +671,7 @@ mod tests {
     #[test]
     fn a_tool_button_says_its_name_and_its_key_and_nothing_else() {
         // The key is written by GTK, which needs a display to do it.
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             assert_eq!(tooltip(Button::Pointer), "Pointer (Escape)");
             assert_eq!(tooltip(Button::Measure), "Measure (Alt+M)");
             assert_eq!(tooltip(Button::Zoom), "Zoom (Alt+Z)");

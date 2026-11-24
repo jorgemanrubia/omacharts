@@ -25,7 +25,7 @@ use omacharts_engine::bars::Unit;
 use omacharts_engine::range::End;
 use omacharts_engine::{Range, Timeframe};
 
-use crate::ui::pick_frame::{Over, PickFrame};
+use crate::pick_frame::{Over, PickFrame};
 
 /// As wide as two dates side by side and no wider.
 const WIDTH: i32 = 320;
@@ -722,6 +722,97 @@ fn day_of(text: &str, today: NaiveDate, is_from: bool) -> Option<NaiveDate> {
     }
 }
 
+/// `range` as `view` would show it: a day on its own lasts as long as the
+/// chart shows now, from the start of that day or up to now when that
+/// comes first, and anything else is as it says.
+pub fn as_shown(view: &omacharts_chart::ChartView, range: Range) -> Range {
+    match view.seconds_shown().zip(view.now()) {
+        Some((seconds, now)) => range.lasting(seconds, chrono::Local::now().date_naive(), now),
+        None => range,
+    }
+}
+
+/// The resolution `range` would show at on `view`, charting `instrument`
+/// at `current` — `forced`, or the pick from `ladder`, the resolutions on
+/// the strip — and whether the bars that makes fit. `reach` says how many
+/// days back the feed goes at a resolution, if it says.
+pub fn plan(
+    view: &omacharts_chart::ChartView,
+    instrument: Option<&omacharts_engine::Instrument>,
+    current: Timeframe,
+    ladder: &[Timeframe],
+    reach: &dyn Fn(Timeframe) -> Option<u32>,
+    range: Range,
+    forced: Option<Timeframe>,
+) -> Plan {
+    use omacharts_engine::range::{bars_in, resolution_for, Fit, AIM_BARS};
+    let today = chrono::Local::now().date_naive();
+    let range = as_shown(view, range);
+    let Some(instrument) = instrument else {
+        return Plan {
+            timeframe: forced.unwrap_or(current),
+            auto: forced.is_none(),
+            fits: true,
+        };
+    };
+    let (intraday, daily) = omacharts_engine::session::week_share(instrument, omacharts_engine::Session::Regular);
+    // What the feed actually delivers beats the guess, when the chart
+    // already holds intraday bars to measure it on.
+    let measured = current.is_intraday().then(|| {
+        view.with_bars(|bars| match (bars.first(), bars.last()) {
+            (Some(first), Some(last)) if bars.len() > 50 => {
+                let span = (last.ts - first.ts + current.seconds()) as f64;
+                Some(bars.len() as f64 * current.seconds() as f64 / span)
+            }
+            _ => None,
+        })
+    });
+    let share = (measured.flatten().unwrap_or(intraday), daily);
+    // Every feed charts every symbol at every resolution on the strip.
+    let offers = |_: Timeframe| true;
+    let fit = Fit { ladder, bars: AIM_BARS, share, offers: &offers, reach };
+    // A day on its own keeps the resolution, as it keeps the length of
+    // time on screen, unless the feed does not reach back to the day
+    // there: the day, not the start of a window moved earlier to end at
+    // now, so that moving it never changes the resolution.
+    let keeps = match range {
+        omacharts_engine::Range::Lasting(day, ..) => {
+            match (reach(current), omacharts_engine::Range::Day(day).reach(today)) {
+                (Some(limit), Some(back)) => i64::from(limit) >= back,
+                _ => true,
+            }
+        }
+        _ => false,
+    };
+    let timeframe = forced.unwrap_or_else(|| match keeps {
+        true => current,
+        false => resolution_for(range, today, current, &fit),
+    });
+    // A range from the first bar counts from the first bar the chart has.
+    let counted = match range.start(today) {
+        Some(_) => range,
+        None => match view.first_day() {
+            Some(first) => omacharts_engine::Range::Slice(
+                Some(omacharts_engine::range::End::Day(first)),
+                range.end(today).map(omacharts_engine::range::End::Day),
+            ),
+            None => range,
+        },
+    };
+    let bars = bars_in(counted, today, timeframe, share);
+    let reaches = match (reach(timeframe), counted.reach(today)) {
+        (Some(limit), Some(back)) => i64::from(limit) >= back,
+        _ => true,
+    };
+    let (fewest, most) = omacharts_chart::VISIBLE_BARS;
+    let readable = bars.is_none_or(|bars| (fewest as f64..=most as f64).contains(&bars.round()));
+    Plan {
+        timeframe,
+        auto: forced.is_none(),
+        fits: offers(timeframe) && reaches && readable,
+    }
+}
+
 /// Ctrl+G.
 pub struct RangeCard {
     frame: Rc<PickFrame>,
@@ -882,7 +973,7 @@ impl RangeCard {
         keys.connect_key_pressed(move |_, key, _, state| {
             let Some(card) = weak.upgrade() else { return glib::Propagation::Proceed };
             let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
-            if crate::ui::dialogs::is_enter(key) && !ctrl && !card.frame.entry.has_focus() && !card.in_box() {
+            if crate::dialogs::is_enter(key) && !ctrl && !card.frame.entry.has_focus() && !card.in_box() {
                 let focus = card.chip.chip.root().and_then(|root| root.focus());
                 let chip: &gtk::Widget = card.chip.chip.upcast_ref();
                 match focus {
@@ -994,7 +1085,7 @@ impl RangeCard {
         let choices = picks.iter().map(|pick| (key(pick), key(pick))).collect();
         let named = key(&self.forced.get());
         let weak = Rc::downgrade(self);
-        let popover = crate::ui::menus::drop_choice(&self.chip.chip, "range-resolution", choices, &named, move |chosen| {
+        let popover = crate::menus::drop_choice(&self.chip.chip, "range-resolution", choices, &named, move |chosen| {
             let Some(card) = weak.upgrade() else { return };
             if let Some(pick) = picks.iter().find(|pick| key(pick) == chosen) {
                 card.forced.set(*pick);
@@ -1102,7 +1193,7 @@ impl RangeCard {
     fn refresh(&self) {
         let text = self.frame.entry.text().to_string();
         let lasting = self.context.borrow().as_ref().map(|context| context.lasting.clone());
-        crate::ui::range_card::fill(&self.frame.list, &self.shown, &text, lasting.as_deref());
+        crate::range_card::fill(&self.frame.list, &self.shown, &text, lasting.as_deref());
 
         let context = self.context.borrow();
         let Some(context) = context.as_ref() else { return };
