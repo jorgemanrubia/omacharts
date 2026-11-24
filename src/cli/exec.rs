@@ -8774,6 +8774,51 @@ fn chosen_agents(m: &clap::ArgMatches) -> Vec<super::skill::Agent> {
 mod tests {
     use super::*;
 
+    /// An indicator written as a line of text is the one `chart indicator
+    /// add` makes of the same words, and each setting the line reads is
+    /// taken by exactly the indicators the command takes it for: one
+    /// reading of the settings, whichever way they are given.
+    #[test]
+    fn a_written_indicator_is_the_one_the_command_adds() {
+        use omacharts_engine::indicators::written;
+        let mut parser = parser::command_for(&["omacharts".into(), "chart".into()]);
+        for line in [
+            "sma --period 200",
+            "ema --period 21",
+            "vwap --anchor week --bands 1,3",
+            "bollinger --period 30 --deviations 2.5 --bands none",
+            "macd --fast 30 --slow 40 --signal 5",
+            "stochastic --period 21 --k-smooth 5 --d-period 4",
+            "rsi --period 9",
+            "atr --period 20",
+            "market_profile --tpo-minutes 15 --row-ticks 4 --value-area 0.8 --anchor week",
+            "volume_profile --rows 40 --value-area 0.6 --profile-method delta --anchor month",
+            "cvd --anchor never",
+            "footprint --row-ticks 2",
+            "large_orders --rth-threshold 100 --eth-threshold 30 --combine off",
+        ] {
+            let written = written::parse(line).unwrap();
+            let mut words: Vec<String> = ["omacharts", "chart", "indicator", "add"].map(String::from).to_vec();
+            words.extend(line.split_whitespace().map(String::from));
+            let m = parser.try_get_matches_from_mut(&words).unwrap();
+            let m = m.subcommand_matches("chart").and_then(|m| m.subcommand_matches("indicator")).unwrap();
+            let kind = indicator_kind(m, "add").unwrap();
+            let mut added = serde_json::to_value(Indicator::new(1, kind)).unwrap();
+            Edits::read(m).unwrap().apply(&mut added, kind).unwrap();
+            let added: Indicator = serde_json::from_value(added).unwrap();
+            assert_eq!(written, added, "{line}");
+        }
+
+        for setting in written::SETTINGS {
+            let flag = super::super::spec::INDICATOR_FLAGS.iter().find(|flag| flag.long == *setting).unwrap();
+            let (_, takes) = indicator_flag_kinds().iter().find(|(long, _)| long == setting).unwrap();
+            for kind in IndicatorKind::ALL {
+                let line = format!("{} --{setting} {}", kind.key(), sample(flag));
+                assert_eq!(written::parse(&line).is_ok(), takes.contains(&kind), "{line}");
+            }
+        }
+    }
+
     fn run(line: &str, store: &Store) -> Outcome {
         let args: Vec<String> =
             std::iter::once("omacharts".to_string()).chain(line.split_whitespace().map(String::from)).collect();
