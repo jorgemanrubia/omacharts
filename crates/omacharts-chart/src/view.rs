@@ -483,6 +483,10 @@ struct State {
     /// The zoom tool is in hand: the next drag on the price plot is a box
     /// the view is laid over. Put down once it has zoomed, as the ruler is.
     zoom_armed: bool,
+    /// The first corner of a zoom box a click left waiting, in pixels: the
+    /// box follows the pointer from here until a second click lays the view
+    /// over it, as a rectangle is drawn click, click.
+    zoom_corner: Option<(f64, f64)>,
     /// Where the chart was looking before each zoom, the latest last: what
     /// stepping back returns to. See [`zoom_box`].
     zoom_memory: Vec<Viewport>,
@@ -1629,6 +1633,7 @@ impl State {
             ruler_armed: false,
             ruler: None,
             zoom_armed: false,
+            zoom_corner: None,
             zoom_memory: Vec::new(),
             next_config: 1,
             configs: Configurations::default(),
@@ -2976,6 +2981,7 @@ impl State {
             self.ruler_armed = false;
             // And a view kept to go back to was a view of that series.
             self.zoom_armed = false;
+            self.zoom_corner = None;
             self.forget_zooms();
             self.anchored = true;
             self.overhang = RIGHT_MARGIN;
@@ -3728,6 +3734,7 @@ impl ChartView {
             state.ruler_armed = false;
             state.ruler = None;
             state.zoom_armed = false;
+            state.zoom_corner = None;
             if matches!(state.drag, Some(Drag::Zoom { .. })) {
                 state.drag = None;
             }
@@ -3803,6 +3810,7 @@ impl ChartView {
         {
             let mut state = self.state.borrow_mut();
             state.zoom_armed = true;
+            state.zoom_corner = None;
             state.selected.clear();
             state.drag = None;
         }
@@ -3938,11 +3946,17 @@ impl ChartView {
         busy
     }
 
-    /// Drop a drawing half laid down, keeping the tool that was laying it
-    /// down in hand. Says whether there was one to drop.
+    /// Drop a drawing half laid down, or a zoom box's waiting corner,
+    /// keeping the tool that was laying it down in hand. Says whether there
+    /// was one to drop.
     fn drop_placing(&self) -> bool {
         {
             let mut s = self.state.borrow_mut();
+            if s.zoom_corner.take().is_some() {
+                drop(s);
+                self.pointer.queue_draw();
+                return true;
+            }
             if s.placing.take().is_none() {
                 return false;
             }
@@ -6464,8 +6478,9 @@ impl ChartView {
             }
             // The zoom tool's box starts where the ruler would: on the price
             // plot, and nowhere else.
+            // A corner a click left waiting is where it starts instead.
             if s.zoom_armed && s.ruler_anchor(width, height, x, y).is_some() {
-                s.drag = Some(Drag::Zoom { from: (x, y), to: (x, y) });
+                s.zoom_press((x, y));
                 pointer.queue_draw();
                 return;
             }
@@ -7035,22 +7050,16 @@ impl ChartView {
                 // and the second waits for the next press.
                 Some(Drag::Place { moved: false }) => return,
                 // Let go: the view laid over the box, and the tool put down.
-                // A box too small to be one leaves the tool in hand for
-                // another go; Escape is the way to put it down.
+                // Pressed and let go in place, the first corner waits for a
+                // second click. A box too small to be one leaves the tool in
+                // hand for another go; Escape is the way to put it down.
                 Some(Drag::Zoom { from, to }) => {
                     let Some(view) = view.upgrade() else { return };
                     view.pointer.queue_draw();
                     let (width, height) = (view.area.width() as f64, view.area.height() as f64);
                     let was = state.borrow().scales();
-                    let zoomed = {
-                        let mut s = state.borrow_mut();
-                        let window = s.zoom_box(width, height, from, to, drag_threshold());
-                        let zoomed = window.is_some_and(|window| s.zoom_to(window));
-                        if zoomed {
-                            s.zoom_armed = false;
-                        }
-                        zoomed
-                    };
+                    let travelled = offset_x.hypot(offset_y) > drag_threshold();
+                    let zoomed = state.borrow_mut().zoom_release(width, height, from, to, travelled, drag_threshold());
                     if zoomed {
                         view.area.set_cursor_from_name(Some("default"));
                         view.redraw();
@@ -7672,7 +7681,17 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     // The selection box, while a hand drags one out, and the zoom tool's,
     // which is drawn the same: both are a stretch of the chart being
     // chosen, and neither is a drawing.
-    if let Some(Drag::Marquee { from, to } | Drag::Zoom { from, to }) = state.drag {
+    // A zoom box's first corner waiting for its second click has the box
+    // following the pointer, as the drag would.
+    let waiting = match (&state.drag, state.zoom_corner, state.pointer) {
+        (None, Some(from), Some(to)) => Some((from, to)),
+        _ => None,
+    };
+    let chosen = match state.drag {
+        Some(Drag::Marquee { from, to } | Drag::Zoom { from, to }) => Some((from, to)),
+        _ => waiting,
+    };
+    if let Some((from, to)) = chosen {
         let (x, y) = (from.0.min(to.0), from.1.min(to.1));
         let (w, h) = ((from.0 - to.0).abs(), (from.1 - to.1).abs());
         cr.save().ok();
