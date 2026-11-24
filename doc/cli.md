@@ -1158,8 +1158,8 @@ them it stops fitting the bars. The reply names the chart and what is now in
 view, and `--json` adds `back`, how many zooms are left to step back through.
 `back` with none left changes nothing and says so, exit 0. The zooms are
 forgotten when the chart's symbol or resolution changes, or it is reset. In
-the window, Alt+Z or Zoom in the drawing tools picks up the tool: drag a box;
-Alt+Shift+Z goes back.
+the window, Alt+Z or Zoom in the drawing tools picks up the tool: drag a box, or click its two
+corners; Alt+Shift+Z goes back.
 
 ## Taking a picture of a chart
 

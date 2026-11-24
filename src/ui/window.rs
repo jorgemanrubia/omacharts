@@ -264,7 +264,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+W", "Anchor a VWAP: click the bar it starts from"),
             ("Alt+F", "Draw a Fibonacci retracement: drag from the swing's start to its end"),
             ("Alt+M", "Measure: click the start, then the end"),
-            ("Alt+Z", "Zoom: drag a box, and the chart shows just that"),
+            ("Alt+Z", "Zoom: drag a box, or click its two corners, and the chart shows just that"),
             ("Alt+Shift+Z", "Back to the view before the last zoom"),
             ("Ctrl+Shift+D", "Show or hide the drawing tools"),
             ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
