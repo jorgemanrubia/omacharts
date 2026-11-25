@@ -2054,16 +2054,17 @@ impl Window {
         let pending = self.trade.pending.borrow();
         let currency = target.account.currency.clone();
         let pnl = self.trade.pnl.get();
-        // An exit says what it would realise where it rests: closing the
-        // position held here, at what a point of it is worth.
+        // An exit says what the whole position held here makes or loses
+        // if the price gets to it, whatever the exit itself closes: what an
+        // order template's exits in money and in R mean.
         let spec_point = pane.traded().and_then(|i| i.spec()).and_then(|spec| spec.point);
         let holding = view.book.position(&key, &target.contract).filter(|held| held.net != 0);
         let net = holding.map_or(0, |held| held.net);
-        let exit_pnl = |side: Side, kind: OrderKind, qty: u32, at: f64| {
+        let exit_pnl = |side: Side, kind: OrderKind, at: f64| {
             let held = holding?;
             let avg = held.avg?;
             let point = held.point.or(spec_point)?;
-            trading::is_exit(side, kind, held.net).then(|| trading::exit_pnl(avg, held.net, qty, point, at))
+            trading::is_exit(side, kind, held.net).then(|| trading::pnl_at(avg, held.net, point, at))
         };
         // Green and red are money's: a mark with money to say wears its
         // sign, and one without, its side, in the theme's own two.
@@ -2078,7 +2079,7 @@ impl Window {
             (None, false) => look.short.clone(),
         };
         // An exit's P&L as its body and its colour; an entry's side alone.
-        let order_look = |side: Side, kind: OrderKind, qty: u32, at: f64| match exit_pnl(side, kind, qty, at) {
+        let order_look = |side: Side, kind: OrderKind, at: f64| match exit_pnl(side, kind, at) {
             Some(money) => (Some(pnl.text(money, currency.as_deref())), money_colour(money)),
             None => (None, side_colour(side)),
         };
@@ -2115,9 +2116,7 @@ impl Window {
                     OrderKind::Stop => look.stop,
                     OrderKind::Market => return None,
                 };
-                // What is left of it to fill is what it would still close.
-                let left = order.qty.saturating_sub(order.filled);
-                let (body, colour) = order_look(order.side, order.kind, left, at);
+                let (body, colour) = order_look(order.side, order.kind, at);
                 let entry = !trading::is_exit(order.side, order.kind, net);
                 let bracketed = bracketed.get(&order.basket_id);
                 // An entry says the template it went with.
@@ -2182,7 +2181,7 @@ impl Window {
                 (kind, Some(at)) => (
                     at,
                     trading::mark_tag(kind, order.side, trading::is_exit(order.side, kind, net), &order.qty.to_string()),
-                    order_look(order.side, kind, order.qty, at),
+                    order_look(order.side, kind, at),
                     if kind == OrderKind::Stop { look.stop } else { look.limit },
                 ),
                 (_, None) => continue,

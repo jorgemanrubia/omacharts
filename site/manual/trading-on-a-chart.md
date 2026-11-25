@@ -136,7 +136,7 @@ Giving an entry exits, or changing them, cancels it and sends it again as one br
 
 | To | Do |
 |---|---|
-| Move an order | Drag its line. While dragging, the label says where it goes and how far, such as *6,840.00 · +11 ticks*, an exit says the P&L it would close at, and either says why where it could not go, such as *Stop above market · not allowed*. What stays at the old price, its line, label and tab, is drawn faint until it is let go |
+| Move an order | Drag its line. While dragging, the label says where it goes and how far, such as *6,840.00 · +11 ticks*, an exit says what the whole position makes or loses at that price, however much of it the exit closes, as its label does once it rests there, and either says why where it could not go, such as *Stop above market · not allowed*. What stays at the old price, its line, label and tab, is drawn faint until it is let go |
 | Cancel an order | The **×** on its line, or its **Cancel** item, such as **Cancel Sell Limit 2 ESZ6 at 6,840.00**, in the right-click menu on the line |
 | Flatten | The **×** on the position closes it at the market and cancels its exits. <kbd>Ctrl</kbd> + <kbd>F</kbd> closes it and cancels every working order in the contract |
 

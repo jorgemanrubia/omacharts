@@ -509,22 +509,19 @@ impl TradeRules {
         }
     }
 
-    /// What the exit in hand would realise at `drag.at`, and the position
-    /// it closes: none for an order that is not an exit, or with no
+    /// What the whole position makes or loses if the price gets to where
+    /// the exit in hand is, as its mark says once it rests there, and the
+    /// position: none for an order that is not an exit, or with no
     /// position or no worth of a point to count it in.
     fn pnl(&self, drag: &MarkDrag) -> Option<(f64, &Held)> {
         let held = self.position.as_ref()?;
         let point = held.point?;
-        let qty = match self.dragged(drag)? {
-            (_, None) => held.net.unsigned_abs(),
-            (kind, Some((side, qty))) => {
-                if !trading::is_exit(side, kind, held.net) {
-                    return None;
-                }
-                qty
-            }
-        };
-        Some((trading::exit_pnl(held.price, held.net, qty, point, drag.at), held))
+        if let (kind, Some((side, _))) = self.dragged(drag)?
+            && !trading::is_exit(side, kind, held.net)
+        {
+            return None;
+        }
+        Some((trading::pnl_at(held.price, held.net, point, drag.at), held))
     }
 }
 
@@ -692,10 +689,10 @@ mod tests {
         (preview.text, preview.colour)
     }
 
-    /// An exit in hand says what it would realise, a part of an order
-    /// larger than the position counting only the position; an order that
-    /// adds to the position what it is and how far it has come; and where
-    /// it may not go, why.
+    /// An exit in hand says what the whole position makes or loses at its
+    /// price, however much of it the exit closes; an order that adds to
+    /// the position what it is and how far it has come; and where it may
+    /// not go, why.
     #[test]
     fn a_dragged_exit_says_what_it_would_realise() {
         let (mut position, mut orders) = long();
@@ -705,7 +702,7 @@ mod tests {
         // Long 1 ES: the target 10 points up, the stop 2 down.
         assert_eq!(said(&rules, Some("limit"), 5010.0), ("+$500.00".into(), profit.clone()));
         assert_eq!(said(&rules, Some("stop"), 4998.0), ("-$100.00".into(), loss.clone()));
-        // The working sell limit is an exit too; one for 2 closes only the 1.
+        // The working sell limit is an exit too, whatever its size.
         orders[0].qty = 2;
         let rules = TradeRules::new(Some(&position), &orders, (None, None));
         assert_eq!(said(&rules, None, 5006.0), ("+$300.00".into(), profit.clone()));
@@ -713,7 +710,8 @@ mod tests {
         assert_eq!(said(&rules, Some("stop"), 5010.0), ("Stop above market · not allowed".into(), None));
 
         // Short 2 NQ at $20 a point: the target 10 down, the stop 3 up, and
-        // a buy stop for 1 of the 2.
+        // a buy stop for 1 of the 2, which says what the 2 lose there: the
+        // 1R stop of a 2-lot, split in two, reads 1R on each half.
         position.net = -2;
         position.point = Some(20.0);
         orders[0].side = Side::Buy;
@@ -722,7 +720,7 @@ mod tests {
         let rules = TradeRules::new(Some(&position), &orders, (None, None));
         assert_eq!(said(&rules, Some("limit"), 4990.0), ("+$400.00".into(), profit));
         assert_eq!(said(&rules, Some("stop"), 5006.0), ("-$240.00".into(), loss.clone()));
-        assert_eq!(said(&rules, None, 5006.0), ("-$120.00".into(), loss));
+        assert_eq!(said(&rules, None, 5006.0), ("-$240.00".into(), loss));
 
         // A sell adds to a short: no money, where it is and how far it has
         // come.
@@ -739,8 +737,8 @@ mod tests {
         assert_eq!(said(&rules, Some("limit"), 4990.0).0, "+400.00 EUR");
     }
 
-    /// Shown in R, an exit in hand says what it would realise in R, in the
-    /// same profit and loss colours.
+    /// Shown in R, an exit in hand says the same in R, in the same profit
+    /// and loss colours.
     #[test]
     fn a_dragged_exit_says_it_in_r_when_r_is_shown() {
         let (mut position, orders) = long();
