@@ -11,6 +11,7 @@ omacharts-chart = { path = "../omacharts-chart" }
 adw = { version = "0.9.2", package = "libadwaita", features = ["v1_5"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde"] }
 gtk = { version = "0.11.5", package = "gtk4", features = ["v4_10"] }
+pangocairo = "0.22"
 
 [features]
 # What the tests of a program embedding these look inside them with.

@@ -26,17 +26,15 @@ use omacharts_engine::drawings::{
 };
 use omacharts_engine::Theme;
 
-use crate::store::Store;
-use crate::ui::chart_settings::{self, Ink};
-use crate::ui::controls;
-use crate::ui::colors;
-use crate::ui::dialogs;
-use crate::ui::palette;
-use crate::ui::pane::ChartPane;
-use crate::ui::colouring_rows;
-use crate::ui::profile_rows;
-use crate::ui::property_rows;
-use crate::ui::window::Window;
+use crate::stroke::{self, Ink};
+use crate::controls;
+use omacharts_chart::colors;
+use crate::dialogs;
+use crate::palette;
+use crate::colouring_rows;
+use crate::profile_rows;
+use crate::property_rows;
+use omacharts_chart::ChartView;
 pub use omacharts_chart::shapes::{paint_head, rounded};
 
 /// The size of a configuration's preview tile.
@@ -60,6 +58,22 @@ type ShowText = Rc<dyn Fn(&omacharts_engine::Drawing, &Style)>;
 /// The Text tab, and the way to show it a drawing as it now is.
 type TextTab = (adw::PreferencesPage, ShowText);
 
+/// What the dialogs are opened over: the application holding the chart,
+/// the drawing configurations it keeps, and the look its charts are in.
+pub trait Host {
+    /// The theme the previews are painted in.
+    fn theme(&self) -> Theme;
+    /// The nine configurations of every kind, as they are now.
+    fn configurations(&self) -> omacharts_engine::Configurations;
+    /// Keep `configs`, and show every chart them.
+    fn set_configurations(&self, configs: omacharts_engine::Configurations);
+    /// The colouring the chart's bars are in, and whether up and down are
+    /// swapped: what a profile's default delta colours follow.
+    fn look(&self) -> (omacharts_engine::BarColouring, bool);
+    /// What the dialogs are presented over.
+    fn parent(&self) -> gtk::Widget;
+}
+
 // ---------------------------------------------------------------------------
 // A drawing's properties
 // ---------------------------------------------------------------------------
@@ -67,16 +81,16 @@ type TextTab = (adw::PreferencesPage, ShowText);
 /// Open the properties of the drawing selected on `pane` — of all of them,
 /// when several of one kind are: what is set here goes on each. Nothing
 /// selected, or lines and rectangles together, and nothing opens.
-pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
-    let view = pane.view.clone();
+pub fn present(window: &Rc<dyn Host>, view: &Rc<ChartView>) {
+    let view = view.clone();
     if view.selection_kind().is_none() {
         return;
     }
     let Some(drawing) = view.selected_drawing() else { return };
     let theme = window.theme();
-    HOUSE_LOOK.set((pane.colouring.get(), pane.swapped.get()));
+    HOUSE_LOOK.set(window.look());
     let kind = drawing.kind;
-    let configs_now = window.drawing_configurations();
+    let configs_now = window.configurations();
 
     let page = adw::PreferencesPage::new();
 
@@ -146,7 +160,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
         let window = window.clone();
         let call_refresh = call_refresh.clone();
         Rc::new(move |style: Style| {
-            let configs = window.drawing_configurations();
+            let configs = window.configurations();
             view.edit_selected(move |d| {
                 d.edit_style(&configs, |own| *own = style.clone());
             });
@@ -160,7 +174,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
         Rc::new(move || view.selected_profile_rows())
     };
     let editor = style_editor(
-        window,
+        &theme,
         kind,
         drawing.style(&configs_now).clone(),
         on_style.clone(),
@@ -187,7 +201,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
                 call_refresh();
             })
         };
-        text_page(window, &drawing, drawing.style(&configs_now).clone(), on_style, on_text)
+        text_page(&theme, &drawing, drawing.style(&configs_now).clone(), on_style, on_text)
     });
 
     // No row for who else sees it. Where a drawing goes is the chart's
@@ -201,7 +215,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     dialog.set_title(&format!("{} properties", kind.label()));
     // A study's width: a drawing's rows are a study's, sliders with their
     // boxes among them, and at a narrower one their titles wrap.
-    dialog.set_content_width(chart_settings::DIALOG_WIDTH);
+    dialog.set_content_width(crate::dialogs::SETTINGS_WIDTH);
 
     let show_text = text_tab.as_ref().map(|(_, show)| show.clone());
     *refresh.borrow_mut() = Some({
@@ -214,7 +228,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
         let window = window.clone();
         Rc::new(move || {
             let Some(d) = view.selected_drawing() else { return };
-            let configs = window.drawing_configurations();
+            let configs = window.configurations();
             match d.config {
                 Some(n) => {
                     label.set_text(&format!("{n}"));
@@ -254,7 +268,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
         let call_refresh = call_refresh.clone();
         popover.connect_show(move |popover| {
             let Some(d) = view.selected_drawing() else { return };
-            let configs = window.drawing_configurations();
+            let configs = window.configurations();
             let custom = d.style.clone().filter(|_| d.config.is_none());
             let grid = configuration_grid(&theme, kind, &configs, d.config, custom.as_ref(), &d.text, {
                 let view = view.clone();
@@ -279,16 +293,15 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     let save_as = gio::SimpleAction::new("save-as", Some(glib::VariantTy::INT32));
     {
         let window = window.clone();
-        let store = store.clone();
         let view = view.clone();
         let call_refresh = call_refresh.clone();
         save_as.connect_activate(move |_, target| {
             let Some(n) = target.and_then(|t| t.get::<i32>()) else { return };
             let Some(d) = view.selected_drawing() else { return };
-            let mut configs = window.drawing_configurations();
+            let mut configs = window.configurations();
             let own = d.style(&configs).clone();
             configs.set(d.kind, n as u8, own);
-            window.set_drawing_configurations(&store, configs);
+            window.set_configurations(configs);
             view.apply_configuration(n as u8);
             call_refresh();
         });
@@ -380,7 +393,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
             finish(&dialog, &stack, Some(&switcher), &view.area, Some(tick));
         }
     }
-    dialog.present(Some(&window.window));
+    dialog.present(Some(&window.parent()));
 }
 
 // ---------------------------------------------------------------------------
@@ -389,13 +402,13 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
 
 /// The nine configurations of a kind: each shown as it looks, each editable,
 /// and a way back to the defaults.
-pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind) {
+pub fn present_configurations(window: &Rc<dyn Host>, kind: Kind) {
     let theme = window.theme();
-    HOUSE_LOOK.set(window.chart_look());
+    HOUSE_LOOK.set(window.look());
     let dialog = adw::Dialog::new();
     dialog.set_title(&format!("{} configurations", kind.label()));
     // It opens on the properties' own rows, so at their width.
-    dialog.set_content_width(chart_settings::DIALOG_WIDTH);
+    dialog.set_content_width(crate::dialogs::SETTINGS_WIDTH);
     dialog.set_content_height(620);
 
     let navigation = adw::NavigationView::new();
@@ -408,7 +421,7 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
     let rows: Rc<RefCell<Vec<(adw::ActionRow, gtk::DrawingArea, gtk::Label)>>> =
         Rc::new(RefCell::new(Vec::new()));
     for n in 1..=CONFIGURATIONS {
-        let configs = window.drawing_configurations();
+        let configs = window.configurations();
         let style = configs.of(kind, n).clone();
         let row = adw::ActionRow::new();
         row.set_title(&format!("Configuration {n}"));
@@ -427,22 +440,20 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
         row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
         {
             let window = window.clone();
-            let store = store.clone();
-            let navigation = navigation.clone();
+                let navigation = navigation.clone();
             let rows = rows.clone();
             let theme = theme.clone();
             row.connect_activated(move |_| {
-                let configs = window.drawing_configurations();
+                let configs = window.configurations();
                 let current = configs.of(kind, n).clone();
                 let on_style: Rc<dyn Fn(Style)> = {
                     let window = window.clone();
-                    let store = store.clone();
-                    let rows = rows.clone();
+                                let rows = rows.clone();
                     let theme = theme.clone();
                     Rc::new(move |style: Style| {
-                        let mut configs = window.drawing_configurations();
+                        let mut configs = window.configurations();
                         configs.set(kind, n, style.clone());
-                        window.set_drawing_configurations(&store, configs.clone());
+                        window.set_configurations(configs.clone());
                         if let Some((row, preview, edited)) = rows.borrow().get(n as usize - 1) {
                             row.set_subtitle(&describe(kind, &style));
                             paint_preview(preview, &theme, kind, &style, &sample());
@@ -453,7 +464,7 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
                     })
                 };
                 // A configuration is drawn on no chart, so has no count to show.
-                let editor = style_editor(&window, kind, current, on_style, Rc::new(|| None));
+                let editor = style_editor(&theme, kind, current, on_style, Rc::new(|| None));
                 let sub = adw::PreferencesPage::new();
                 sub.add(&editor.group);
                 for group in &editor.more {
@@ -480,13 +491,12 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
     restore.set_tooltip_text(Some("The nine as they shipped: the presets, in order"));
     {
         let window = window.clone();
-        let store = store.clone();
         let rows = rows.clone();
         let theme = theme.clone();
         restore.connect_clicked(move |_| {
-            let mut configs = window.drawing_configurations();
+            let mut configs = window.configurations();
             configs.reset(kind);
-            window.set_drawing_configurations(&store, configs.clone());
+            window.set_configurations(configs.clone());
             for (n, (row, preview, edited)) in rows.borrow().iter().enumerate() {
                 let n = n as u8 + 1;
                 let style = configs.of(kind, n);
@@ -519,7 +529,7 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
 
     let done_on_key = done.clone();
     dialogs::commit_on_ctrl_enter(&dialog, move || done_on_key.emit_clicked());
-    dialog.present(Some(&window.window));
+    dialog.present(Some(&window.parent()));
 }
 
 /// A row that is not as shipped wears a stripe of the accent down its
@@ -542,7 +552,7 @@ fn mark_edited(row: &adw::ActionRow, edited: bool) {
 /// of nine that reads differently and nothing about it needs explaining
 /// twice.
 fn offer_save_as(button: &gtk::MenuButton, started_from: Option<u8>) {
-    crate::ui::menus::set_model(button, &save_menu(started_from));
+    crate::menus::set_model(button, &save_menu(started_from));
 }
 
 fn save_menu(started_from: Option<u8>) -> gio::Menu {
@@ -728,13 +738,13 @@ impl Editor {
 /// The rows for a kind's properties. Every change calls `on_style` with the
 /// whole style as it now is.
 fn style_editor(
-    window: &Rc<Window>,
+    theme: &Theme,
     kind: Kind,
     current: Style,
     on_style: Rc<dyn Fn(Style)>,
     drawn_rows: Rc<dyn Fn() -> Option<usize>>,
 ) -> Editor {
-    let theme = window.theme();
+    let theme = theme.clone();
     let style: Rc<RefCell<Style>> = Rc::new(RefCell::new(current));
     // Set while the rows are being shown a style, so a row's own signal does
     // not call back as if the hand had changed it.
@@ -1627,13 +1637,13 @@ fn style_editor(
 /// the drawing; the three style rows are, and go through the same editor the
 /// shape's rows do.
 fn text_page(
-    window: &Rc<Window>,
+    theme: &Theme,
     drawing: &omacharts_engine::Drawing,
     style: Style,
     on_style: Rc<dyn Fn(Style)>,
     on_text: Rc<dyn Fn(Text)>,
 ) -> TextTab {
-    let theme = window.theme();
+    let theme = theme.clone();
     let page = adw::PreferencesPage::new();
     let showing = Rc::new(std::cell::Cell::new(false));
     let text: Rc<RefCell<Text>> = Rc::new(RefCell::new(drawing.text.clone()));
@@ -2007,7 +2017,7 @@ fn font_families() -> Vec<String> {
 /// How the system's own font is offered: as itself, with the family it is on
 /// this desktop in brackets, so the choice is both the role and the fact.
 fn system_font_label() -> String {
-    match crate::ui::text::system_family() {
+    match omacharts_chart::text::system_family() {
         Some(family) => format!("System font ({family})"),
         None => "System font".to_string(),
     }
@@ -2016,7 +2026,7 @@ fn system_font_label() -> String {
 /// A row that picks the text size, in pixels, with a slider and a box that
 /// agree — the control every other bounded figure in the window uses.
 fn size_row(current: f64, on_pick: impl Fn(f64) + 'static) -> (adw::ActionRow, Rc<dyn Fn(f64)>) {
-    let bounded = crate::ui::controls::bounded_row(
+    let bounded = crate::controls::bounded_row(
         "Font size",
         None,
         current,
@@ -2047,7 +2057,7 @@ thread_local! {
 /// selling's.
 fn profile_drawn(look: &omacharts_engine::drawings::ProfileLook, theme: &omacharts_engine::theme::Theme) -> Vec<String> {
     let (house, swapped) = HOUSE_LOOK.get();
-    let base = crate::ui::chart::delta_colours(omacharts_engine::colouring::base(look.colouring), theme, house, swapped);
+    let base = omacharts_chart::delta_colours(omacharts_engine::colouring::base(look.colouring), theme, house, swapped);
     colouring_rows::drawn_roles(look.colouring, [look.buy_color.as_ref(), look.sell_color.as_ref()], base, theme)
 }
 
@@ -2580,13 +2590,13 @@ fn stroke_rows(
 ) -> Vec<StrokeRow> {
     // What is set now, which a pick changes half of.
     let now = Rc::new(Cell::new(current));
-    let widths: Vec<(f64, Stroke)> = chart_settings::WIDTHS
+    let widths: Vec<(f64, Stroke)> = stroke::WIDTHS
         .iter()
         .map(|width| (*width, Stroke::new(*width, current.style)))
         .collect();
     let styles: Vec<(f64, Stroke)> = LineStyle::ALL
         .iter()
-        .map(|style| (chart_settings::LINE_SAMPLE_WIDTH, Stroke::new(chart_settings::LINE_SAMPLE_WIDTH, *style)))
+        .map(|style| (stroke::LINE_SAMPLE_WIDTH, Stroke::new(stroke::LINE_SAMPLE_WIDTH, *style)))
         .collect();
     let mut rows = Vec::new();
     for (title, options, by_width) in [(property_rows::THICKNESS, widths, true), (property_rows::LINE_STYLE, styles, false)] {
@@ -2609,10 +2619,10 @@ fn stroke_rows(
                 true => now.get().style,
                 false => option.style,
             };
-            let area = chart_settings::stroke_sample(sample, style, ink);
+            let area = stroke::stroke_sample(sample, style, ink);
             ink.watch(&area);
             button.set_child(Some(&area));
-            button.set_tooltip_text(Some(&chart_settings::describe_stroke(sample, style)));
+            button.set_tooltip_text(Some(&stroke::describe_stroke(sample, style)));
             match &first {
                 Some(anchor) => button.set_group(Some(anchor)),
                 None => first = Some(button.clone()),
@@ -2664,7 +2674,7 @@ fn pattern_row(
     showing: &Rc<Cell<bool>>,
     on_pick: impl Fn(LineStyle) + Clone + 'static,
 ) -> (adw::ActionRow, Rc<dyn Fn(LineStyle)>) {
-    let current = Stroke::new(chart_settings::LINE_SAMPLE_WIDTH, current);
+    let current = Stroke::new(stroke::LINE_SAMPLE_WIDTH, current);
     let (row, show) = stroke_rows(ink, current, showing, move |stroke: Stroke| on_pick(stroke.style))
         .into_iter()
         .nth(1)
@@ -2672,7 +2682,7 @@ fn pattern_row(
     row.set_title(title);
     row.add_css_class("line-style-row");
     let show: Rc<dyn Fn(LineStyle)> =
-        Rc::new(move |pattern| show(Stroke::new(chart_settings::LINE_SAMPLE_WIDTH, pattern)));
+        Rc::new(move |pattern| show(Stroke::new(stroke::LINE_SAMPLE_WIDTH, pattern)));
     (row, show)
 }
 
@@ -3173,7 +3183,7 @@ fn preview_text(
     // picture of the look, and a label pinned to the bottom-left of a tile
     // this size is a label half off it.
     let text = drawings::Text { spans: text.spans.clone(), at: drawings::Place::Center };
-    let Some((_, _, tw, th)) = crate::ui::text::block(kind, bounds, &text, &style) else { return };
+    let Some((_, _, tw, th)) = omacharts_chart::text::block(kind, bounds, &text, &style) else { return };
     // Brought down to fit rather than dropped. A tile is a fraction of a
     // chart, so a label that is comfortable at full size is wider than the
     // figure here more often than not — and a preview that answers "what
@@ -3192,7 +3202,7 @@ fn preview_text(
             style.text.size = (style.text.size * fit).max(drawings::MIN_TEXT_SIZE);
         }
     }
-    let Some((x, y, tw, th)) = crate::ui::text::block(kind, bounds, &text, &style) else { return };
+    let Some((x, y, tw, th)) = omacharts_chart::text::block(kind, bounds, &text, &style) else { return };
     // Still too big, at the smallest the engine will set type: the tile has
     // no room for words at all, and a word spilling out of the box is a
     // worse picture than no word. A pixel of slack, because this is a
@@ -3202,7 +3212,7 @@ fn preview_text(
     }
     let ground = drawings::text_ground(kind, &style, theme);
     let ink = drawings::text_colour(&style.text.colour, theme, &ground);
-    crate::ui::text::draw(cr, (x, y), &text, &style.text, drawings::Align::Center, &ink, &ground);
+    omacharts_chart::text::draw(cr, (x, y), &text, &style.text, drawings::Align::Center, &ink, &ground);
 }
 
 /// What a configuration's preview says, having no words of its own.
@@ -3350,104 +3360,17 @@ pub fn preset_of(n: u8) -> Preset {
     Preset::ALL[(n.clamp(1, CONFIGURATIONS) - 1) as usize]
 }
 
+/// The groups of rows a drawing of `kind` in `style` is edited with, in
+/// order, for a test to compare with another dialog's.
+#[cfg(any(test, feature = "testing"))]
+pub fn editor_groups(theme: &Theme, kind: Kind, style: Style) -> Vec<adw::PreferencesGroup> {
+    let editor = style_editor(theme, kind, style, Rc::new(|_| {}), Rc::new(|| None));
+    std::iter::once(editor.group).chain(editor.more).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Store;
-
-    /// A profile drawing's properties are the study's, in the same groups
-    /// and the same order, less what only a study has: its period, and
-    /// whether only the newest is drawn.
-    #[test]
-    fn a_profile_drawing_has_the_studys_rows_in_the_studys_order() {
-        crate::ui::on_gtk(|| {
-            let store = Rc::new(Store::memory().expect("a store"));
-            let window = crate::ui::window::test_window(&store);
-            let only_the_study = ["Reset every", chart_settings::PROFILE_LAST_ONLY_LABEL];
-            let study: Vec<(String, Vec<String>)> =
-                chart_settings::profile_titles(&window, omacharts_engine::indicators::Kind::VolumeProfile)
-                .into_iter()
-                .map(|(title, rows)| {
-                    (
-                        title,
-                        rows.into_iter()
-                            .filter(|row| !only_the_study.contains(&row.as_str()))
-                            .collect(),
-                    )
-                })
-                .collect();
-
-            let editor = style_editor(
-                &window,
-                Kind::Profile,
-                Style::profile(Preset::Violet),
-                Rc::new(|_| {}),
-                Rc::new(|| None),
-            );
-            let mut drawing = vec![(
-                editor.group.title().to_string(),
-                profile_rows::titles(&editor.group),
-            )];
-            drawing.extend(
-                editor
-                    .more
-                    .iter()
-                    .map(|group| (group.title().to_string(), profile_rows::titles(group))),
-            );
-
-            assert_eq!(drawing, study);
-            // Every profile dialog is laid out alike: the same groups in the
-            // same order, the same rows in each, what only one kind has where
-            // the other's would be.
-            use profile_rows as r;
-            let names = |rows: &[&str]| rows.iter().map(|row| row.to_string()).collect::<Vec<_>>();
-            let volume = |parameters: &[&str]| {
-                vec![
-                    ("Parameters".to_string(), names(parameters)),
-                    (r::STYLE_GROUP.to_string(), names(&[
-                        r::DISPLAY_AS, r::ALIGNMENT, r::WIDTH, r::COLOUR, r::OUTLINE,
-                        r::OUTLINE_COLOUR, r::OUTLINE_THICKNESS, r::OUTLINE_STYLE,
-                    ])),
-                    (r::VALUE_AREA_GROUP.to_string(), names(&[r::HIGHLIGHT, r::COLOUR, r::OUTSIDE_TRANSPARENCY])),
-                    (r::POC_GROUP.to_string(), names(&[r::SHOW, r::COLOUR, r::THICKNESS, r::LINE_STYLE])),
-                ]
-            };
-            assert_eq!(
-                drawing,
-                volume(&[r::METHOD, r::COLOURING, chart_settings::FLOW_BUY_LABEL, chart_settings::FLOW_SELL_LABEL, r::AUTOMATIC, r::ROWS, r::VALUE_AREA]),
-                "a drawing has no period"
-            );
-            let study = chart_settings::profile_titles(&window, omacharts_engine::indicators::Kind::VolumeProfile);
-            assert_eq!(
-                study,
-                volume(&["Reset every", r::LAST_ONLY, r::METHOD, r::COLOURING, chart_settings::FLOW_BUY_LABEL, chart_settings::FLOW_SELL_LABEL, r::AUTOMATIC, r::ROWS, r::VALUE_AREA])
-            );
-            let market = chart_settings::profile_titles(&window, omacharts_engine::indicators::Kind::MarketProfile);
-            assert_eq!(
-                market,
-                vec![
-                    ("Parameters".to_string(), names(&[
-                        "Reset every", r::LAST_ONLY, chart_settings::MARKET_MINUTES_LABEL, r::AUTOMATIC,
-                        chart_settings::MARKET_ROW_TICKS_LABEL, r::VALUE_AREA,
-                    ])),
-                    (r::STYLE_GROUP.to_string(), names(&[
-                        r::DISPLAY_AS, r::ALIGNMENT, r::EXPAND_LAST, r::WIDTH, r::COLOUR, r::OUTLINE,
-                        r::OUTLINE_COLOUR, r::OUTLINE_THICKNESS, r::OUTLINE_STYLE, r::OPEN_CLOSE,
-                        r::OPEN_COLOUR, r::CLOSE_COLOUR,
-                    ])),
-                    (r::VALUE_AREA_GROUP.to_string(), names(&[r::HIGHLIGHT, r::COLOUR, r::OUTSIDE_TRANSPARENCY])),
-                    (r::POC_GROUP.to_string(), names(&[r::SHOW, r::COLOUR, r::THICKNESS, r::LINE_STYLE])),
-                ],
-                "the volume profile's, less its method, with its open and close after the outline and its last profile expanded under where it is placed"
-            );
-            assert!(
-                drawing
-                    .iter()
-                    .any(|(_, rows)| rows.iter().any(|row| row == profile_rows::AUTOMATIC)),
-                "{drawing:?}"
-            );
-        });
-    }
 
     /// The widgets of a group, in order, as far down as its rows.
     fn rows_of(group: &adw::PreferencesGroup) -> Vec<gtk::Widget> {
@@ -3478,11 +3401,10 @@ mod tests {
     /// study's colours do, with no row of its own for either.
     #[test]
     fn a_drawing_s_stroke_and_fill_rows_are_the_studys() {
-        crate::ui::on_gtk(|| {
-            let store = Rc::new(Store::memory().expect("a store"));
-            let window = crate::ui::window::test_window(&store);
+        crate::on_gtk(|| {
+            let theme = omacharts_engine::theme::builtin_themes().remove(0);
             let edit = |kind: Kind| {
-                let editor = style_editor(&window, kind, Style::of(kind, Preset::Blue), Rc::new(|_| {}), Rc::new(|| None));
+                let editor = style_editor(&theme, kind, Style::of(kind, Preset::Blue), Rc::new(|_| {}), Rc::new(|| None));
                 rows_of(&editor.group)
             };
             let carries = |row: &gtk::Widget, pick: &dyn Fn(&gtk::Widget) -> bool| {

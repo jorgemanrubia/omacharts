@@ -147,7 +147,7 @@ pub fn rows(host: Host) -> Rows {
             move |choice: ColorChoice| (host.edit)(&|colours, drawn| colours.set_colour(role, Some(choice.clone()), drawn))
         };
         let current = shown.drawn.get(role).cloned().unwrap_or_default();
-        let button = crate::ui::palette::picker(&host.theme, shown.choices.get(role).cloned().flatten(), &current, picked, None);
+        let button = crate::palette::picker(&host.theme, shown.choices.get(role).cloned().flatten(), &current, picked, None);
         let transparency = shown.alphas.get(role).map(|alpha| {
             let host = host.clone();
             let (transparency, show) = Transparency::new(1.0 - alpha, move |share| {
@@ -196,7 +196,7 @@ pub fn rows(host: Host) -> Rows {
         Rc::new(move || {
             let now = (host.read)();
             for (button, hex) in swatches.iter().zip(&now.drawn) {
-                crate::ui::palette::show(button, hex);
+                crate::palette::show(button, hex);
             }
             for (show, alpha) in strengths.iter().zip(&now.alphas) {
                 show(1.0 - alpha);

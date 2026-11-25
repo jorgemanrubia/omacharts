@@ -388,17 +388,6 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
   opacity: 0.75;
 }
 
-/* Thickness and line style, picked by looking rather than by naming a number.
-   A segmented strip, so the options sit beside each other and the one in use
-   is the one pressed. */
-.stroke-picker button {
-  padding: 2px 4px;
-  min-width: 0;
-  min-height: 0;
-}
-
-.swatch-button { min-width: 26px; min-height: 26px; padding: 0; border-radius: 6px; }
-
 /* Menus and popovers are one surface. A right-click menu and the link
    popover open beside each other often enough that two looks for one kind
    of thing read as two apps. The window's own ground, a hairline edge, a
@@ -686,10 +675,6 @@ button.trading-sync {
 /* The Log's rows: room between them, and none taken from the text. */
 .log-list > row { padding: 6px 12px; }
 
-.drawing-preview { border-radius: 6px; }
-.drawing-config-edited { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 9px; background: @accent_bg_color; color: @accent_fg_color; }
-.drawing-config-row-edited { box-shadow: inset 3px 0 0 @accent_bg_color; }
-.drawing-config-picker { padding: 0; }
 /* A configuration row in the drawing's menu: a menu item's own measure,
    with a picture where the glyph would be. */
 .drawing-config-row { padding: 4px 10px; min-height: 0; border-radius: 6px; }
@@ -699,34 +684,13 @@ button.trading-sync {
 .drawing-head-row { padding: 2px 10px; }
 .drawing-head-cell { padding: 2px; min-width: 0; min-height: 0; border-radius: 5px; opacity: 0.75; }
 .drawing-head-cell:hover { opacity: 1; }
-/* The Custom tile is the one in use: a button, so it is not greyed, but
-   nothing happens on it. */
-.drawing-preview-chosen { opacity: 1; }
-.drawing-preview-hover { border-radius: 6px; transition: background 120ms ease-out, box-shadow 120ms ease-out; }
-.drawing-config-picker:hover .drawing-preview-hover { background: alpha(@accent_bg_color, 0.14); box-shadow: inset 0 0 0 2px @accent_bg_color; }
-.drawing-config-picker:active .drawing-preview-hover, .drawing-config-picker:checked .drawing-preview-hover { background: alpha(@accent_bg_color, 0.22); }
-.drawing-save-as { font-size: 12px; opacity: 0.7; padding: 2px 6px; min-height: 0; }
-.drawing-save-as:hover { opacity: 1; }
-.drawing-config-picker > * { padding: 0; }
-/* The tag on the picture is the chart's own palette turned inside out: the
-   text colour as its ground and the chart colour as its ink, so it reads on
-   the picture whatever the picture is. */
-.drawing-config-tag { padding: 2px 10px; border-radius: 10px; font-weight: 700; font-size: 12px; background: @window_fg_color; color: @view_bg_color; }
-.drawing-preview-current { box-shadow: 0 0 0 2px @accent_bg_color; }
 .menu-choice { padding: 2px 6px; min-width: 0; min-height: 0; border-radius: 5px; font-size: 0.9em; }
 ",
     );
     // Typing on the chart, which the chart styles itself.
     css.push_str(omacharts_chart::STYLESHEET);
     css.push_str(
-        "/* The nine places, as a block of nine cells rather than nine buttons: no
-   padding between them, one ring around the lot, and the lit one filled. */
-.drawing-place-grid { padding: 2px; border-radius: 7px; box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.18); }
-.drawing-place-cell { padding: 1px; min-width: 0; min-height: 0; border-radius: 4px; opacity: 0.55; }
-.drawing-place-cell:hover { opacity: 0.85; }
-.drawing-place-cell:checked { opacity: 1; background: alpha(@accent_bg_color, 0.28); }
-
-/* The corner sits over the rail when the rail is open, which is where the
+        "/* The corner sits over the rail when the rail is open, which is where the
    HIG puts a sidebar's menu (above the sidebar list), so the rail's band
    steps down out from under it. The band is the corner's height: a 26px
    button with 8px of padding above and 7px below, two pixels in from the

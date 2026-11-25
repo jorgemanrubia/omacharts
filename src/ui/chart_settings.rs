@@ -31,6 +31,7 @@ use crate::ui::profile_rows;
 use crate::ui::property_rows;
 use crate::ui::shortcuts;
 use crate::ui::window::Window;
+pub(crate) use omacharts_widgets::stroke::{describe_stroke, stroke_sample, Ink, LINE_SAMPLE_WIDTH, WIDTHS};
 
 /// Where the dialog should land when it opens.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -607,7 +608,7 @@ fn sync_bars(
 pub const HOLLOW_LABEL: &str = "Hollow up bars";
 pub const SWAP_LABEL: &str = "Swap up and down colours";
 /// How wide a settings dialog is, a chart's, a study's and a drawing's.
-pub const DIALOG_WIDTH: i32 = 560;
+pub const DIALOG_WIDTH: i32 = omacharts_widgets::dialogs::SETTINGS_WIDTH;
 
 /// The row for how many pixels wide OHLC bars are drawn.
 pub const THICKNESS_LABEL: &str = property_rows::THICKNESS;
@@ -990,40 +991,6 @@ impl IndicatorList {
     }
 }
 
-/// Where the line can be seen: the colour it is drawn in right now, and the
-/// samples showing it.
-///
-/// The samples used to be painted in whatever the colour was when the panel was
-/// built, so changing the colour left a purple swatch above four blue lines.
-/// They ask for the colour every time they are drawn instead, and the colour
-/// row repaints them when it changes one.
-#[derive(Clone)]
-pub(crate) struct Ink {
-    colour: Rc<dyn Fn() -> String>,
-    samples: Rc<RefCell<Vec<glib::WeakRef<gtk::DrawingArea>>>>,
-}
-
-impl Ink {
-    pub(crate) fn new(colour: impl Fn() -> String + 'static) -> Ink {
-        Ink { colour: Rc::new(colour), samples: Rc::new(RefCell::new(Vec::new())) }
-    }
-
-    pub(crate) fn colour(&self) -> String {
-        (self.colour)()
-    }
-
-    pub(crate) fn watch(&self, area: &gtk::DrawingArea) {
-        self.samples.borrow_mut().push(area.downgrade());
-    }
-
-    pub(crate) fn repaint(&self) {
-        for area in self.samples.borrow().iter() {
-            if let Some(area) = area.upgrade() {
-                area.queue_draw();
-            }
-        }
-    }
-}
 
 /// Something to run when an indicator changes, so whatever is showing it
 /// redraws.
@@ -1697,15 +1664,6 @@ fn pattern_row(
 
 /// The weights on offer. Four, plus none.
 ///
-/// A spin button asking for a number between zero and five in halves is a
-/// question nobody has an opinion about; what people want is a thicker line or
-/// a thinner one, and they want to see which. Zero stays because a VWAP band
-/// uses it to draw its fill with no outline.
-pub(crate) const WIDTHS: [f64; 5] = omacharts_engine::indicators::STROKE_WIDTHS;
-
-/// What a style sample is drawn at, so dashes and dots are legible whatever
-/// weight the line itself is set to.
-pub(crate) const LINE_SAMPLE_WIDTH: f64 = 1.5;
 
 /// A row of drawn samples, one of them pressed.
 ///
@@ -1768,35 +1726,6 @@ fn picker_row(
     row
 }
 
-pub(crate) fn describe_stroke(width: f64, style: LineStyle) -> String {
-    if width <= 0.0 {
-        return "No line".to_string();
-    }
-    format!("{} · {width}px", style.label())
-}
-
-/// One option, drawn as the line it would produce.
-pub(crate) fn stroke_sample(width: f64, style: LineStyle, ink: &Ink) -> gtk::DrawingArea {
-    let area = gtk::DrawingArea::new();
-    area.set_content_width(34);
-    area.set_content_height(18);
-    let ink = ink.clone();
-    area.set_draw_func(move |_, cr, w, h| {
-        if width <= 0.0 {
-            return;
-        }
-        let (w, h) = (w as f64, h as f64);
-        colors::set_source(cr, &ink.colour());
-        cr.set_line_width(width);
-        cr.set_dash(&style.dashes(width), 0.0);
-        cr.set_line_cap(gtk::cairo::LineCap::Round);
-        let y = (h / 2.0).round() + if width % 2.0 == 1.0 { 0.5 } else { 0.0 };
-        cr.move_to(5.0, y);
-        cr.line_to(w - 5.0, y);
-        let _ = cr.stroke();
-    });
-    area
-}
 
 /// A colour row: the swatch, whose palette offers Default first, the way
 /// back to the colour the theme gives it, and how much of the chart shows
@@ -4336,4 +4265,100 @@ mod tests {
         assert_eq!(super::there_already(&held, Kind::Sma), None, "as many as wanted");
         assert_eq!(super::there_already(&held[..1], Kind::Footprint), None);
     }
+}
+
+/// A drawing's rows held to a study's: the two dialogs are built apart, and
+/// laid out alike.
+#[cfg(test)]
+mod drawing_tests {
+    use super::*;
+    use crate::store::Store;
+    use omacharts_engine::drawings::{Kind as DrawingKind, Preset, Style as DrawingStyle};
+    use omacharts_widgets::drawing_settings;
+
+    /// A profile drawing's properties are the study's, in the same groups
+    /// and the same order, less what only a study has: its period, and
+    /// whether only the newest is drawn.
+    #[test]
+    fn a_profile_drawing_has_the_studys_rows_in_the_studys_order() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = crate::ui::window::test_window(&store);
+            let only_the_study = ["Reset every", PROFILE_LAST_ONLY_LABEL];
+            let study: Vec<(String, Vec<String>)> =
+                profile_titles(&window, omacharts_engine::indicators::Kind::VolumeProfile)
+                .into_iter()
+                .map(|(title, rows)| {
+                    (
+                        title,
+                        rows.into_iter()
+                            .filter(|row| !only_the_study.contains(&row.as_str()))
+                            .collect(),
+                    )
+                })
+                .collect();
+
+            let drawing: Vec<(String, Vec<String>)> = drawing_settings::editor_groups(
+                &window.theme(),
+                DrawingKind::Profile,
+                DrawingStyle::profile(Preset::Violet),
+            )
+            .iter()
+            .map(|group| (group.title().to_string(), profile_rows::titles(group)))
+            .collect();
+
+            assert_eq!(drawing, study);
+            // Every profile dialog is laid out alike: the same groups in the
+            // same order, the same rows in each, what only one kind has where
+            // the other's would be.
+            use profile_rows as r;
+            let names = |rows: &[&str]| rows.iter().map(|row| row.to_string()).collect::<Vec<_>>();
+            let volume = |parameters: &[&str]| {
+                vec![
+                    ("Parameters".to_string(), names(parameters)),
+                    (r::STYLE_GROUP.to_string(), names(&[
+                        r::DISPLAY_AS, r::ALIGNMENT, r::WIDTH, r::COLOUR, r::OUTLINE,
+                        r::OUTLINE_COLOUR, r::OUTLINE_THICKNESS, r::OUTLINE_STYLE,
+                    ])),
+                    (r::VALUE_AREA_GROUP.to_string(), names(&[r::HIGHLIGHT, r::COLOUR, r::OUTSIDE_TRANSPARENCY])),
+                    (r::POC_GROUP.to_string(), names(&[r::SHOW, r::COLOUR, r::THICKNESS, r::LINE_STYLE])),
+                ]
+            };
+            assert_eq!(
+                drawing,
+                volume(&[r::METHOD, r::COLOURING, FLOW_BUY_LABEL, FLOW_SELL_LABEL, r::AUTOMATIC, r::ROWS, r::VALUE_AREA]),
+                "a drawing has no period"
+            );
+            let study = profile_titles(&window, omacharts_engine::indicators::Kind::VolumeProfile);
+            assert_eq!(
+                study,
+                volume(&["Reset every", r::LAST_ONLY, r::METHOD, r::COLOURING, FLOW_BUY_LABEL, FLOW_SELL_LABEL, r::AUTOMATIC, r::ROWS, r::VALUE_AREA])
+            );
+            let market = profile_titles(&window, omacharts_engine::indicators::Kind::MarketProfile);
+            assert_eq!(
+                market,
+                vec![
+                    ("Parameters".to_string(), names(&[
+                        "Reset every", r::LAST_ONLY, MARKET_MINUTES_LABEL, r::AUTOMATIC,
+                        MARKET_ROW_TICKS_LABEL, r::VALUE_AREA,
+                    ])),
+                    (r::STYLE_GROUP.to_string(), names(&[
+                        r::DISPLAY_AS, r::ALIGNMENT, r::EXPAND_LAST, r::WIDTH, r::COLOUR, r::OUTLINE,
+                        r::OUTLINE_COLOUR, r::OUTLINE_THICKNESS, r::OUTLINE_STYLE, r::OPEN_CLOSE,
+                        r::OPEN_COLOUR, r::CLOSE_COLOUR,
+                    ])),
+                    (r::VALUE_AREA_GROUP.to_string(), names(&[r::HIGHLIGHT, r::COLOUR, r::OUTSIDE_TRANSPARENCY])),
+                    (r::POC_GROUP.to_string(), names(&[r::SHOW, r::COLOUR, r::THICKNESS, r::LINE_STYLE])),
+                ],
+                "the volume profile's, less its method, with its open and close after the outline and its last profile expanded under where it is placed"
+            );
+            assert!(
+                drawing
+                    .iter()
+                    .any(|(_, rows)| rows.iter().any(|row| row == profile_rows::AUTOMATIC)),
+                "{drawing:?}"
+            );
+        });
+    }
+
 }
