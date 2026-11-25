@@ -11,19 +11,30 @@
 //! - [`strip`]: a chart's row of resolutions.
 //! - [`pick_frame`]: the frame those pickers are drawn in.
 //! - [`shortcuts`]: what the keys do, in one table.
+//! - [`drawing_settings`]: a drawing's properties and a kind's nine
+//!   configurations, over a [`drawing_settings::Host`]; built from
+//!   [`property_rows`], [`profile_rows`], [`colouring_rows`], [`palette`],
+//!   [`controls`] and [`stroke`], which a chart's own settings use too.
 //!
 //! Each says what was picked through a handler and changes nothing itself.
 //! [`STYLESHEET`] goes into the display's CSS beside the chart's.
 
+pub mod colouring_rows;
+pub mod controls;
 pub mod dialogs;
 pub mod drawing_bar;
+pub mod drawing_settings;
 pub mod inventory;
 pub mod menus;
+pub mod palette;
 pub mod pick_frame;
+pub mod profile_rows;
+pub mod property_rows;
 pub mod range_card;
 pub mod search;
 pub mod shortcuts;
 pub mod strip;
+pub mod stroke;
 
 /// The CSS these widgets are drawn with, in libadwaita's named colours.
 pub const STYLESHEET: &str = r#"
@@ -244,6 +255,43 @@ entry.range-date > image:hover { opacity: 0.9; }
    chart otherwise goes on drawing and nothing says why. */
 .drawing-tool.drawing-tool-stuck:checked { background: alpha(@accent_bg_color, 0.38); box-shadow: inset 0 0 0 2px @accent_bg_color; }
 .drawing-config-badge { font-size: 9px; font-weight: 700; min-width: 12px; min-height: 12px; padding: 0 2px; border-radius: 6px; background: @accent_bg_color; color: @accent_fg_color; margin: 0 -4px -4px 0; }
+
+/* A drawing's settings (see `drawing_settings`). */
+/* Thickness and line style, picked by looking rather than by naming a number.
+   A segmented strip, so the options sit beside each other and the one in use
+   is the one pressed. */
+.stroke-picker button {
+  padding: 2px 4px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.swatch-button { min-width: 26px; min-height: 26px; padding: 0; border-radius: 6px; }
+
+.drawing-preview { border-radius: 6px; }
+.drawing-config-edited { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 9px; background: @accent_bg_color; color: @accent_fg_color; }
+.drawing-config-row-edited { box-shadow: inset 3px 0 0 @accent_bg_color; }
+.drawing-config-picker { padding: 0; }
+/* The Custom tile is the one in use: a button, so it is not greyed, but
+   nothing happens on it. */
+.drawing-preview-chosen { opacity: 1; }
+.drawing-preview-hover { border-radius: 6px; transition: background 120ms ease-out, box-shadow 120ms ease-out; }
+.drawing-config-picker:hover .drawing-preview-hover { background: alpha(@accent_bg_color, 0.14); box-shadow: inset 0 0 0 2px @accent_bg_color; }
+.drawing-config-picker:active .drawing-preview-hover, .drawing-config-picker:checked .drawing-preview-hover { background: alpha(@accent_bg_color, 0.22); }
+.drawing-save-as { font-size: 12px; opacity: 0.7; padding: 2px 6px; min-height: 0; }
+.drawing-save-as:hover { opacity: 1; }
+.drawing-config-picker > * { padding: 0; }
+/* The tag on the picture is the chart's own palette turned inside out: the
+   text colour as its ground and the chart colour as its ink, so it reads on
+   the picture whatever the picture is. */
+.drawing-config-tag { padding: 2px 10px; border-radius: 10px; font-weight: 700; font-size: 12px; background: @window_fg_color; color: @view_bg_color; }
+.drawing-preview-current { box-shadow: 0 0 0 2px @accent_bg_color; }
+/* The nine places, as a block of nine cells rather than nine buttons: no
+   padding between them, one ring around the lot, and the lit one filled. */
+.drawing-place-grid { padding: 2px; border-radius: 7px; box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.18); }
+.drawing-place-cell { padding: 1px; min-width: 0; min-height: 0; border-radius: 4px; opacity: 0.55; }
+.drawing-place-cell:hover { opacity: 0.85; }
+.drawing-place-cell:checked { opacity: 1; background: alpha(@accent_bg_color, 0.28); }
 "#;
 
 /// Run a test that builds widgets on the one thread GTK is ever

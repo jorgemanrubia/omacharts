@@ -18,12 +18,12 @@ use adw::prelude::*;
 use omacharts_engine::indicators::profile::{Method, DELTA_COLOURINGS};
 use omacharts_engine::BarColouring;
 
-pub use crate::ui::property_rows::{
+pub use crate::property_rows::{
     COLOUR, LINE_STYLE, SHOW, THICKNESS, Transparency, colour_row, percent_row, switch_row,
     thickness_row,
 };
-#[cfg(test)]
-pub use crate::ui::property_rows::titles;
+#[cfg(any(test, feature = "testing"))]
+pub use crate::property_rows::titles;
 
 /// The groups, in their order.
 pub const STYLE_GROUP: &str = "Style";
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn the_rows_box_follows_automatic_and_hands_over_the_count_drawn() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let seen: Rc<std::cell::RefCell<Vec<Option<usize>>>> = Rc::default();
             let rows = {
                 let seen = seen.clone();

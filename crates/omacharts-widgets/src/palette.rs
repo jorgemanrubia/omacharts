@@ -18,7 +18,7 @@ use gtk::glib;
 use std::rc::Rc;
 use omacharts_engine::theme::{ColorChoice, Theme};
 
-use crate::ui::colors;
+use omacharts_chart::colors;
 
 const SWATCH: i32 = 26;
 /// Nine colours, the eight with a hue and the neutral, as a square: three
@@ -234,7 +234,7 @@ mod tests {
     /// came to. Without one there is no such entry.
     #[test]
     fn a_palette_offers_the_way_back_to_the_default_first() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let theme = omacharts_engine::theme::builtin_themes().remove(0);
             let cleared = Rc::new(RefCell::new(0));
             let default: Rc<dyn Fn() -> String> = {

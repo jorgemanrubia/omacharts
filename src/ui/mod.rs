@@ -6,23 +6,20 @@ pub use omacharts_chart as chart;
 pub use omacharts_chart::{colors, text};
 /// The pieces around the chart are a crate of their own too, so that a
 /// program embedding the chart can have them; here under their old names.
-pub use omacharts_widgets::{dialogs, drawing_bar, menus, pick_frame, range_card, search, shortcuts, strip};
+pub use omacharts_widgets::{
+    colouring_rows, controls, dialogs, drawing_bar, drawing_settings, menus, palette, pick_frame, profile_rows, property_rows,
+    range_card, search, shortcuts, strip,
+};
 pub mod book_templates;
 pub mod chart_settings;
-pub mod colouring_rows;
-pub mod controls;
 pub mod drop_line;
 pub mod notice;
 pub mod order_entry;
 pub mod order_templates;
-pub mod drawing_settings;
 pub mod feed_settings;
 pub mod pane;
-pub mod palette;
 pub mod part_list;
 pub mod preferences;
-pub mod profile_rows;
-pub mod property_rows;
 pub mod sign_in_dialogs;
 pub mod size_templates;
 pub mod trading_settings;

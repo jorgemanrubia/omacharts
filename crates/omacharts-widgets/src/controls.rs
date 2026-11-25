@@ -63,7 +63,7 @@ pub fn bounded_row(
 
 /// A bounded figure's slider and box, not yet on a row: for a row that
 /// carries one beside a control of its own, as the standard colour row
-/// carries its transparency ([`crate::ui::property_rows::colour_row`]).
+/// carries its transparency ([`crate::property_rows::colour_row`]).
 pub struct Figure {
     pub slider: gtk::Scale,
     pub entry: gtk::SpinButton,
@@ -298,7 +298,7 @@ mod tests {
     /// the one guard.
     #[test]
     fn the_slider_and_the_box_show_one_figure_and_refuse_what_is_past_the_ends() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let heard_by_row = heard.clone();
             let row = bounded_row("Level", None, 70.0, 0.0, 100.0, 1.0, 0, move |v| {

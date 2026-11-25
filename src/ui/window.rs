@@ -3907,7 +3907,7 @@ mod outside_change_tests {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = bare_window(&store);
             for kind in [Kind::Rect, Kind::Ellipse] {
-                crate::ui::drawing_settings::present_configurations(&window, &store, kind);
+                crate::ui::drawing_settings::present_configurations(&window.as_host(), kind);
                 let first = titled::<adw::ActionRow>(&window, "Configuration 1").pop().expect("the first configuration");
                 first.emit_by_name::<()>("activated", &[]);
                 let stored = || window.drawing_configurations().of(kind, 1).clone();
@@ -14286,6 +14286,11 @@ impl Window {
     }
 
     /// The nine configurations of each kind, as stored.
+    /// This window, as what a drawing's settings are opened over.
+    pub fn as_host(self: &Rc<Self>) -> Rc<dyn crate::ui::drawing_settings::Host> {
+        self.clone()
+    }
+
     pub fn drawing_configurations(&self) -> omacharts_engine::Configurations {
         self.store.drawing_configurations()
     }
@@ -14420,7 +14425,7 @@ impl Window {
     }
 
     fn open_drawing_configurations(self: &Rc<Self>, kind: omacharts_engine::DrawingKind) {
-        crate::ui::drawing_settings::present_configurations(self, &self.store, kind);
+        crate::ui::drawing_settings::present_configurations(&self.as_host(), kind);
     }
 
     /// Arm a drawing tool on the focused chart. The key is not a toggle:
@@ -14556,7 +14561,7 @@ impl Window {
     }
 
     fn open_drawing_settings(self: &Rc<Self>) {
-        crate::ui::drawing_settings::present(self, &self.store, &self.focused_pane());
+        crate::ui::drawing_settings::present(&self.as_host(), &self.focused_pane().view);
     }
 
     /// The menu a drawing gets when it is right-clicked: about the drawing
@@ -16113,5 +16118,29 @@ mod viewport_tests {
             charted(&window);
             assert_eq!(first(&window).view.viewport(), Some(left), "the chart came back somewhere else");
         });
+    }
+}
+
+/// A drawing's settings change the configurations this window keeps, and
+/// are painted in its theme and its focused chart's colouring.
+impl crate::ui::drawing_settings::Host for Window {
+    fn theme(&self) -> omacharts_engine::Theme {
+        Window::theme(self)
+    }
+
+    fn configurations(&self) -> omacharts_engine::Configurations {
+        self.drawing_configurations()
+    }
+
+    fn set_configurations(&self, configs: omacharts_engine::Configurations) {
+        self.set_drawing_configurations(&self.store, configs);
+    }
+
+    fn look(&self) -> (omacharts_engine::BarColouring, bool) {
+        self.chart_look()
+    }
+
+    fn parent(&self) -> gtk::Widget {
+        self.window.clone().upcast()
     }
 }

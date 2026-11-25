@@ -156,6 +156,9 @@ pub fn step_round(at: u32, count: u32, forward: bool) -> u32 {
     }
 }
 
+/// How wide a settings dialog is: a chart's, a study's and a drawing's.
+pub const SETTINGS_WIDTH: i32 = 560;
+
 #[cfg(test)]
 mod tests {
     use super::*;

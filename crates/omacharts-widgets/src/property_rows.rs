@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use crate::ui::controls;
+use crate::controls;
 
 pub const COLOUR: &str = "Colour";
 pub const THICKNESS: &str = "Thickness";
@@ -303,7 +303,7 @@ pub fn switch_row(
 
 /// The rows of each group, by title, in the order they are laid out: what a
 /// test holds both dialogs to.
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub fn titles(group: &adw::PreferencesGroup) -> Vec<String> {
     let mut out = Vec::new();
     let mut child = group.first_child();
@@ -314,7 +314,7 @@ pub fn titles(group: &adw::PreferencesGroup) -> Vec<String> {
     out
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 fn collect_titles(widget: &gtk::Widget, out: &mut Vec<String>) {
     if let Some(row) = widget.downcast_ref::<adw::PreferencesRow>() {
         out.push(row.title().to_string());
@@ -340,7 +340,7 @@ mod tests {
     /// the colour row has no − or +.
     #[test]
     fn a_colour_rows_figure_lines_up_with_the_other_sliders() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let (transparency, _) = Transparency::new(0.3, |_| {});
             let swatch = gtk::MenuButton::new();
             let colour = colour_row("Colour", &swatch, Some(transparency));
@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn a_colour_row_carries_its_swatch_then_its_transparency() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let heard = Rc::new(Cell::new(None));
             let (transparency, show) = {
                 let heard = heard.clone();
@@ -425,7 +425,7 @@ mod tests {
             assert_eq!(order[0], swatch.clone().upcast::<gtk::Widget>(), "{order:?}");
             assert!(order[1].is::<gtk::Scale>() && order[2].is::<gtk::SpinButton>(), "{order:?}");
             let slider = order[1].clone().downcast::<gtk::Scale>().unwrap();
-            let other = crate::ui::controls::bounded_row("Width %", None, 40.0, 10.0, 100.0, 1.0, 0, |_| {});
+            let other = crate::controls::bounded_row("Width %", None, 40.0, 10.0, 100.0, 1.0, 0, |_| {});
             let mut widths = Vec::new();
             let mut stack = vec![other.row.upcast::<gtk::Widget>()];
             while let Some(widget) = stack.pop() {
