@@ -10,9 +10,11 @@
 //! automatically a compact line's worth for the price scale
 //! ([`rows::auto_ticks`]): worked out again only when the scale changes,
 //! and then kept while it still makes a comfortable row, so scrolling never
-//! makes the rows jump. Rows sit on the same grid on every bar, and are
-//! never drawn taller than a line of small type ([`ROW_MAX`]), centred on
-//! their prices, however far the chart is zoomed in.
+//! makes the rows jump. Rows sit on the same grid on every bar, and each
+//! runs from the price between it and the row below to the price between it
+//! and the row above, on whole pixels, so a bar's rows touch with no gap and
+//! no seam and the bar reads as one stacked block. Where two rows meet, their
+//! outlines are one line, not two.
 //!
 //! **Smooth.** A footprint is redrawn on every frame of a scroll and every
 //! tick, so each bar's ladder is kept once read ([`Cache`]), keyed by the
@@ -69,12 +71,15 @@ const PAD: f64 = 4.0;
 const INSIDE: f64 = 3.0;
 /// The least a row is drawn tall, in pixels: thinner, ticks fold together.
 const ROW_MIN: f64 = 3.0;
-/// The least a row is tall for its figure to be written in it.
+/// The least a row is tall for its figure to be written in it, less
+/// [`FIGURE_ROOM`].
 const FIGURE_MIN: f64 = 11.0;
-/// The tallest a row is drawn, in pixels, however tall its ticks are: a line
-/// of small type, centred on the row's prices, so a tick zoomed in a long
-/// way is still a row and never a block.
-const ROW_MAX: f64 = 15.0;
+/// What a figure leaves clear of the rows over and under it, out of its
+/// row's height: the rows touch, but the figures in them do not.
+const FIGURE_ROOM: f64 = 2.0;
+/// The least a row is tall to be outlined: thinner, the outline would be
+/// all there is of it.
+const OUTLINE_MIN: f64 = 3.0;
 /// The figures' type size, in pixels, at its largest.
 const FIGURE_SIZE: f64 = 11.0;
 /// What a figure is written with: [`rows::short`]'s characters.
@@ -725,23 +730,21 @@ fn paint(
     let with_bar = bar_drawn(state);
     let profiled = profile.is_some();
     let tick_px = (to_y(0.0) - to_y(tick_size)).abs();
-    // A row's pitch, and the height drawn in it: a gap of a pixel or two
-    // between rows, and never taller than a line of small type.
-    let pitch = tick_px * f64::from(step);
-    let gap = if pitch >= 8.0 {
-        2.0
-    } else if pitch >= 4.0 {
-        1.0
-    } else {
-        0.0
-    };
-    let row_h = (pitch - gap).clamp(1.0, ROW_MAX).round();
-    // Each row centred on the middle of its prices, on whole pixels.
-    let row_y = |low: i32| {
-        let middle = to_y((f64::from(low) + (f64::from(step) - 1.0) / 2.0) * tick_size);
-        let top = (middle - row_h / 2.0).round();
-        (top, top + row_h)
-    };
+    // A row's pitch, which is the height drawn in it: the rows of a bar
+    // touch. Each runs from half a tick under its lowest price to half a
+    // tick over its highest, rounded to whole pixels, so one row's bottom
+    // is exactly the next one's top and no pixel is filled twice or left
+    // between them.
+    let row_h = tick_px * f64::from(step);
+    let row_y = |low: i32| row_edges(low, step, tick_size, to_y);
+    // Each row's outline takes the line at its top and the one at its
+    // bottom, which is the next row's top: one side's outlines are one
+    // path, so where two rows meet the line is drawn once, as heavy as any
+    // other edge ([`outline`]).
+    let outlined = row_h >= OUTLINE_MIN;
+    // The height a figure is written to: the row's, less a little room so
+    // a figure never runs up against the next row's.
+    let figure_h = row_h - FIGURE_ROOM;
 
     // The biggest row each bar is measured against, which its rows' length
     // and strength are; and the most traded, which its profile's rows are:
@@ -769,7 +772,7 @@ fn paint(
     // A row is drawn at least as long as its figure, so the figure sits
     // inside its box however small the delta: a box round each number, the
     // bar running on past it as the delta is big.
-    let advance = figure_size(row_h) * 0.6;
+    let advance = figure_size(figure_h) * 0.6;
     let fitted = |value: i64, room: f64, largest: u64, written: bool| {
         let long = rows::length(value, room, largest);
         if !written {
@@ -779,11 +782,11 @@ fn paint(
         let text = rows::short(value, &mut buf).len() as f64 * advance + 2.0 * INSIDE;
         long.max(text.min(room)).round()
     };
-    let written = numbers && row_h >= FIGURE_MIN;
+    let written = numbers && figure_h >= FIGURE_MIN;
     let length = |delta: i64, room: f64, largest: u64| fitted(delta, room, largest, written);
     // A profile's rows, measured as the delta rows are, against the most
     // traded on screen, and written as they are.
-    let profile_written = profile.is_some_and(|p| p.numbers) && row_h >= FIGURE_MIN;
+    let profile_written = profile.is_some_and(|p| p.numbers) && figure_h >= FIGURE_MIN;
     let profile_length = |total: u64, room: f64, most: u64| fitted(total as i64, room, most, profile_written);
 
     cr.save().ok();
@@ -802,7 +805,8 @@ fn paint(
                         return;
                     }
                     let (top, bottom) = row_y(low);
-                    cr.rectangle(x, top, length(delta, room, largest), bottom - top);
+                    let (x, long) = whole(x, length(delta, room, largest));
+                    cr.rectangle(x, top, long, bottom - top);
                     any = true;
                 });
             }
@@ -826,19 +830,18 @@ fn paint(
                 if delta == 0 || (delta > 0) != buying {
                     return;
                 }
-                let (top, bottom) = row_y(low);
-                let h = bottom - top;
-                if h < 3.0 {
+                if !outlined {
                     return;
                 }
-                cr.rectangle(x + 0.5, top + 0.5, (length(delta, room, largest) - 1.0).max(0.0), h - 1.0);
+                let (top, bottom) = row_y(low);
+                let (x, long) = whole(x, length(delta, room, largest));
+                outline(cr, x, long, top, bottom);
                 any = true;
             });
         }
         if any {
-            cr.set_line_width(1.0);
             colors::set_source_alpha(cr, ink, strong.max(0.35));
-            let _ = cr.stroke();
+            let _ = cr.fill();
         }
     }
 
@@ -859,7 +862,8 @@ fn paint(
                     }
                     let (top, bottom) = row_y(low);
                     let long = profile_length(tick.total, room, most);
-                    cr.rectangle(x + room - long, top, long, bottom - top);
+                    let (x, long) = whole(x + room - long, long);
+                    cr.rectangle(x, top, long, bottom - top);
                     any = true;
                 });
             }
@@ -878,20 +882,19 @@ fn paint(
             let (x, room) = across(columns, at, with_bar, true).profile;
             let most = reference(at).total;
             cells.footprint.each_row(step, |low, tick| {
-                let (top, bottom) = row_y(low);
-                let h = bottom - top;
-                if h < 3.0 {
+                if !outlined {
                     return;
                 }
+                let (top, bottom) = row_y(low);
                 let long = profile_length(tick.total, room, most);
-                cr.rectangle(x + room - long + 0.5, top + 0.5, (long - 1.0).max(0.0), h - 1.0);
+                let (x, long) = whole(x + room - long, long);
+                outline(cr, x, long, top, bottom);
                 any = true;
             });
         }
         if any {
-            cr.set_line_width(1.0);
             colors::set_source_alpha(cr, ink, full.max(0.35));
-            let _ = cr.stroke();
+            let _ = cr.fill();
         }
     }
 
@@ -919,12 +922,12 @@ fn paint(
             let dark = (fill - ground).abs() > (fill - text).abs();
             (room - INSIDE - text_px, dark && profile_length(total as u64, room, reference.total) >= text_px + INSIDE)
         };
-        figures(cr, state, cache, (step, with_bar), Lane::Profile, columns, &row_y, &place);
+        figures(cr, state, cache, (step, with_bar), Lane::Profile, columns, (figure_h, &row_y), &place);
     }
 
     // The figures, where the rows are tall enough to read them, unless
     // they are turned off: then no text is laid out or drawn at all.
-    if numbers && row_h >= FIGURE_MIN {
+    if numbers && figure_h >= FIGURE_MIN {
         // A number goes dark where it sits wholly on a row whose fill, laid
         // over the background, is nearer the text's lightness than the
         // background's: there a light number would fade into it. Lightness
@@ -943,9 +946,43 @@ fn paint(
             let dark = (fill - ground).abs() > (fill - text).abs();
             (INSIDE, dark && long >= text_px + INSIDE)
         };
-        figures(cr, state, cache, (step, with_bar), Lane::Delta { profiled }, columns, &row_y, &place);
+        figures(cr, state, cache, (step, with_bar), Lane::Delta { profiled }, columns, (figure_h, &row_y), &place);
     }
     cr.restore().ok();
+}
+
+/// Where the row from tick `low`, `step` ticks tall, runs on screen, top
+/// and bottom: from half a tick over its highest price to half a tick under
+/// its lowest, each rounded to a whole pixel. The row above starts exactly
+/// where this one ends.
+fn row_edges(low: i32, step: u32, tick_size: f64, to_y: &impl Fn(f64) -> f64) -> (f64, f64) {
+    let bottom = to_y((f64::from(low) - 0.5) * tick_size).round();
+    let top = to_y((f64::from(low) + f64::from(step) - 0.5) * tick_size).round();
+    (top, bottom)
+}
+
+/// A row from `x`, `long` pixels long, with both its ends on whole
+/// pixels, and never shorter than one: so its fill and its outline are
+/// crisp, and two rows' outlines that meet lie over each other exactly.
+fn whole(x: f64, long: f64) -> (f64, f64) {
+    let start = x.round();
+    (start, ((x + long).round() - start).max(1.0))
+}
+
+/// Adds a row's outline to the path, a pixel wide, as filled lines rather
+/// than a stroke: the line at its top, the one at its bottom, which is the
+/// next row's top, and its two ends between them. Every edge is on a whole
+/// pixel ([`whole`]), so filled together the lines two rows share are one
+/// line, and a fill of lines on whole pixels costs a good deal less than
+/// stroking the same rectangles over each other.
+fn outline(cr: &cairo::Context, x: f64, long: f64, top: f64, bottom: f64) {
+    cr.rectangle(x, top, long, 1.0);
+    cr.rectangle(x, bottom, long, 1.0);
+    let between = bottom - top - 1.0;
+    if between > 0.0 {
+        cr.rectangle(x, top + 1.0, 1.0, between);
+        cr.rectangle(x + long - 1.0, top + 1.0, 1.0, between);
+    }
 }
 
 /// Which of a bar's rows a figure is written in.
@@ -967,12 +1004,11 @@ fn figures(
     (step, with_bar): (u32, bool),
     lane: Lane,
     columns: &Columns,
-    row_y: &impl Fn(i32) -> (f64, f64),
+    (figure_h, row_y): (f64, &impl Fn(i32) -> (f64, f64)),
     place: &impl Fn(i64, f64, f64, rows::Largest) -> (f64, bool),
 ) {
     const BATCH: usize = 256;
-    let row_h = row_y(0).1 - row_y(0).0;
-    let size = figure_size(row_h);
+    let size = figure_size(figure_h);
     use_face(cr);
     cr.set_font_size(size);
     let Some(table) = glyphs(cr) else { return };
@@ -1031,9 +1067,9 @@ fn figures(
     }
 }
 
-/// The figures' type size in a row `row_h` pixels tall.
-fn figure_size(row_h: f64) -> f64 {
-    (row_h * 0.75).clamp(8.0, FIGURE_SIZE)
+/// The figures' type size for a figure `figure_h` pixels tall.
+fn figure_size(figure_h: f64) -> f64 {
+    (figure_h * 0.75).clamp(8.0, FIGURE_SIZE)
 }
 
 /// The glyph of each of [`CHARS`], looked up once.
@@ -1246,6 +1282,53 @@ mod tests {
         }
     }
 
+    /// A bar's rows touch: each row's top is the bottom of the one above,
+    /// to the pixel, at any scale, and none is more than a pixel off its
+    /// pitch.
+    #[test]
+    fn a_bar_s_rows_touch() {
+        for (tick_px, step) in [(7.3, 2), (1.37, 9), (3.0, 1), (12.6, 1), (0.81, 25)] {
+            let tick_size = 0.25;
+            let to_y = |price: f64| 900.0 - price / tick_size * tick_px;
+            let pitch = tick_px * f64::from(step);
+            for low in (4000..4100).step_by(step as usize) {
+                let (top, bottom) = row_edges(low, step, tick_size, &to_y);
+                let (_, above_bottom) = row_edges(low + step as i32, step, tick_size, &to_y);
+                assert_eq!(above_bottom, top, "no gap and no overlap at {tick_px}px, {step} ticks");
+                assert!(((bottom - top) - pitch).abs() <= 1.0, "{top} {bottom} against {pitch}");
+            }
+        }
+    }
+
+    /// Two rows that touch share the line between them, painted once: as
+    /// strong as the top of the upper row, whatever their lengths, and their
+    /// ends land on whole pixels.
+    #[test]
+    fn the_line_two_rows_share_is_painted_once() {
+        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 60, 40).unwrap();
+        {
+            let cr = cairo::Context::new(&surface).unwrap();
+            let (x, upper) = whole(10.3, 20.4);
+            let (_, lower) = whole(10.3, 31.6);
+            assert_eq!((x, upper, lower), (10.0, 21.0, 32.0));
+            outline(&cr, x, upper, 5.0, 15.0);
+            outline(&cr, x, lower, 15.0, 25.0);
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.5);
+            cr.fill().unwrap();
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().unwrap();
+        let alpha = |x: usize, y: usize| data[y * stride + x * 4 + 3];
+        let edge = alpha(15, 5);
+        assert!(edge > 0);
+        assert_eq!(alpha(15, 15), edge, "the shared line is the same as any other");
+        assert_eq!(alpha(35, 15), edge, "past the shorter row, the longer one's top");
+        assert_eq!(alpha(15, 10), 0, "inside a row, no line");
+        assert_eq!(alpha(10, 10), edge, "a row's left end");
+        assert_eq!(alpha(30, 10), edge, "the upper row's right end");
+    }
+
     /// The footprints the volume profile beside the rows must leave as they
     /// were when it is off: numbers off, so no font is in the frame.
     fn as_before() -> Vec<(&'static str, Vec<u8>)> {
@@ -1262,14 +1345,15 @@ mod tests {
     /// A footprint with its volume profile off draws exactly what it drew
     /// before the profile was there: the same pixels, bar for bar, in every
     /// bar style, zoomed in and just wide enough. Each print was taken from
-    /// the footprint as it stood before the profile was added.
+    /// the footprint as it stood before the profile was added, and taken
+    /// again when a bar's rows were made to touch, on whole pixels.
     #[test]
     fn a_footprint_with_its_profile_off_draws_exactly_as_before() {
         let before = [
-            ("candles", 0xd861_13e3_7be1_03d3_u64),
-            ("ohlc", 0xe2d5_0520_13a9_0444),
-            ("line", 0xa34e_1a17_ac46_3877),
-            ("wide", 0x1273_edbd_fa0f_a845),
+            ("candles", 0xeeba_28b3_cdb1_5e85_u64),
+            ("ohlc", 0x2e6e_762f_cd26_6436),
+            ("line", 0xfe69_4809_ae22_e656),
+            ("wide", 0xb85c_35a9_2ada_20b9),
         ];
         for ((name, pixels), (was, print)) in as_before().into_iter().zip(before) {
             assert_eq!(name, was);

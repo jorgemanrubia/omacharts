@@ -695,38 +695,19 @@ fn the_charts_text_is_reported() {
     }
 }
 
-/// Every shipped theme's neutral stands out from its chart, near white on
-/// a dark theme and near black on a light one, is never its grid nor quite
-/// its text, and carries a tint of the theme's own rather than being a
-/// white or a black: a lavender white on Tokyo Night, a cream on Gruvbox.
+/// Every shipped theme's neutral is pure white on a dark theme and pure
+/// black on a light one, on the side of the theme's text, and stands out
+/// from its chart and its grid.
 #[test]
-fn every_shipped_theme_has_a_neutral_of_its_own() {
+fn every_shipped_theme_has_a_plain_white_or_black_neutral() {
     for (name, theme) in fixtures() {
         let neutral = theme.neutral();
-        let tone = Oklch::of(&neutral).unwrap();
         let (ground, text) = (Oklch::of(&theme.ui.background).unwrap(), Oklch::of(&theme.ui.text).unwrap());
-        if text.l > ground.l {
-            assert!(tone.l > 0.9, "{name}: {neutral} is not near white");
-        } else {
-            assert!(tone.l < 0.25, "{name}: {neutral} is not near black");
-        }
+        let wanted = if text.l > ground.l { "#ffffff" } else { "#000000" };
+        assert_eq!(neutral, wanted, "{name}");
         assert!(delta_e(&neutral, &theme.ui.background) >= 0.5, "{name}: {neutral} on {}", theme.ui.background);
         assert!(delta_e(&neutral, &theme.ui.grid) >= 0.4, "{name}: {neutral} reads as the grid {}", theme.ui.grid);
-        assert!(delta_e(&neutral, &theme.ui.text) >= 0.04, "{name}: {neutral} is the text {}", theme.ui.text);
-        // Near white the gamut leaves only a hint of chroma, but a hint of
-        // the theme's own hue, not a plain white or black.
-        assert!(tone.c >= 0.01, "{name}: {neutral} is a plain grey");
-        if text.c >= 0.015 {
-            assert!(hue_gap(tone.h, text.h) < 10.0, "{name}: {neutral} lost the hue of {}", theme.ui.text);
-        }
     }
-    let by_name = |wanted: &str| fixtures().into_iter().find(|(name, _)| name == wanted).unwrap().1;
-    let tokyo = Oklch::of(&by_name("tokyo-night").neutral()).unwrap();
-    assert!(tokyo.l > 0.95 && (250.0..300.0).contains(&tokyo.h), "tokyo-night's neutral is not a lavender white: {tokyo:?}");
-    let gruvbox = Oklch::of(&by_name("gruvbox").neutral()).unwrap();
-    assert!(gruvbox.l > 0.95 && gruvbox.c > 0.02 && (20.0..90.0).contains(&gruvbox.h), "gruvbox's neutral is not a cream: {gruvbox:?}");
-    let latte = Oklch::of(&by_name("catppuccin-latte").neutral()).unwrap();
-    assert!(latte.l < 0.2 && (250.0..300.0).contains(&latte.h), "catppuccin-latte's neutral is not a near-black blue: {latte:?}");
 }
 
 /// A neutral line drawn over the bars is its own line on every shipped

@@ -6,7 +6,7 @@ parent: indicators/order-flow
 nav_order: 3
 ---
 
-Each bar's volume at the ask less its volume at the bid, at every price it traded, drawn inside the bar. The chart's own bar narrows to the bar's left edge, in the chart's style and colours: a narrow candle, filled or hollow as the chart's are, a narrow OHLC bar, or no bar at all on a **Line** chart, where the rows take its place. Beside it each price is a row, a line of small type high, its bar as long as its delta and its number written inside it at its left, in the buying colour when more was bought there and the selling colour when more was sold. The footprint's colours are its own: changing them leaves the bars alone, and changing the chart's colours leaves the rows alone. It comes on by itself as you zoom in: once a bar is wide enough for the narrow bar and a row that holds the widest number at the figures' size, about 65 px; with **Numbers** off, once a row has room for a short bar, about 20 px. Zooming back out, it holds on a few pixels past that, so a zoom resting at the edge does not flicker, and then the chart shows its ordinary bars.
+Each bar's volume at the ask less its volume at the bid, at every price it traded, drawn inside the bar. The chart's own bar narrows to the bar's left edge, in the chart's style and colours: a narrow candle, filled or hollow as the chart's are, a narrow OHLC bar, or no bar at all on a **Line** chart, where the rows take its place. Beside it each price is a row, the rows stacked with no gap between them, each one's bar as long as its delta and its number written inside it at its left, in the buying colour when more was bought there and the selling colour when more was sold. The footprint's colours are its own: changing them leaves the bars alone, and changing the chart's colours leaves the rows alone. It comes on by itself as you zoom in: once a bar is wide enough for the narrow bar and a row that holds the widest number at the figures' size, about 65 px; with **Numbers** off, once a row has room for a short bar, about 20 px. Zooming back out, it holds on a few pixels past that, so a zoom resting at the edge does not flicker, and then the chart shows its ordinary bars.
 
 | Drawn | Legend | Type to add | CLI |
 |---|---|---|---|
@@ -18,6 +18,7 @@ A chart has one footprint. Picking **Footprint** again in the indicator picker o
 theme: midnight, the fallback when the sandboxed HOME has no Omarchy theme
 window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
 state:
+  omacharts config set providers '["fake","yahoo"]'   (before the window opens, so the Data page lists the fake feed)
   key ctrl+comma; click 267 252 (Data); click 939 222 (Sign in, Fake Rich Feed)
   click 643 419; type 12345; click 606 473; type demo; click 767 542; click 1166 91; key Escape
   omacharts chartbook create "Order flow" --symbol ES --switch; omacharts chartbook sidebar off
@@ -27,7 +28,7 @@ state:
 capture: bin/headless-window cli chart screenshot --output /tmp/footprint.png; magick /tmp/footprint.png -quality 88 site/assets/manual/indicators/footprint.jpg
 crop: none
 -->
-{% include figure.html src="/assets/manual/indicators/footprint.jpg" alt="ES one-minute bars zoomed in, each a narrow candle beside a stack of thin rows of buying minus selling, one a price, each boxed in its colour with its number inside at its left" caption="A footprint on ES 1m, zoomed in, on the synthetic feed." %}
+{% include figure.html src="/assets/manual/indicators/footprint.jpg" alt="ES one-minute bars zoomed in, each a narrow candle beside a stack of touching rows of buying minus selling, one a price, each outlined in its colour with its number inside at its left" caption="A footprint on ES 1m, zoomed in, on the synthetic feed." %}
 
 ## Settings
 
@@ -48,16 +49,16 @@ crop: none
 
 ## Rows
 
-With **Automatic rows** on, a row holds 1, 2, 4, 5, 10, 20, 25, 50 or more ticks, the fewest that make it about a line of small type tall, 16 px, at the chart's price scale. The choice is made again only when the price scale changes, and kept while its rows stay between 13 and 40 px, so scrolling and small rescales leave the rows as they are. With it off, a row holds the **Row height (ticks)** set, or a multiple of it when that would make rows under 3 px. Every bar's rows cover the same prices. However far the chart is zoomed in, a row is never drawn taller than a line of small type: it is centred on its prices with a gap of a pixel or two to the next. A row's number is written inside it at its left, even when its bar is shorter than the number. It is left out once the rows are under 11 px tall, and written short past a thousand: **1.2K**, **-35K**, **2.5M**. With **Numbers** off, none is written and the rows' lengths and shades carry the delta alone, which also makes each frame cheaper to draw.
+With **Automatic rows** on, a row holds 1, 2, 4, 5, 10, 20, 25, 50 or more ticks, the fewest that make it about a line of small type tall, 16 px, at the chart's price scale. The choice is made again only when the price scale changes, and kept while its rows stay between 13 and 40 px, so scrolling and small rescales leave the rows as they are. With it off, a row holds the **Row height (ticks)** set, or a multiple of it when that would make rows under 3 px. Every bar's rows cover the same prices. A row runs from the price halfway to the row below to the price halfway to the row above, so a bar's rows touch and the bar reads as one stacked block, and zoomed in a row grows with its prices. A row's number is written inside it at its left, even when its bar is shorter than the number. It is left out once the rows are under 11 px tall, and written short past a thousand: **1.2K**, **-35K**, **2.5M**. With **Numbers** off, none is written and the rows' lengths and shades carry the delta alone, which also makes each frame cheaper to draw.
 
 ## Volume profile
 
-With **Volume profile** on, each bar also shows everything that traded at each of its rows, sides or not: at_bid plus at_ask, and any volume whose side the feed did not say. The profile takes the left of the bar's column, each row ending against the narrow bar and as long as its total, and the narrow bar and the delta rows move right to make room, the two sides sharing the column half and half. Its rows are the delta rows' own: the same ticks to a row, the same height, gaps and grid, the same outline, and with **Shade by delta** on the same five strengths. A row's length and strength are measured against the most traded row of the same bars a delta row's are measured against ([Size against](#size-against)): on screen, unless set otherwise. Its total is written inside it, against the narrow bar, in the type the deltas are written in and written short the same way, dark on a row solid enough to need it. Its colour says nothing of up or down: one swatch, the theme's **Blue** unless another is picked, following the theme as it changes, at 55% at its strongest so it stays quieter than the deltas.
+With **Volume profile** on, each bar also shows everything that traded at each of its rows, sides or not: at_bid plus at_ask, and any volume whose side the feed did not say. The profile takes the left of the bar's column, each row ending against the narrow bar and as long as its total, and the narrow bar and the delta rows move right to make room, the two sides sharing the column half and half. Its rows are the delta rows' own: the same ticks to a row, the same height and grid, the same outline, and with **Shade by delta** on the same five strengths. A row's length and strength are measured against the most traded row of the same bars a delta row's are measured against ([Size against](#size-against)): on screen, unless set otherwise. Its total is written inside it, against the narrow bar, in the type the deltas are written in and written short the same way, dark on a row solid enough to need it. Its colour says nothing of up or down: one swatch, the theme's **Blue** unless another is picked, following the theme as it changes, at 55% at its strongest so it stays quieter than the deltas.
 
 A footprint with its profile needs room for both sides, so it comes on at about twice the bar width: about 130 px with both sides' numbers, less with either turned off. A chart with a footprint on can be zoomed in to four bars across, rather than twelve, to give it that room. With **Volume profile** off, nothing of it is drawn or measured and the footprint is exactly as it was.
 
 <!-- regenerate:
-as the footprint picture above, then:
+as the footprint picture above, with two more notches (scroll 1000 400 -2, eleven times), then:
   omacharts chart indicator set footprint --profile on
 capture: bin/headless-window cli chart screenshot --output /tmp/footprint-profile.png; magick /tmp/footprint-profile.png -quality 88 site/assets/manual/indicators/footprint-profile.jpg
 then:
@@ -71,7 +72,7 @@ crop: none
 
 ## Shade by delta
 
-With **Shade by delta** on, a row is filled more solidly the bigger its delta, in five steps from faint up to its colour's opacity. The strongest is measured against the biggest delta the row's length is measured against ([Size against](#size-against)), so a row's length and its strength say the same thing. Against the rows on screen, the default, scrolling to a busier stretch makes the rest fainter. Each row keeps a thin outline in its own colour, so a faint row is still seen. In **Monochrome** every row is the one colour, so a strength says only how big a delta is, and the minus sign in a row's number says which way it went.
+With **Shade by delta** on, a row is filled more solidly the bigger its delta, in five steps from faint up to its colour's opacity. The strongest is measured against the biggest delta the row's length is measured against ([Size against](#size-against)), so a row's length and its strength say the same thing. Against the rows on screen, the default, scrolling to a busier stretch makes the rest fainter. Each row keeps a thin outline in its own colour, so a faint row is still seen. Where two rows meet, the line between them is drawn once. In **Monochrome** every row is the one colour, so a strength says only how big a delta is, and the minus sign in a row's number says which way it went.
 
 ## Size against
 

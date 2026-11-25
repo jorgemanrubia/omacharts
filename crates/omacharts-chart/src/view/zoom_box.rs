@@ -8,13 +8,17 @@
 //! scale — held, because a scale that went on fitting the bars would throw
 //! the band away the moment it was drawn.
 //!
+//! The box is drawn either of the two ways a rectangle is: pressed, dragged
+//! and let go, or clicked at one corner, followed by the pointer, and
+//! clicked at the other.
+//!
 //! Every zoom remembers where the chart was looking first, and stepping back
 //! puts each back in turn. The memory is the series': a view kept on one
 //! symbol or resolution is in bars and prices another does not have, so it
 //! is forgotten when either changes, and when the chart is reset to how it
 //! opens. It is not stored, as the view itself is not.
 
-use super::{layout, price_range, State, MAX_VISIBLE};
+use super::{layout, price_range, Drag, State, MAX_VISIBLE};
 
 /// How many views back the chart remembers. Far more than anybody steps
 /// back through; there only so a session of zooming cannot grow it forever.
@@ -65,6 +69,42 @@ impl State {
         let low = scale.price_at(y1, plan.price_y, plan.price_h);
         let prices = (low.is_finite() && high.is_finite() && low < high).then_some((low, high));
         Some(ZoomWindow { left: column(x0), right: column(x1), prices })
+    }
+
+    /// A press on the price plot with the zoom tool in hand: a box starts,
+    /// from the corner a click left waiting if there is one, and from here
+    /// if not.
+    pub(super) fn zoom_press(&mut self, at: (f64, f64)) {
+        let from = self.zoom_corner.unwrap_or(at);
+        self.drag = Some(Drag::Zoom { from, to: at });
+    }
+
+    /// The hand lets go of the box from `from` to `to` on a chart `width` by
+    /// `height`, having `travelled` past the drag threshold or not. A box big
+    /// enough to be one is zoomed to and the tool put down. A press let go in
+    /// place, with no corner waiting, leaves that corner waiting for a second
+    /// click. Anything else — a sliver, or a second click on the first
+    /// corner — does nothing, and the tool stays in hand, as does any corner
+    /// already waiting. Says whether it zoomed.
+    pub(super) fn zoom_release(
+        &mut self,
+        width: f64,
+        height: f64,
+        from: (f64, f64),
+        to: (f64, f64),
+        travelled: bool,
+        least: f64,
+    ) -> bool {
+        let window = self.zoom_box(width, height, from, to, least);
+        if window.is_some_and(|window| self.zoom_to(window)) {
+            self.zoom_armed = false;
+            self.zoom_corner = None;
+            return true;
+        }
+        if !travelled && self.zoom_corner.is_none() {
+            self.zoom_corner = Some(from);
+        }
+        false
     }
 
     /// The window from the bar at `from` to the bar at `to`, both of them
@@ -237,6 +277,89 @@ mod tests {
         assert_eq!(state.zoom_box(W, H, a, (a.0 + 200.0, a.1 + 2.0), 4.0), None, "wide but flat");
         assert_eq!(state.zoom_box(W, H, a, (a.0 + 2.0, a.1 + 200.0), 4.0), None, "tall but thin");
         assert_eq!(charted(0).zoom_box(W, H, a, (a.0 + 200.0, a.1 + 200.0), 4.0), None, "nothing charted");
+    }
+
+    /// Pressed at `from` and let go at `to`, as the gesture does it: the
+    /// press, then the release with whether the hand travelled.
+    fn click_or_drag(state: &mut State, from: (f64, f64), to: (f64, f64)) -> bool {
+        state.zoom_press(from);
+        let Some(Drag::Zoom { from, .. }) = state.drag.take() else { panic!("no box in hand") };
+        let travelled = (to.0 - from.0).hypot(to.1 - from.1) > 8.0;
+        state.zoom_release(W, H, from, to, travelled, 8.0)
+    }
+
+    fn armed(count: usize) -> State {
+        let mut state = charted(count);
+        state.zoom_armed = true;
+        state
+    }
+
+    #[test]
+    fn a_drag_zooms_and_puts_the_tool_down() {
+        let mut state = armed(300);
+        let (a, b) = (pixel(&state, 220.0, 104.0), pixel(&state, 250.0, 96.0));
+        assert!(click_or_drag(&mut state, a, b));
+        assert_eq!((shown(&state).0, shown(&state).1), (220, 30));
+        assert!(!state.zoom_armed);
+        assert_eq!(state.zoom_corner, None, "a drag leaves no corner waiting");
+    }
+
+    #[test]
+    fn a_click_leaves_a_corner_and_a_second_click_zooms_to_the_box() {
+        let mut state = armed(300);
+        let (a, b) = (pixel(&state, 220.0, 104.0), pixel(&state, 250.0, 96.0));
+        assert!(!click_or_drag(&mut state, a, a), "one click zooms nothing");
+        assert_eq!(state.zoom_corner, Some(a));
+        assert!(state.zoom_armed, "the tool stays in hand for the second click");
+        assert_eq!(state.zooms_back(), 0);
+
+        assert!(click_or_drag(&mut state, b, b));
+        let (left, columns, held) = shown(&state);
+        assert_eq!((left, columns), (220, 30));
+        let (low, high) = held.unwrap();
+        assert!((low - 96.0).abs() < 1e-9 && (high - 104.0).abs() < 1e-9, "{low} {high}");
+        assert!(!state.zoom_armed, "put down once it has zoomed, as a drag does");
+        assert_eq!(state.zoom_corner, None);
+    }
+
+    #[test]
+    fn a_click_that_moves_a_little_is_still_a_click() {
+        let mut state = armed(300);
+        let a = pixel(&state, 220.0, 104.0);
+        assert!(!click_or_drag(&mut state, a, (a.0 + 3.0, a.1 + 3.0)));
+        assert_eq!(state.zoom_corner, Some(a), "the corner is where it was pressed");
+    }
+
+    #[test]
+    fn a_second_click_on_the_first_corner_or_in_line_with_it_does_nothing() {
+        let mut state = armed(300);
+        let a = pixel(&state, 220.0, 104.0);
+        let opened = state.viewport();
+        click_or_drag(&mut state, a, a);
+        assert!(!click_or_drag(&mut state, (a.0 + 2.0, a.1 + 2.0), (a.0 + 2.0, a.1 + 2.0)), "a tiny box");
+        assert!(!click_or_drag(&mut state, (a.0 + 200.0, a.1 + 2.0), (a.0 + 200.0, a.1 + 2.0)), "wide but flat");
+        assert_eq!(state.viewport(), opened, "the view is as it was");
+        assert_eq!(state.zooms_back(), 0);
+        assert!(state.zoom_armed);
+        assert_eq!(state.zoom_corner, Some(a), "still waiting on the first corner");
+    }
+
+    #[test]
+    fn a_drag_too_small_to_be_a_box_leaves_no_corner() {
+        let mut state = armed(300);
+        let a = pixel(&state, 220.0, 104.0);
+        assert!(!click_or_drag(&mut state, a, (a.0 + 200.0, a.1 + 2.0)));
+        assert_eq!(state.zoom_corner, None, "a drag is not a click, as it never was");
+        assert!(state.zoom_armed);
+    }
+
+    #[test]
+    fn a_drag_after_a_click_starts_at_the_waiting_corner() {
+        let mut state = armed(300);
+        let (a, b) = (pixel(&state, 220.0, 104.0), pixel(&state, 250.0, 96.0));
+        click_or_drag(&mut state, a, a);
+        state.zoom_press((b.0 - 30.0, b.1));
+        assert!(matches!(state.drag, Some(Drag::Zoom { from, .. }) if from == a));
     }
 
     #[test]

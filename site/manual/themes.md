@@ -8,17 +8,19 @@ nav_order: 25
 A theme is the set of colours the window is drawn in. It includes the palette, the named colours that indicators and drawings use. On an Omarchy desktop the window follows the desktop theme and changes with it.
 
 <!-- regenerate:
-theme: tokyo-night, everforest, catppuccin-latte, gruvbox (one capture each, the desktop theme switched between them)
-window: 2560x1600 @2, $SP/kit/hw
+theme: omarchy:tokyo-night (crates/omacharts-engine/tests/fixtures/omarchy/tokyo-night.toml copied to $HOME/.config/omarchy/themes/tokyo-night/colors.toml)
+window: 2800x1800 @2, bin/headless-window start (fresh session, HOME sandboxed)
 state:
-  omacharts chart set --symbol NVDA --resolution 1D
+  omacharts config set providers '["fake","yahoo"]'; app --provider fake; sign in to the fake feed (Preferences, Data)
+  a chart of ES 1m on the fake feed
   omacharts chart indicator add sma --period 50 --color Amber
-  omacharts chart indicator add ema --period 21 --color Blue
-  omacharts chart indicator add rsi
-  move 1270 790
-  for each theme: $SP/kit/theme THEME; sleep 4
-capture: bin/headless-window cli chart screenshot --output /tmp/theme-THEME.png   (four, joined 2x2 with magick +append/-append, resized to 1600 wide)
-crop: none
+  move 700 450
+  key ctrl+i              # twice: a fresh window swallows its first chord
+  click 579 410          # the SMA 50 row
+  click 569 323          # its Colour swatch
+  move 1300 800
+capture: bin/headless-window shot /tmp/picker.png
+crop: 1112x688+841+503, the Line group and the palette with a margin round both
 -->
 {% include figure.html src="/assets/manual/themes/four-themes.jpg" alt="The same NVDA daily chart under four desktop themes" caption="The same chart under Tokyo Night, Everforest, Catppuccin Latte and Gruvbox." %}
 
@@ -118,7 +120,7 @@ The palette is the theme's named colours for indicators and drawings. An indicat
 
 An indicator added without a colour gets the next of Blue, Amber, Violet, Teal, Orange and Cyan not already on the chart. After six they repeat. Green and Rose are never given automatically, but you can pick them.
 
-**Neutral** is near white on a dark theme and near black on a light theme, so it stands out from the candles at a glance. It is never quite the theme's text, and it keeps a hint of the theme's own hue rather than being a plain white or black: a lavender white on Tokyo Night, a cream on Gruvbox. It suits outlines, profiles and lines that should read plainly without taking a colour. It comes from the theme's text, or its background or accent when the text is a plain grey, so it has no row in the theme editor, and like the rest of the palette it changes with the theme. It is never given automatically.
+**Neutral**, the palette's last colour, is pure white on a dark theme and pure black on a light theme, so it stands out from the candles at a glance. It suits outlines, profiles and lines that should read plainly without taking a colour. Which of the two it is follows the theme's text, so it has no row in the theme editor, and like the rest of the palette it changes with the theme. It is never given automatically.
 
 ### The palette picker
 
