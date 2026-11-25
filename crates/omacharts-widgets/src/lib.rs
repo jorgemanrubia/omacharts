@@ -11,6 +11,8 @@
 //! - [`strip`]: a chart's row of resolutions.
 //! - [`pick_frame`]: the frame those pickers are drawn in.
 //! - [`shortcuts`]: what the keys do, in one table.
+//! - [`indicator_settings`]: the indicators on a chart, the picker that
+//!   adds one and each one's settings, over an [`indicator_settings::Host`].
 //! - [`drawing_settings`]: a drawing's properties and a kind's nine
 //!   configurations, over a [`drawing_settings::Host`]; built from
 //!   [`property_rows`], [`profile_rows`], [`colouring_rows`], [`palette`],
@@ -24,6 +26,8 @@ pub mod controls;
 pub mod dialogs;
 pub mod drawing_bar;
 pub mod drawing_settings;
+pub mod drop_line;
+pub mod indicator_settings;
 pub mod inventory;
 pub mod menus;
 pub mod palette;

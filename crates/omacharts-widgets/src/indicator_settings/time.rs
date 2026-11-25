@@ -84,21 +84,14 @@ fn change_range(owner: &Rc<Owner>, refresh: &Refresh, id: u32, at: usize, edit: 
 /// The app's clock, as the focused chart reads it. A template's editor has no
 /// chart, so it reads the setting with no exchange to fall back on.
 fn clock(owner: &Owner) -> (Tz, TimeFormat) {
-    let store = owner.app.store();
-    let instrument = match owner.template {
-        None => owner.app.focused_market().map(|(instrument, _)| instrument),
-        Some(_) => None,
-    };
-    (crate::clock::zone(store).for_instrument(instrument.as_ref()), crate::clock::format(store))
+    owner.host.clock()
 }
 
-/// The exchange the focused chart's instrument trades on, and whether the
-/// chart keeps regular hours only. Nothing for a template, which is no chart.
 fn market(owner: &Owner) -> Option<(Schedule<'static>, Session)> {
     if owner.template.is_some() {
         return None;
     }
-    let (instrument, session) = owner.app.focused_market()?;
+    let (instrument, session) = owner.host.market()?;
     Some((exchanges::registry().for_instrument(&instrument)?, session))
 }
 
@@ -207,7 +200,7 @@ fn range_group(
         owner,
         refresh,
         &Ink::new(String::new),
-        crate::ui::property_rows::COLOUR,
+        crate::property_rows::COLOUR,
         &shown,
         range.color.clone(),
         move |indicator, choice| {
@@ -375,7 +368,7 @@ fn add_group(
             let owner = owner.clone();
             let refresh = refresh.clone();
             let rebuild = rebuild.clone();
-            crate::ui::menus::Item::new(preset.label(), move || {
+            crate::menus::Item::new(preset.label(), move || {
                 change(&owner, &refresh, id, |ranges| ranges.push(preset.range()));
                 let rebuild = rebuild.clone();
                 glib::idle_add_local_once(move || rebuild());
@@ -391,7 +384,7 @@ fn add_group(
     button.add_css_class("flat");
     button.set_valign(gtk::Align::Center);
     button.set_tooltip_text(Some("Add a range"));
-    crate::ui::menus::actions(&button, "range", items);
+    crate::menus::actions(&button, "range", items);
     row.add_suffix(&button);
     row.set_activatable_widget(Some(&button));
     group.add(&row);

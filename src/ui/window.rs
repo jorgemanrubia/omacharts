@@ -9960,7 +9960,7 @@ impl Window {
 
     /// The indicator picker, centred like every other picker in the app.
     pub fn add_indicator(self: &Rc<Self>) {
-        crate::ui::chart_settings::add_indicator(self);
+        crate::ui::chart_settings::add_indicator(std::rc::Rc::new(crate::ui::chart_settings::WindowHost { app: self.clone(), template: None }));
     }
 
     /// Re-fold and repaint what is on screen, after something that changes

@@ -10,6 +10,7 @@ omacharts-engine = { path = "../omacharts-engine", default-features = false }
 omacharts-chart = { path = "../omacharts-chart" }
 adw = { version = "0.9.2", package = "libadwaita", features = ["v1_5"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde"] }
+chrono-tz = "0.10.4"
 gtk = { version = "0.11.5", package = "gtk4", features = ["v4_10"] }
 pangocairo = "0.22"
 
