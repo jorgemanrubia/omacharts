@@ -32,8 +32,13 @@ if [ "$1" = --fork ]; then
   # caller's `$(...)` then waits on for ever.
   dbus-daemon --session --print-address=3 --print-pid=4 --fork \
     3>"$dir/bus-address" 4>"$dir/bus-pid" >/dev/null 2>&1 </dev/null
+  # What the bus starts shows on the hidden display, not the owner's: the
+  # portal opens dialogs of its own (an "Open With…" for a link nothing
+  # handles), and it would otherwise inherit the display this was started
+  # from. An absolute path, so the runtime directory can stay the owner's.
   DBUS_SESSION_BUS_ADDRESS=$(cat "$dir/bus-address") \
-    dbus-update-activation-environment XDG_CURRENT_DESKTOP=gtk
+    dbus-update-activation-environment XDG_CURRENT_DESKTOP=gtk \
+      WAYLAND_DISPLAY="$dir/wayland-1" DISPLAY= GDK_BACKEND=wayland
   exit
 fi
 
