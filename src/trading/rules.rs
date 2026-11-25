@@ -168,13 +168,17 @@ pub fn exit_offered<'a>(orders: impl IntoIterator<Item = &'a Order>, net: i32, k
     net != 0 && covered < net.unsigned_abs()
 }
 
-/// What an exit of `qty` filled at `price` would realise, closing a
-/// position of `net` held at `avg`, a point worth `point`: long gains as
-/// the price is above its average, short as it is below. An exit larger
-/// than the position closes only the position.
-pub fn exit_pnl(avg: f64, net: i32, qty: u32, point: f64, price: f64) -> f64 {
-    let closed = f64::from(qty.min(net.unsigned_abs()));
-    (price - avg) * f64::from(net.signum()) * closed * point
+/// What the whole of a position of `net` held at `avg`, a point worth
+/// `point`, makes or loses if the price gets to `price`: long gains as the
+/// price is above its average, short as it is below.
+///
+/// This is what an exit on a chart says, whatever the exit itself closes,
+/// because it is what an order template's exits in money and in R mean: a
+/// stop at 1R loses 1R on the whole order, a target at 2R makes twice it.
+/// An exit that said only what its own contracts realise would read a
+/// 1R stop on a 2-lot, split into two stops of one, as -0.50R each.
+pub fn pnl_at(avg: f64, net: i32, point: f64, price: f64) -> f64 {
+    (price - avg) * f64::from(net) * point
 }
 
 /// Does an order of `side` and `kind` close some of a position of `net`?
@@ -409,24 +413,69 @@ mod tests {
     use crate::trading::fake::tests::*;
     use crate::trading::fake::*;
 
-    /// An exit's P&L: ES at $50 a point, NQ at $20, long and short, its
-    /// target and its stop, and an exit closing part of the position.
+    /// An exit's P&L is the whole position's at its price: ES at $50 a
+    /// point, NQ at $20, long and short, its target and its stop.
     #[test]
-    fn an_exit_realises_its_distance_from_the_average() {
+    fn an_exit_says_the_whole_position_s_pnl_at_its_price() {
         // Long 2 ES at 7,600: a target 5 points up is +$500, a stop 2.5
         // points down -$250.
-        assert_eq!(exit_pnl(7_600.0, 2, 2, 50.0, 7_605.0), 500.0);
-        assert_eq!(exit_pnl(7_600.0, 2, 2, 50.0, 7_597.5), -250.0);
+        assert_eq!(pnl_at(7_600.0, 2, 50.0, 7_605.0), 500.0);
+        assert_eq!(pnl_at(7_600.0, 2, 50.0, 7_597.5), -250.0);
         // Short 3 NQ at 25,000: a target 10 points down is +$600, a stop
         // 4 points up -$240.
-        assert_eq!(exit_pnl(25_000.0, -3, 3, 20.0, 24_990.0), 600.0);
-        assert_eq!(exit_pnl(25_000.0, -3, 3, 20.0, 25_004.0), -240.0);
-        // A partial exit: 1 of a long 3 ES, 4 points up.
-        assert_eq!(exit_pnl(7_600.0, 3, 1, 50.0, 7_604.0), 200.0);
-        // An exit bigger than the position closes only the position.
-        assert_eq!(exit_pnl(7_600.0, 1, 5, 50.0, 7_604.0), 200.0);
+        assert_eq!(pnl_at(25_000.0, -3, 20.0, 24_990.0), 600.0);
+        assert_eq!(pnl_at(25_000.0, -3, 20.0, 25_004.0), -240.0);
         // At the average, nothing.
-        assert_eq!(exit_pnl(7_600.0, 1, 1, 50.0, 7_600.0), 0.0);
+        assert_eq!(pnl_at(7_600.0, 1, 50.0, 7_600.0), 0.0);
+    }
+
+    /// The exits an order template makes, read back on the position they
+    /// protect, say what the template says: a 1R stop -1R, targets at 2R
+    /// and 4R +2R and +4R, however many contracts, long or short, and
+    /// whatever share of the position each target closes.
+    #[test]
+    fn a_template_s_exits_read_back_in_r_as_the_template_says() {
+        use crate::trading::chart_pnl::r_text;
+        use crate::trading::order_templates::{bracket, Distance, Exit, OrderTemplate, Size, Worth};
+        let template = OrderTemplate {
+            id: 1,
+            name: "Default".into(),
+            targets: vec![
+                Exit { distance: Distance::R(2.0), size: Size::Share(1, 2) },
+                Exit { distance: Distance::R(4.0), size: Size::ALL },
+            ],
+            stops: vec![Exit { distance: Distance::R(1.0), size: Size::ALL }],
+        };
+        // ES at $12.50 a tick, R at $250 and at $500: every distance a
+        // whole number of ticks on each quantity below, so nothing rounds.
+        for r in [250.0, 500.0] {
+            let worth = Worth { tick: 0.25, point: Some(50.0), r };
+            for qty in [1u32, 2, 4, 5] {
+                let exits = bracket(&template, qty, worth).expect("a bracket");
+                for side in [Side::Buy, Side::Sell] {
+                    let net = if side == Side::Buy { qty as i32 } else { -(qty as i32) };
+                    let (targets, stops) = exits.prices(side, 6_000.0, 0.25);
+                    let read = |price: f64| r_text(pnl_at(6_000.0, net, 50.0, price), r);
+                    let stops: Vec<String> = stops.iter().map(|(_, price)| read(*price)).collect();
+                    assert_eq!(stops, ["-1.00R"], "{qty} {side:?} at R {r}");
+                    let targets: Vec<String> = targets.iter().map(|(_, price)| read(*price)).collect();
+                    // A 1-lot has no half to take off: the rest is the 4R.
+                    let want: &[&str] = if qty == 1 { &["+4.00R"] } else { &["+2.00R", "+4.00R"] };
+                    assert_eq!(targets, want, "{qty} {side:?} at R {r}");
+                }
+            }
+        }
+        // A 3-lot at R $250: $37.50 a tick, so 1R is 6 ticks, $225, 2R 13
+        // and 4R 26, each rounded toward the fill so that none risks or
+        // asks for more than the template says; 1/2 of 3 is 1, the rest 2.
+        let worth = Worth { tick: 0.25, point: Some(50.0), r: 250.0 };
+        let exits = bracket(&template, 3, worth).expect("a bracket");
+        let (targets, stops) = exits.prices(Side::Sell, 6_000.0, 0.25);
+        let read = |legs: &[(u32, f64)]| {
+            legs.iter().map(|(qty, price)| (*qty, r_text(pnl_at(6_000.0, -3, 50.0, *price), 250.0))).collect::<Vec<_>>()
+        };
+        assert_eq!(read(&stops), [(3, "-0.90R".to_string())]);
+        assert_eq!(read(&targets), [(1, "+1.95R".to_string()), (2, "+3.90R".to_string())]);
     }
 
     /// Only a limit or a stop on the closing side is an exit.

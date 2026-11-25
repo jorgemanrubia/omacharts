@@ -767,6 +767,76 @@ mod tests {
         });
     }
 
+    /// Shown in R, the exits a template's order goes with read on the
+    /// chart what the template says, however many contracts and either
+    /// way: the stop at 1R -1.00R, the targets at 2R and 4R +2.00R and
+    /// +4.00R, though each target closes only part of the position.
+    #[test]
+    fn a_template_s_exits_read_on_the_chart_in_the_r_it_says() {
+        crate::ui::on_gtk(|| {
+            use crate::trading::chart_pnl::{self, Display};
+            let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
+            let default = OrderTemplate {
+                id: 4,
+                name: "Default".into(),
+                targets: vec![
+                    Exit { distance: Distance::R(2.0), size: Size::Share(1, 2) },
+                    Exit { distance: Distance::R(4.0), size: Size::ALL },
+                ],
+                stops: vec![Exit { distance: Distance::R(1.0), size: Size::ALL }],
+            };
+            templates::save(&window.store, &[default]);
+            // ES at $12.50 a tick: at $375, 1R, 2R and 4R are whole ticks on
+            // 1, 2, 3 and 5 contracts alike, so nothing is rounded.
+            window.store.set_setting(chart_pnl::R_AMOUNT, "375");
+            chart_pnl::save_display(&window.store, Display::Risk);
+            window.adopt_pnl_display();
+            window.adopt_order_templates();
+            window.pick_order_template(pane.id, Some(4));
+            let free = || {
+                let free = window.trade.placing.begin(&key).is_ok();
+                if free {
+                    window.trade.placing.done(&key);
+                }
+                free
+            };
+            let net = || session.book().position("951", "ESZ6").map_or(0, |held| held.net);
+            // Each exit's words on the chart, from the lowest price up.
+            let exits = || {
+                let mut marks = pane.view.mark_states().1;
+                marks.sort_by(|a, b| a.1.total_cmp(&b.1));
+                marks.into_iter().map(|(words, ..)| words).collect::<Vec<_>>()
+            };
+            let r_of = |words: &str| words.split_whitespace().find(|word| word.ends_with('R')).map(str::to_string);
+            for qty in [1u32, 2, 3, 5] {
+                for side in [Side::Buy, Side::Sell] {
+                    // Flat, with nothing working, before each order.
+                    session.cancel_all("951").unwrap();
+                    if net() != 0 {
+                        session.flatten("951", "ESZ6", "CME").unwrap();
+                    }
+                    window.desk.tell();
+                    assert!(wait(&window, || net() == 0 && pane.view.mark_states().0.is_none()), "not flat");
+                    assert!(wait(&window, free), "the last order never answered");
+                    window.pick_size(pane.id, qty as usize);
+                    assert_eq!(window.size_of(&pane).get(), qty, "the futures sizes run 1 to 9");
+                    window.market_on(&pane, side);
+                    let legs = if qty == 1 { 2 } else { 3 };
+                    assert!(wait(&window, || exits().len() == legs), "{qty} {side:?}: {:?}", exits());
+                    let read: Vec<Option<String>> = exits().iter().map(|words| r_of(words)).collect();
+                    let r = |text: &str| Some(text.to_string());
+                    let want = match (side, qty) {
+                        (Side::Buy, 1) => vec![r("-1.00R"), r("+4.00R")],
+                        (Side::Sell, 1) => vec![r("+4.00R"), r("-1.00R")],
+                        (Side::Buy, _) => vec![r("-1.00R"), r("+2.00R"), r("+4.00R")],
+                        (Side::Sell, _) => vec![r("+4.00R"), r("+2.00R"), r("-1.00R")],
+                    };
+                    assert_eq!(read, want, "{qty} {side:?}: {:?}", exits());
+                }
+            }
+        });
+    }
+
     /// A template given to a working limit, from its right click or a key
     /// on it picked out, sends it again as a bracket, the template's name
     /// beside it on the chart; No template sends it again plain.
