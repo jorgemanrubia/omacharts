@@ -215,6 +215,23 @@ has the reasoning.
 
 ### And its own compositor, when the run needs to be driven
 
+**Nothing an agent runs may open a window on the maintainer's screen.** Not
+a test, not a trial launch of the app, not for a second. The suite builds
+real windows, and run straight from a shell they appear on the desktop the
+maintainer is working at, take focus and stop them working. So:
+
+- `cargo test` (any crate that builds a widget: the app, `omacharts-chart`,
+  `omacharts-widgets`) and every launch of the app go through
+  `bin/headless-window run …` or `bin/headless-window app`, never bare.
+- `eval "$(bin/headless-window start)"` only says where the session is; it
+  does **not** move the shell onto the hidden display. A bare `cargo test`
+  after it still runs on the maintainer's screen. Only `run`, `app`, `cli`
+  and the input verbs load the hidden session's environment.
+- Stop the session when done (`bin/headless-window stop`), and leave
+  nothing running behind it.
+- The one exception is the maintainer asking, in so many words, for the app
+  to be opened for them.
+
 A window that has to be typed into, clicked on and photographed needs a
 third thing nobody has: a screen. This desktop has one monitor and somebody
 is using it, so a test window either takes it or sits unfocused, and an
