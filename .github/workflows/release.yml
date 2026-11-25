@@ -145,7 +145,17 @@ jobs:
             pacman-key --init
             pacman-key --populate
             sed -i "s/^DownloadUser/#DownloadUser/" /etc/pacman.conf
-            pacman -Syu --noconfirm --needed base-devel git rust gtk4 libadwaita
+            # The tools makepkg and a Rust build need, not all of base-devel.
+            # Arch Linux ARM has published indexes naming files none of its
+            # mirrors have yet, so when the full upgrade cannot download,
+            # install only these and the versions of what they depend on:
+            # the build needs nothing else to be current. The libraries GTK builds on
+            # are named because its headers want newer ones than its package
+            # says it depends on.
+            tools="binutils debugedit fakeroot file gcc make pkgconf git rust
+              gtk4 libadwaita glib2 pango cairo harfbuzz gdk-pixbuf2 graphene"
+            pacman -Syu --noconfirm --needed $tools ||
+              pacman -S --noconfirm --needed $tools
             # makepkg refuses to run as root, which is all a container has.
             useradd -m builder
             cp packaging/aur/PKGBUILD /home/builder/
