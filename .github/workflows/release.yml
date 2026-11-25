@@ -145,7 +145,12 @@ jobs:
             pacman-key --init
             pacman-key --populate
             sed -i "s/^DownloadUser/#DownloadUser/" /etc/pacman.conf
-            pacman -Syu --noconfirm --needed base-devel git rust gtk4 libadwaita
+            # The tools makepkg and a Rust build need, not all of base-devel:
+            # Arch Linux ARM has published indexes naming files its mirrors do
+            # not have yet (flex, once), and every package not installed is
+            # one fewer that can fail to download.
+            pacman -Syu --noconfirm --needed binutils debugedit fakeroot file \
+              gcc make pkgconf git rust gtk4 libadwaita
             # makepkg refuses to run as root, which is all a container has.
             useradd -m builder
             cp packaging/aur/PKGBUILD /home/builder/
