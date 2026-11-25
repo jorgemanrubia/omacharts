@@ -1523,6 +1523,7 @@ name = "omacharts-widgets"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "chrono-tz",
  "gtk4",
  "libadwaita",
  "omacharts-chart",

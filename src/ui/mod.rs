@@ -7,12 +7,11 @@ pub use omacharts_chart::{colors, text};
 /// The pieces around the chart are a crate of their own too, so that a
 /// program embedding the chart can have them; here under their old names.
 pub use omacharts_widgets::{
-    colouring_rows, controls, dialogs, drawing_bar, drawing_settings, menus, palette, pick_frame, profile_rows, property_rows,
+    colouring_rows, controls, dialogs, drawing_bar, drawing_settings, drop_line, menus, palette, pick_frame, profile_rows, property_rows,
     range_card, search, shortcuts, strip,
 };
 pub mod book_templates;
 pub mod chart_settings;
-pub mod drop_line;
 pub mod notice;
 pub mod order_entry;
 pub mod order_templates;
