@@ -87,7 +87,7 @@ equity	ACCL	Acco Group Holdings Limited	-	USD	2	0	-	NASDAQ	1
 equity	ACCO	Acco Brands Corporation	-	USD	2	0	-	NYSE	2
 equity	ACCS	ACCESS Newswire Inc.	-	USD	2	0	-	NYSE American	1
 equity	ACCV	Accelevation Holdings Corp.	-	USD	2	0	-	NASDAQ	3
-equity	ACDC	ProFrac Holding Corp.	-	USD	2	0	-	NASDAQ	2
+equity	ACDC	ProFrac Holding Corp.	-	USD	2	0	-	NASDAQ	3
 etf	ACEI	Innovator Equity Autocallable Income Strategy ETF	-	USD	2	0	-	NYSE Arca	2
 equity	ACEL	Accel Entertainment, Inc.	-	USD	2	0	-	NYSE	3
 etf	ACEM	American Century Emerging Markets Insights ETF	-	USD	2	0	-	NASDAQ	-
@@ -101,7 +101,7 @@ etf	ACGO	Hartford Alpha Capture Growth ETF	-	USD	2	0	-	Cboe BZX	2
 etf	ACGR	American Century Large Cap Growth ETF	-	USD	2	0	-	NYSE Arca	-
 equity	ACHC	Acadia Healthcare Company, Inc.	-	USD	2	0	-	NASDAQ	4
 etf	ACHP	Global X Asia Semiconductor ETF	-	USD	2	0	-	NASDAQ	-
-equity	ACHR	Archer Aviation Inc. Class A	-	USD	2	0	-	NYSE	3
+equity	ACHR	Archer Aviation Inc. Class A	-	USD	2	0	-	NYSE	4
 etf	ACHX	Corgi ACHR 2x Daily ETF	-	USD	2	0	-	Cboe BZX	1
 equity	ACI	Albertsons Companies, Inc. Class A	-	USD	2	0	-	NYSE	4
 equity	ACIC	American Coastal Insurance Corporation	-	USD	2	0	-	NASDAQ	2
@@ -183,7 +183,7 @@ etf	ADPV	Adaptiv Select ETF	-	USD	2	0	-	NYSE Arca	2
 equity	ADRX	ADARx Pharmaceuticals, Inc.	-	USD	2	0	-	NASDAQ	3
 equity	ADSE	ADS-TEC ENERGY PLC	-	USD	2	0	-	NASDAQ	3
 equity	ADSK	Autodesk, Inc.	-	USD	2	0	-	NASDAQ	6
-equity	ADT	ADT Inc.	-	USD	2	0	-	NYSE	5
+equity	ADT	ADT Inc.	-	USD	2	0	-	NYSE	4
 equity	ADTN	ADTRAN Holdings, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	ADUR	Aduro Clean Technologies Inc.	-	USD	2	0	-	NASDAQ	2
 equity	ADUS	Addus HomeCare Corporation	-	USD	2	0	-	NASDAQ	3
@@ -202,7 +202,7 @@ equity	AEHL	Antelope Enterprise Holdings Limited	-	USD	2	0	-	NASDAQ	2
 equity	AEHR	Aehr Test Systems	-	USD	2	0	-	NASDAQ	3
 equity	AEI	Alset Inc.	-	USD	2	0	-	NASDAQ	1
 equity	AEIS	Advanced Energy Industries, Inc.	-	USD	2	0	-	NASDAQ	5
-equity	AEM	Agnico Eagle Mines Limited	-	USD	2	0	-	NYSE	6
+equity	AEM	Agnico Eagle Mines Limited	-	USD	2	0	-	NYSE	7
 etf	AEMC	Harbor AlphaEdge Mid Cap Core ETF	-	USD	2	0	-	NYSE Arca	-
 equity	AEMD	Aethlon Medical, Inc.	-	USD	2	0	-	NASDAQ	1
 etf	AEMG	Harbor AlphaEdge Mid Cap Growth ETF	-	USD	2	0	-	NYSE Arca	-
@@ -246,7 +246,7 @@ equity	AFYA	Afya Limited	-	USD	2	0	-	NASDAQ	3
 equity	AG	First Majestic Silver Corp. Ordinary Shares (Canada)	-	USD	2	0	-	NYSE	4
 equity	AGBK	AGI Inc Class A Common Shares	-	USD	2	0	-	NYSE	3
 equity	AGCC	Agencia Comercial Spirits Ltd	-	USD	2	0	-	NASDAQ	2
-equity	AGCO	AGCO Corporation	-	USD	2	0	-	NYSE	4
+equity	AGCO	AGCO Corporation	-	USD	2	0	-	NYSE	5
 equity	AGD	abrdn Global Dynamic Dividend Fund Common Shares of Beneficial Interest	-	USD	2	0	-	NYSE	-
 etf	AGEM	abrdn Emerging Markets Dividend Active ETF	-	USD	2	0	-	NASDAQ	1
 equity	AGEN	Agenus Inc.	-	USD	2	0	-	NASDAQ	2
@@ -274,7 +274,7 @@ etf	AGNG	Global X Aging Population ETF	-	USD	2	0	-	NASDAQ	-
 equity	AGNT	AGNT, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	AGO	Assured Guaranty Ltd.	-	USD	2	0	-	NYSE	4
 etf	AGOX	Adaptive Alpha Opportunities ETF	-	USD	2	0	-	NYSE Arca	2
-equity	AGPU	Axe Compute Inc.	-	USD	2	0	-	NASDAQ	1
+equity	AGPU	Axe Compute Inc.	-	USD	2	0	-	NASDAQ	2
 etf	AGQ	ProShares Ultra Silver	-	USD	2	0	-	NYSE Arca	6
 etf	AGQI	First Trust Active Global Quality Income ETF	-	USD	2	0	-	NYSE Arca	-
 equity	AGRO	Adecoagro S.A. Common Shares	-	USD	2	0	-	NYSE	3
@@ -443,7 +443,7 @@ equity	AMAT	Applied Materials, Inc.	-	USD	2	0	-	NASDAQ	8
 etf	AMAU	Leverage Shares 2X Long AMAT Daily ETF	-	USD	2	0	-	Cboe BZX	4
 etf	AMAX	Adaptive Hedged Multi-Asset Income ETF	-	USD	2	0	-	NYSE Arca	2
 equity	AMBA	Ambarella, Inc.	-	USD	2	0	-	NASDAQ	3
-equity	AMBO	Ambow Education Holding Ltd. American Depository Shares (each representing twenty (20) Class A Ordinary Shares)	-	USD	2	0	-	NYSE American	1
+equity	AMBO	Ambow Education Holding Ltd. American Depository Shares (each representing twenty (20) Class A Ordinary Shares)	-	USD	2	0	-	NYSE American	2
 equity	AMBP	Ardagh Metal Packaging S.A.	-	USD	2	0	-	NYSE	4
 equity	AMBQ	Ambiq Micro, Inc.	-	USD	2	0	-	NYSE	3
 equity	AMC	AMC Entertainment Holdings, Inc. Class A	-	USD	2	0	-	NYSE	4
@@ -487,7 +487,7 @@ equity	AMR	Alpha Metallurgical Resources, Inc.	-	USD	2	0	-	NYSE	3
 equity	AMRC	Ameresco, Inc. Class A	-	USD	2	0	-	NYSE	3
 equity	AMRO	Amaero Inc.	-	USD	2	0	-	NASDAQ	2
 equity	AMRX	Amneal Pharmaceuticals, Inc.	-	USD	2	0	-	NASDAQ	5
-equity	AMRZ	Amrize Ltd	-	USD	2	0	-	NYSE	5
+equity	AMRZ	Amrize Ltd	-	USD	2	0	-	NYSE	6
 equity	AMS	American Shared Hospital Services	-	USD	2	0	-	NYSE American	1
 equity	AMSC	American Superconductor Corporation	-	USD	2	0	-	NASDAQ	3
 equity	AMSF	AMERISAFE, Inc.	-	USD	2	0	-	NASDAQ	2
@@ -519,7 +519,7 @@ equity	ANDE	The Andersons, Inc.	-	USD	2	0	-	NASDAQ	3
 equity	ANDG	Andersen Group Inc. Class A	-	USD	2	0	-	NYSE	4
 etf	ANEL	Defiance Daily Target 2x Long ANET ETF	-	USD	2	0	-	NASDAQ	2
 equity	ANET	Arista Networks, Inc.	-	USD	2	0	-	NYSE	8
-equity	ANF	Abercrombie & Fitch Company	-	USD	2	0	-	NYSE	4
+equity	ANF	Abercrombie & Fitch Company	-	USD	2	0	-	NYSE	5
 etf	ANG	Corgi FTSE Fallen Angels Bond ETF	-	USD	2	0	-	Cboe BZX	1
 equity	ANGH	Anghami Inc.	-	USD	2	0	-	NASDAQ	1
 equity	ANGI	Angi Inc.	-	USD	2	0	-	NASDAQ	2
@@ -647,7 +647,7 @@ equity	ARDC	Ares Dynamic Credit Allocation Fund, Inc. Common Shares	-	USD	2	0	-	
 equity	ARDT	Ardent Health, Inc.	-	USD	2	0	-	NYSE	3
 equity	ARDX	Ardelyx, Inc.	-	USD	2	0	-	NASDAQ	3
 equity	ARE	Alexandria Real Estate Equities, Inc.	-	USD	2	0	-	NYSE	5
-equity	AREC	American Resources Corporation	-	USD	2	0	-	NASDAQ	2
+equity	AREC	American Resources Corporation	-	USD	2	0	-	NASDAQ	1
 equity	ARES	Ares Management Corporation Class A	-	USD	2	0	-	NYSE	6
 etf	ARGT	Global X MSCI Argentina ETF	-	USD	2	0	-	NYSE Arca	5
 equity	ARHS	Arhaus, Inc.	-	USD	2	0	-	NASDAQ	3
@@ -994,7 +994,7 @@ etf	BBBS	BondBloxx BBB Rated 1-5 Year Corporate Bond ETF	-	USD	2	0	-	NYSE Arca	2
 etf	BBC	Virtus Biotech Clinical Trials ETF	-	USD	2	0	-	NYSE Arca	-
 etf	BBCA	JPMorgan BetaBuilders Canada ETF	-	USD	2	0	-	Cboe BZX	7
 etf	BBCB	JPMorgan BetaBuilders USD Investment Grade Corporate Bond ETF	-	USD	2	0	-	Cboe BZX	3
-equity	BBCI	Bradbury Capital Inc.	-	USD	2	0	-	NASDAQ	1
+equity	BBCI	Bradbury Capital Inc.	-	USD	2	0	-	NASDAQ	2
 equity	BBCP	Concrete Pumping Holdings, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	BBDC	Barings BDC, Inc.	-	USD	2	0	-	NYSE	3
 etf	BBEM	JPMorgan BetaBuilders Emerging Markets Equity ETF	-	USD	2	0	-	Cboe BZX	4
@@ -1037,7 +1037,7 @@ equity	BCAL	California BanCorp	-	USD	2	0	-	NASDAQ	3
 equity	BCAT	BlackRock Capital Allocation Term Trust Common Shares of Beneficial Interest	-	USD	2	0	-	NYSE	3
 equity	BCAX	Bicara Therapeutics Inc.	-	USD	2	0	-	NASDAQ	3
 equity	BCBP	BCB Bancorp, Inc. (NJ)	-	USD	2	0	-	NASDAQ	2
-equity	BCC	Boise Cascade, L.L.C.	-	USD	2	0	-	NYSE	3
+equity	BCC	Boise Cascade, L.L.C.	-	USD	2	0	-	NYSE	4
 etf	BCCC	Global X Bitcoin Covered Call ETF	-	USD	2	0	-	Cboe BZX	2
 equity	BCCQ	Bleichroeder Acquisition Corp. III	-	USD	2	0	-	NASDAQ	-
 etf	BCD	abrdn Bloomberg All Commodity Longer Dated Strategy K-1 Free ETF	-	USD	2	0	-	NYSE Arca	3
@@ -1084,11 +1084,11 @@ etf	BDEC	Innovator U.S. Equity Buffer ETF	-	USD	2	0	-	Cboe BZX	2
 etf	BDGS	Bridges Capital Tactical ETF	-	USD	2	0	-	NASDAQ	-
 etf	BDIV	AAM Brentview Dividend Growth ETF	-	USD	2	0	-	NYSE Arca	-
 equity	BDJ	Blackrock Enhanced Equity Dividend Trust	-	USD	2	0	-	NYSE	3
-equity	BDL	Flanigan's Enterprises, Inc.	-	USD	2	0	-	NYSE American	2
+equity	BDL	Flanigan's Enterprises, Inc.	-	USD	2	0	-	NYSE American	1
 equity	BDMD	Baird Medical Investment Holdings Ltd	-	USD	2	0	-	NASDAQ	1
 equity	BDN	Brandywine Realty Trust	-	USD	2	0	-	NYSE	2
 etf	BDRY	Breakwave Dry Bulk Shipping ETF	-	USD	2	0	-	NYSE Arca	2
-equity	BDSX	Biodesix, Inc.	-	USD	2	0	-	NASDAQ	1
+equity	BDSX	Biodesix, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	BDTX	Black Diamond Therapeutics, Inc.	-	USD	2	0	-	NASDAQ	1
 etf	BDVG	IMGP Berkshire Dividend Growth ETF	-	USD	2	0	-	NYSE Arca	2
 etf	BDVL	iShares Disciplined Volatility Equity Active ETF	-	USD	2	0	-	NASDAQ	4
@@ -1107,7 +1107,7 @@ etf	BEEX	The Beehive ETF	-	USD	2	0	-	NASDAQ	-
 etf	BEEZ	Honeytree U.S. Equity ETF	-	USD	2	0	-	NASDAQ	1
 etf	BEG	Leverage Shares 2x Long BE Daily ETF	-	USD	2	0	-	NASDAQ	4
 etf	BEGS	Rareview 2x Bull Cryptocurrency & Precious Metals ETF	-	USD	2	0	-	Cboe BZX	1
-equity	BELFA	Bel Fuse Inc.	-	USD	2	0	-	NASDAQ	3
+equity	BELFA	Bel Fuse Inc.	-	USD	2	0	-	NASDAQ	4
 equity	BELFB	Bel Fuse Inc.	-	USD	2	0	-	NASDAQ	4
 etf	BEMB	iShares J.P. Morgan Broad USD Emerging Markets Bond ETF	-	USD	2	0	-	Cboe BZX	2
 etf	BEMD	BNY Mellon Emerging Markets Debt ETF	-	USD	2	0	-	Cboe BZX	1
@@ -1138,7 +1138,7 @@ etf	BFIX	Build Bond Innovation ETF	-	USD	2	0	-	NYSE Arca	-
 etf	BFJA	FT Vest Bitcoin Strategy Floor15 ETF	-	USD	2	0	-	NYSE Arca	-
 etf	BFJL	FT Vest Bitcoin Strategy Floor15 ETF July	-	USD	2	0	-	NYSE Arca	-
 etf	BFLB	BufferLABS US Equity Dynamic Buffer ETF	-	USD	2	0	-	Cboe BZX	2
-equity	BFLR	BlueFlare, Inc.	-	USD	2	0	-	NASDAQ	-
+equity	BFLR	BlueFlare, Inc.	-	USD	2	0	-	NASDAQ	1
 etf	BFLX	iShares Flexible Equity Active ETF	-	USD	2	0	-	NASDAQ	5
 equity	BFLY	Butterfly Network, Inc. Class A	-	USD	2	0	-	NYSE	3
 etf	BFOC	FT Vest Bitcoin Strategy Floor15 ETF	-	USD	2	0	-	NYSE Arca	-
@@ -1252,7 +1252,7 @@ etf	BKCH	Global X Blockchain ETF	-	USD	2	0	-	NASDAQ	3
 etf	BKCI	BNY Mellon Concentrated International ETF	-	USD	2	0	-	NYSE Arca	-
 equity	BKD	Brookdale Senior Living Inc.	-	USD	2	0	-	NYSE	3
 etf	BKDV	BNY Mellon Dynamic Value ETF	-	USD	2	0	-	NYSE Arca	4
-equity	BKE	Buckle, Inc. (The)	-	USD	2	0	-	NYSE	4
+equity	BKE	Buckle, Inc. (The)	-	USD	2	0	-	NYSE	3
 etf	BKEM	BNY Mellon Emerging Markets Equity ETF	-	USD	2	0	-	NYSE Arca	2
 etf	BKF	iShares MSCI BIC ETF	-	USD	2	0	-	NYSE Arca	3
 etf	BKFI	BNY Mellon Active Core Bond ETF	-	USD	2	0	-	NYSE Arca	2
@@ -1838,7 +1838,7 @@ etf	CEFZ	RiverNorth Active Income ETF	-	USD	2	0	-	Cboe BZX	3
 equity	CEG	Constellation Energy Corporation	-	USD	2	0	-	NASDAQ	7
 etf	CEGX	Tradr 2X Long CEG Daily ETF	-	USD	2	0	-	Cboe BZX	3
 equity	CELC	Celcuity Inc.	-	USD	2	0	-	NASDAQ	4
-equity	CELH	Celsius Holdings, Inc.	-	USD	2	0	-	NASDAQ	4
+equity	CELH	Celsius Holdings, Inc.	-	USD	2	0	-	NASDAQ	5
 equity	CELU	Celularity Inc.	-	USD	2	0	-	NASDAQ	1
 equity	CELZ	Creative Medical Technology Holdings, Inc.	-	USD	2	0	-	NASDAQ	1
 etf	CEMB	iShares J.P. Morgan EM Corporate Bond ETF	-	USD	2	0	-	Cboe BZX	4
@@ -2076,7 +2076,7 @@ equity	CMPS	COMPASS Pathways Plc	-	USD	2	0	-	NASDAQ	3
 equity	CMPX	Compass Therapeutics, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	CMRC	Commerce.com, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	CMRE	Costamare Inc. Common Stock $0.0001 par value	-	USD	2	0	-	NYSE	3
-equity	CMS	CMS Energy Corporation	-	USD	2	0	-	NYSE	6
+equity	CMS	CMS Energy Corporation	-	USD	2	0	-	NYSE	5
 equity	CMT	Core Molding Technologies Inc	-	USD	2	0	-	NYSE American	2
 equity	CMTG	Claros Mortgage Trust, Inc.	-	USD	2	0	-	NYSE	2
 equity	CMTL	Comtech Telecommunications Corp.	-	USD	2	0	-	NASDAQ	1
@@ -2175,7 +2175,7 @@ etf	CORD	T-REX 2X Inverse CRWV Daily Target ETF	-	USD	2	0	-	Cboe BZX	7
 etf	CORN	Teucrium Corn Fund ETV	-	USD	2	0	-	NYSE Arca	3
 etf	CORO	iShares International Country Rotation Active ETF	-	USD	2	0	-	NASDAQ	6
 etf	CORP	PIMCO Investment Grade Corporate Bond Exchange-Traded Fund	-	USD	2	0	-	NYSE Arca	4
-equity	CORT	Corcept Therapeutics Incorporated	-	USD	2	0	-	NASDAQ	5
+equity	CORT	Corcept Therapeutics Incorporated	-	USD	2	0	-	NASDAQ	4
 equity	CORZ	Core Scientific, Inc.	-	USD	2	0	-	NASDAQ	4
 equity	COSM	Cosmos Health Inc.	-	USD	2	0	-	NASDAQ	1
 equity	COSO	CoastalSouth Bancshares, Inc.	-	USD	2	0	-	NYSE	2
@@ -2488,7 +2488,7 @@ equity	DAN	Dana Incorporated	-	USD	2	0	-	NYSE	3
 etf	DANA	Dana Limited Volatility ETF	-	USD	2	0	-	NYSE Arca	-
 etf	DAPP	VanEck Digital Transformation ETF	-	USD	2	0	-	NASDAQ	4
 etf	DAPR	FT Vest U.S. Equity Deep Buffer ETF	-	USD	2	0	-	Cboe BZX	1
-equity	DAR	Darling Ingredients Inc.	-	USD	2	0	-	NYSE	4
+equity	DAR	Darling Ingredients Inc.	-	USD	2	0	-	NYSE	5
 equity	DARE	Dare Bioscience, Inc.	-	USD	2	0	-	NASDAQ	1
 etf	DARP	Grizzle Growth ETF	-	USD	2	0	-	NYSE Arca	1
 equity	DASH	DoorDash, Inc.	-	USD	2	0	-	NASDAQ	6
@@ -2617,7 +2617,7 @@ etf	DFAW	Dimensional World Equity ETF	-	USD	2	0	-	NYSE Arca	4
 etf	DFAX	Dimensional World ex U.S. Core Equity 2 ETF	-	USD	2	0	-	NYSE Arca	6
 etf	DFCA	Dimensional California Municipal Bond ETF	-	USD	2	0	-	NYSE Arca	4
 etf	DFCF	Dimensional Core Fixed Income ETF	-	USD	2	0	-	NYSE Arca	5
-equity	DFDV	DeFi Development Corp.	-	USD	2	0	-	NASDAQ	1
+equity	DFDV	DeFi Development Corp.	-	USD	2	0	-	NASDAQ	2
 etf	DFE	WisdomTree Europe SmallCap Dividend Fund	-	USD	2	0	-	NYSE Arca	-
 etf	DFEB	FT Vest U.S. Equity Deep Buffer ETF	-	USD	2	0	-	Cboe BZX	3
 etf	DFEM	Dimensional Emerging Markets Core Equity 2 ETF	-	USD	2	0	-	NYSE Arca	6
@@ -3579,7 +3579,7 @@ equity	FDX	FedEx Corporation	-	USD	2	0	-	NYSE	6
 equity	FDXF	FedEx Freight Holding Company, Inc.	-	USD	2	0	-	NYSE	5
 equity	FE	FirstEnergy Corp.	-	USD	2	0	-	NYSE	6
 etf	FEAC	Fidelity Enhanced U.S. All-Cap Equity ETF	-	USD	2	0	-	NYSE Arca	-
-equity	FEAM	5E Advanced Materials, Inc.	-	USD	2	0	-	NASDAQ	1
+equity	FEAM	5E Advanced Materials, Inc.	-	USD	2	0	-	NASDAQ	2
 etf	FEBM	FT Vest U.S. Equity Max Buffer ETF	-	USD	2	0	-	Cboe BZX	2
 equity	FEBO	Fenbo Holdings Limited	-	USD	2	0	-	NASDAQ	1
 etf	FEBP	PGIM S&P 500 Buffer 12 ETF	-	USD	2	0	-	Cboe BZX	1
@@ -3853,7 +3853,7 @@ equity	FNKO	Funko, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	FNLC	First Bancorp, Inc (ME)	-	USD	2	0	-	NASDAQ	2
 etf	FNOV	FT Vest U.S. Equity Buffer ETF	-	USD	2	0	-	Cboe BZX	4
 equity	FNRN	First Northern Community Bancorp	-	USD	2	0	-	NASDAQ	2
-equity	FNUC	Frontier Nuclear and Minerals Inc.	-	USD	2	0	-	NASDAQ	1
+equity	FNUC	Frontier Nuclear and Minerals Inc.	-	USD	2	0	-	NASDAQ	2
 equity	FNV	Franco-Nevada Corporation	-	USD	2	0	-	NYSE	6
 equity	FNWB	First Northwest Bancorp	-	USD	2	0	-	NASDAQ	1
 equity	FNWD	Finward Bancorp	-	USD	2	0	-	NASDAQ	2
@@ -3938,7 +3938,7 @@ etf	FSIG	First Trust Limited Duration Investment Grade Corporate ETF	-	USD	2	0	-
 equity	FSK	FS KKR Capital Corp.	-	USD	2	0	-	NYSE	4
 equity	FSLR	First Solar, Inc.	-	USD	2	0	-	NASDAQ	5
 equity	FSLY	Fastly, Inc.	-	USD	2	0	-	NASDAQ	4
-equity	FSM	Fortuna Mining Corp. Common Shares	-	USD	2	0	-	NYSE	3
+equity	FSM	Fortuna Mining Corp. Common Shares	-	USD	2	0	-	NYSE	4
 etf	FSMB	First Trust Short Duration Managed Municipal ETF	-	USD	2	0	-	NYSE Arca	2
 etf	FSMD	Fidelity Small-Mid Multifactor ETF	-	USD	2	0	-	NYSE Arca	4
 etf	FSML	Franklin Small Cap Enhanced ETF	-	USD	2	0	-	NYSE Arca	-
@@ -4196,7 +4196,7 @@ equity	GEVO	Gevo, Inc.	-	USD	2	0	-	NASDAQ	2
 etf	GEVX	Tradr 2X Long GEV Daily ETF	-	USD	2	0	-	Cboe BZX	4
 etf	GEW	Cambria Global EW ETF	-	USD	2	0	-	NASDAQ	-
 equity	GF	New Germany Fund, Inc. (The)	-	USD	2	0	-	NYSE	-
-equity	GFAI	Guardforce AI Co., Limited	-	USD	2	0	-	NASDAQ	2
+equity	GFAI	Guardforce AI Co., Limited	-	USD	2	0	-	NASDAQ	1
 etf	GFEB	FT Vest U.S. Equity Moderate Buffer ETF	-	USD	2	0	-	Cboe BZX	2
 equity	GFF	Griffon Corporation	-	USD	2	0	-	NYSE	4
 equity	GFL	GFL Environmental Inc. Subordinate voting shares, no par value	-	USD	2	0	-	NYSE	5
@@ -4258,7 +4258,7 @@ equity	GJH	Synthetic Fixed-Income Securities Inc 6.375% (STRATS) Cl A-1	-	USD	2	
 equity	GJO	Synthetic Fixed-Income Securities, Inc. on behalf of STRATS(SM) Trust for Wal-Mart Stores, Inc. Securities, Series 2004-5	-	USD	2	0	-	NYSE	-
 equity	GJP	Synthetic Fixed-Income Securities, Inc. on behalf of STRATS (SM) Trust for Dominion Resources, Inc. Securities, Series 2005-6, Floating Rate Structured Repackaged Asset-Backed Trust Securities (STRATS) Certificates	-	USD	2	0	-	NYSE	-
 equity	GJR	Synthetic Fixed-Income Securities, Inc. STRATS Trust for Procter&Gamble Securities, Series 2006-1	-	USD	2	0	-	NYSE	-
-equity	GJS	Goldman Sachs Group Securities STRATS Trust for Goldman Sachs Group Securities, Series 2006-2	-	USD	2	0	-	NYSE	5
+equity	GJS	Goldman Sachs Group Securities STRATS Trust for Goldman Sachs Group Securities, Series 2006-2	-	USD	2	0	-	NYSE	4
 equity	GJT	Synthetic Fixed-Income Securities, Inc. Floating Rate Structured Repackaged Asset-Backed Trust Securities Certificates, Series 2006-3	-	USD	2	0	-	NYSE	-
 etf	GJUL	FT Vest U.S. Equity Moderate Buffer ETF	-	USD	2	0	-	Cboe BZX	1
 etf	GJUN	FT Vest U.S. Equity Moderate Buffer ETF	-	USD	2	0	-	Cboe BZX	2
@@ -4598,7 +4598,7 @@ equity	HCAI	Huachen AI Parking Management Technology Holding Co., Ltd.	-	USD	2	0
 equity	HCAT	Health Catalyst, Inc	-	USD	2	0	-	NASDAQ	2
 equity	HCC	Warrior Met Coal, Inc.	-	USD	2	0	-	NYSE	4
 equity	HCHL	Happy City Holdings Limited	-	USD	2	0	-	NASDAQ	-
-equity	HCI	HCI Group, Inc.	-	USD	2	0	-	NYSE	4
+equity	HCI	HCI Group, Inc.	-	USD	2	0	-	NYSE	3
 equity	HCIC	Hennessy Capital Investment Corp. VIII	-	USD	2	0	-	NASDAQ	-
 equity	HCKT	The Hackett Group, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	HCMA	HCM III Acquisition Corp.	-	USD	2	0	-	NASDAQ	2
@@ -4804,13 +4804,13 @@ equity	HTFL	Heartflow, Inc.	-	USD	2	0	-	NASDAQ	4
 equity	HTGC	Hercules Capital, Inc.	-	USD	2	0	-	NYSE	4
 equity	HTH	Hilltop Holdings Inc.	-	USD	2	0	-	NYSE	3
 equity	HTLD	Heartland Express, Inc.	-	USD	2	0	-	NASDAQ	3
-equity	HTLM	HomesToLife Ltd	-	USD	2	0	-	NASDAQ	1
+equity	HTLM	HomesToLife Ltd	-	USD	2	0	-	NASDAQ	2
 equity	HTO	H2O America	-	USD	2	0	-	NASDAQ	4
 equity	HTOO	Fusion Fuel Green PLC	-	USD	2	0	-	NASDAQ	1
 etf	HTRB	Hartford Total Return Bond ETF	-	USD	2	0	-	NYSE Arca	4
 etf	HTUS	Hull Tactical US ETF	-	USD	2	0	-	Cboe BZX	3
 equity	HTZ	Hertz Global Holdings, Inc	-	USD	2	0	-	NASDAQ	2
-equity	HUBB	Hubbell Inc	-	USD	2	0	-	NYSE	5
+equity	HUBB	Hubbell Inc	-	USD	2	0	-	NYSE	6
 equity	HUBC	Hub Cyber Security Ltd.	-	USD	2	0	-	NASDAQ	1
 equity	HUBG	Hub Group, Inc.	-	USD	2	0	-	NASDAQ	3
 equity	HUBS	HubSpot, Inc.	-	USD	2	0	-	NYSE	5
@@ -4823,7 +4823,7 @@ equity	HUMA	Humacyte, Inc.	-	USD	2	0	-	NASDAQ	2
 etf	HUMM	800VDC AI Datacenter Ecosystem ETF	-	USD	2	0	-	NYSE Arca	-
 etf	HUMN	Roundhill Humanoid Robotics ETF	-	USD	2	0	-	Cboe BZX	5
 equity	HUN	Huntsman Corporation	-	USD	2	0	-	NYSE	3
-equity	HURA	TuHURA Biosciences, Inc.	-	USD	2	0	-	NASDAQ	2
+equity	HURA	TuHURA Biosciences, Inc.	-	USD	2	0	-	NASDAQ	1
 equity	HURC	Hurco Companies, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	HURN	Huron Consulting Group Inc.	-	USD	2	0	-	NASDAQ	4
 etf	HUSV	First Trust Horizon Managed Volatility Domestic ETF	-	USD	2	0	-	NYSE Arca	-
@@ -5810,7 +5810,7 @@ equity	KNTK	Kinetik Holdings Inc. Class A	-	USD	2	0	-	NYSE	5
 equity	KNX	Knight-Swift Transportation Holdings Inc.	-	USD	2	0	-	NYSE	5
 equity	KO	Coca-Cola Company (The)	-	USD	2	0	-	NYSE	8
 etf	KOCT	Innovator U.S. Small Cap Power Buffer ETF	-	USD	2	0	-	Cboe BZX	3
-equity	KOD	Kodiak Sciences Inc	-	USD	2	0	-	NASDAQ	5
+equity	KOD	Kodiak Sciences Inc	-	USD	2	0	-	NASDAQ	4
 equity	KODK	Eastman Kodak Company Common New	-	USD	2	0	-	NYSE	3
 etf	KOID	KraneShares Global Humanoid Robotics and Physical AI Index ETF	-	USD	2	0	-	NASDAQ	4
 etf	KOKU	Xtrackers MSCI Kokusai Equity ETF	-	USD	2	0	-	NYSE Arca	-
@@ -6161,7 +6161,7 @@ etf	LSAT	LeaderShares AlphaFactor Tactical Focused ETF	-	USD	2	0	-	NYSE Arca	-
 equity	LSBK	Lake Shore Bancorp, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	LSCC	Lattice Semiconductor Corporation	-	USD	2	0	-	NASDAQ	5
 etf	LSCP	Natixis Loomis Sayles Dynamic Core Plus ETF	-	USD	2	0	-	NYSE Arca	1
-equity	LSE	Leishen Energy Holding Co., Ltd.	-	USD	2	0	-	NASDAQ	1
+equity	LSE	Leishen Energy Holding Co., Ltd.	-	USD	2	0	-	NASDAQ	2
 etf	LSEQ	Harbor Long-Short Equity ETF	-	USD	2	0	-	NYSE Arca	-
 equity	LSF	Laird Superfood, Inc.	-	USD	2	0	-	NYSE American	1
 etf	LSGR	Natixis Loomis Sayles Focused Growth ETF	-	USD	2	0	-	NYSE Arca	3
@@ -6207,7 +6207,7 @@ equity	LVLU	Lulu's Fashion Lounge Holdings, Inc.	-	USD	2	0	-	NASDAQ	1
 equity	LVO	LiveOne, Inc.	-	USD	2	0	-	NASDAQ	1
 equity	LVS	Las Vegas Sands Corp.	-	USD	2	0	-	NYSE	6
 equity	LVWR	LiveWire Group, Inc.	-	USD	2	0	-	NYSE	2
-equity	LW	Lamb Weston Holdings, Inc.	-	USD	2	0	-	NYSE	5
+equity	LW	Lamb Weston Holdings, Inc.	-	USD	2	0	-	NYSE	4
 equity	LWAC	LightWave Acquisition Corp.	-	USD	2	0	-	NASDAQ	-
 equity	LWAY	Lifeway Foods, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	LWLG	Lightwave Logic, Inc.	-	USD	2	0	-	NASDAQ	2
@@ -6588,7 +6588,7 @@ etf	MOAT	VanEck Morningstar Wide Moat ETF	-	USD	2	0	-	Cboe BZX	7
 equity	MOB	Mobilicom Limited	-	USD	2	0	-	NASDAQ	1
 equity	MOBI	Mobia Medical, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	MOBX	Mobix Labs, Inc.	-	USD	2	0	-	NASDAQ	1
-equity	MOD	Modexus Solutions, Inc.	-	USD	2	0	-	NYSE	4
+equity	MOD	Modexus Solutions, Inc.	-	USD	2	0	-	NYSE	5
 equity	MODD	Modular Medical, Inc.	-	USD	2	0	-	NASDAQ	1
 etf	MODL	VictoryShares WestEnd U.S. Sector ETF	-	USD	2	0	-	NASDAQ	1
 equity	MOG.A	Moog Inc. Class A	-	USD	2	0	-	NYSE	-
@@ -6714,7 +6714,7 @@ equity	MTAL	Metals Acquisition Corp. II Class A	-	USD	2	0	-	NYSE	3
 etf	MTAW	Meta AI Lab Ecosystem ETF	-	USD	2	0	-	NYSE Arca	-
 equity	MTB	M&T Bank Corporation	-	USD	2	0	-	NYSE	6
 etf	MTBA	Simplify MBS ETF	-	USD	2	0	-	NYSE Arca	3
-equity	MTC	MMTec, Inc.	-	USD	2	0	-	NASDAQ	3
+equity	MTC	MMTec, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	MTCH	Match Group, Inc.	-	USD	2	0	-	NASDAQ	5
 equity	MTD	Mettler-Toledo International, Inc.	-	USD	2	0	-	NYSE	6
 equity	MTDR	Matador Resources Company	-	USD	2	0	-	NYSE	4
@@ -6782,7 +6782,7 @@ etf	MVLL	GraniteShares 2x Long MRVL Daily ETF	-	USD	2	0	-	NASDAQ	5
 etf	MVPA	Miller Value Partners Appreciation ETF	-	USD	2	0	-	NYSE	1
 etf	MVPL	Miller Value Partners Leverage ETF	-	USD	2	0	-	NYSE Arca	-
 etf	MVRL	ETRACS Monthly Pay 1.5X Leveraged Mortgage REIT ETN	-	USD	2	0	-	NYSE Arca	-
-equity	MVST	Microvast Holdings, Inc.	-	USD	2	0	-	NASDAQ	1
+equity	MVST	Microvast Holdings, Inc.	-	USD	2	0	-	NASDAQ	2
 etf	MVV	ProShares Ultra MidCap400	-	USD	2	0	-	NYSE Arca	4
 equity	MWA	MUELLER WATER PRODUCTS	-	USD	2	0	-	NYSE	4
 equity	MWG	Multi Ways Holdings Limited Class A	-	USD	2	0	-	NYSE American	1
@@ -6939,7 +6939,7 @@ etf	NELS	Nelson Select ETF	-	USD	2	0	-	Cboe BZX	4
 equity	NEM	Newmont Corporation	-	USD	2	0	-	NYSE	7
 etf	NEMD	Neuberger Emerging Markets Debt Hard Currency ETF	-	USD	2	0	-	NYSE Arca	3
 equity	NEO	NeoGenomics, Inc.	-	USD	2	0	-	NASDAQ	3
-equity	NEOG	Neogen Corporation	-	USD	2	0	-	NASDAQ	4
+equity	NEOG	Neogen Corporation	-	USD	2	0	-	NASDAQ	3
 equity	NEON	Neonode Inc.	-	USD	2	0	-	NASDAQ	1
 equity	NEOV	NeoVolta Inc.	-	USD	2	0	-	NASDAQ	2
 equity	NEPH	Nephros, Inc.	-	USD	2	0	-	NASDAQ	1
@@ -7098,7 +7098,7 @@ etf	NRES	Xtrackers RREEF Global Natural Resources ETF	-	USD	2	0	-	NASDAQ	-
 equity	NRG	NRG Energy, Inc.	-	USD	2	0	-	NYSE	5
 etf	NRGD	MicroSectors U.S. Big Oil -3 Inverse Leveraged ETNs due February 17, 2045	-	USD	2	0	-	NYSE Arca	1
 etf	NRGU	MicroSectors U.S. Big Oil 3 Leveraged ETNs due February 17, 2045	-	USD	2	0	-	NYSE Arca	2
-equity	NRGV	Energy Vault Holdings, Inc.	-	USD	2	0	-	NYSE	2
+equity	NRGV	Energy Vault Holdings, Inc.	-	USD	2	0	-	NYSE	3
 equity	NRIM	Northrim BanCorp Inc	-	USD	2	0	-	NASDAQ	2
 equity	NRIX	Nurix Therapeutics, Inc.	-	USD	2	0	-	NASDAQ	3
 equity	NRK	Nuveen New York AMT-Free Quality Municipal Income Fund	-	USD	2	0	-	NYSE	-
@@ -7123,7 +7123,7 @@ equity	NSP	Insperity, Inc.	-	USD	2	0	-	NYSE	3
 equity	NSPR	InspireMD Inc.	-	USD	2	0	-	NASDAQ	1
 equity	NSRX	Nasus Pharma Ltd.	-	USD	2	0	-	NYSE American	1
 equity	NSSC	NAPCO Security Technologies, Inc.	-	USD	2	0	-	NASDAQ	3
-equity	NSTR	NorthStar Earth & Space Enterprises, Inc. Common Shares	-	USD	2	0	-	NYSE American	2
+equity	NSTR	NorthStar Earth & Space Enterprises, Inc. Common Shares	-	USD	2	0	-	NYSE American	1
 equity	NSYS	Nortech Systems Incorporated	-	USD	2	0	-	NASDAQ	1
 etf	NTAL	GraniteShares 2x Long NTAP Daily ETF	-	USD	2	0	-	NASDAQ	1
 equity	NTAP	NetApp, Inc.	-	USD	2	0	-	NASDAQ	6
@@ -7551,7 +7551,7 @@ equity	PAC	Grupo Aeroportuario Del Pacifico, S.A. B. de C.V. Grupo Aeroportuario
 equity	PACB	Pacific Biosciences of California, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	PACH	Pioneer Acquisition I Corp	-	USD	2	0	-	NASDAQ	-
 equity	PACK	Ranpak Holdings Corp Class A	-	USD	2	0	-	NYSE	2
-equity	PACS	PACS Group, Inc.	-	USD	2	0	-	NYSE	5
+equity	PACS	PACS Group, Inc.	-	USD	2	0	-	NYSE	4
 equity	PAG	Penske Automotive Group, Inc.	-	USD	2	0	-	NYSE	5
 equity	PAGP	Plains GP Holdings, L.P.	-	USD	2	0	-	NASDAQ	4
 equity	PAGS	PagSeguro Digital Ltd. Class A Common Shares	-	USD	2	0	-	NYSE	3
@@ -8111,7 +8111,7 @@ etf	PVAL	Putnam Focused Large Cap Value ETF	-	USD	2	0	-	NYSE Arca	6
 etf	PVEX	TrueShares ConVex Protect ETF	-	USD	2	0	-	Cboe BZX	2
 equity	PVH	PVH Corp.	-	USD	2	0	-	NYSE	4
 etf	PVI	Invesco Floating Rate Municipal Income ETF	-	USD	2	0	-	NYSE Arca	1
-equity	PVLA	Palvella Therapeutics, Inc.	-	USD	2	0	-	NASDAQ	4
+equity	PVLA	Palvella Therapeutics, Inc.	-	USD	2	0	-	NASDAQ	3
 equity	PW	Power REIT (MD)	-	USD	2	0	-	NYSE American	1
 etf	PWB	Invesco Large Cap Growth ETF	-	USD	2	0	-	NYSE Arca	4
 equity	PWCM	PowerCompute, Inc.	-	USD	2	0	-	NASDAQ	1
@@ -8385,13 +8385,13 @@ etf	RBLU	T-REX 2X Long RBLX Daily Target ETF	-	USD	2	0	-	Cboe BZX	3
 equity	RBLX	Roblox Corporation Class A	-	USD	2	0	-	NYSE	6
 etf	RBLY	YieldMax RBLX Option Income Strategy ETF	-	USD	2	0	-	NYSE Arca	2
 equity	RBNE	Robin Energy Ltd.	-	USD	2	0	-	NASDAQ	1
-equity	RBRK	Rubrik, Inc. Class A	-	USD	2	0	-	NYSE	6
+equity	RBRK	Rubrik, Inc. Class A	-	USD	2	0	-	NYSE	5
 etf	RBTX	iShares Future Robotics and Related Technologies Active ETF	-	USD	2	0	-	NYSE Arca	2
 etf	RBUF	Innovator U.S. Small Cap 10 Buffer ETF	-	USD	2	0	-	Cboe BZX	2
 equity	RC	Ready Capital Corporation	-	USD	2	0	-	NYSE	2
 equity	RCAT	Red Cat Holdings, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	RCBC	River City Bank	-	USD	2	0	-	NASDAQ	3
-equity	RCEL	Avita Medical, Inc.	-	USD	2	0	-	NASDAQ	3
+equity	RCEL	Avita Medical, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	RCG	RENN Fund, Inc	-	USD	2	0	-	NYSE American	-
 etf	RCGE	RockCreek Global Equality ETF	-	USD	2	0	-	NASDAQ	-
 equity	RCI	Rogers Communication, Inc.	-	USD	2	0	-	NYSE	5
@@ -8585,12 +8585,12 @@ equity	RMMZ	RiverNorth Managed Duration Municipal Income Fund II, Inc.	-	USD	2	0
 equity	RMNI	Rimini Street, Inc.	-	USD	2	0	-	NASDAQ	2
 etf	RMNY	Rockefeller New York Municipal Bond ETF	-	USD	2	0	-	NYSE Arca	2
 etf	RMOP	Rockefeller Opportunistic Municipal Bond ETF	-	USD	2	0	-	NYSE Arca	3
-equity	RMR	The RMR Group Inc.	-	USD	2	0	-	NASDAQ	2
+equity	RMR	The RMR Group Inc.	-	USD	2	0	-	NASDAQ	3
 etf	RMRC	ARMOR Core Risk-Managed ETF	-	USD	2	0	-	NYSE Arca	1
 equity	RMSG	Real Messenger Corporation	-	USD	2	0	-	NASDAQ	1
 equity	RMT	Royce Micro-Cap Trust, Inc.	-	USD	2	0	-	NYSE	3
 equity	RMTI	Rockwell Medical, Inc.	-	USD	2	0	-	NASDAQ	1
-equity	RMTX	Remix Therapeutics, Inc.	-	USD	2	0	-	NASDAQ	-
+equity	RMTX	Remix Therapeutics, Inc.	-	USD	2	0	-	NASDAQ	1
 equity	RNA	Atrium Therapeutics, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	RNAC	Cartesian Therapeutics, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	RNAQ	Rainier Acquisition Corporation	-	USD	2	0	-	NASDAQ	-
@@ -8757,7 +8757,7 @@ equity	RYN	Rayonier Inc. REIT	-	USD	2	0	-	NYSE	4
 equity	RYOJ	rYojbaba Co., Ltd.	-	USD	2	0	-	NASDAQ	1
 equity	RYTM	Rhythm Pharmaceuticals, Inc.	-	USD	2	0	-	NASDAQ	5
 equity	RYZ	Ryerson Holding Corporation	-	USD	2	0	-	NYSE	3
-equity	RZAI	Roze AI Inc.	-	USD	2	0	-	NASDAQ	2
+equity	RZAI	Roze AI Inc.	-	USD	2	0	-	NASDAQ	1
 etf	RZG	Invesco S&P SmallCap 600 Pure Growth ETF	-	USD	2	0	-	NYSE Arca	-
 equity	RZLT	Rezolute, Inc.	-	USD	2	0	-	NASDAQ	3
 equity	RZLV	Rezolve AI PLC	-	USD	2	0	-	NASDAQ	2
@@ -9152,7 +9152,7 @@ equity	SLMT	Solmate Infrastructure Public Limited Company	-	USD	2	0	-	NASDAQ	1
 equity	SLN	Silence Therapeutics Plc	-	USD	2	0	-	NASDAQ	3
 equity	SLND	Southland Holdings, Inc.	-	USD	2	0	-	NYSE American	1
 equity	SLNG	Stabilis Solutions, Inc.	-	USD	2	0	-	NASDAQ	1
-equity	SLNH	Soluna Holdings, Inc.	-	USD	2	0	-	NASDAQ	2
+equity	SLNH	Soluna Holdings, Inc.	-	USD	2	0	-	NASDAQ	1
 etf	SLNZ	TCW Senior Loan ETF	-	USD	2	0	-	NYSE	-
 etf	SLON	ProShares Ultra Solana ETF	-	USD	2	0	-	NYSE Arca	2
 etf	SLQD	iShares 0-5 Year Investment Grade Corporate Bond ETF	-	USD	2	0	-	NASDAQ	3
@@ -9561,7 +9561,7 @@ etf	STXF	Strive 500 ETF	-	USD	2	0	-	NYSE	-
 etf	STXG	Strive 1000 Growth ETF	-	USD	2	0	-	NYSE	2
 etf	STXK	Strive Small-Cap ETF	-	USD	2	0	-	NYSE	2
 etf	STXL	Defiance Daily Target 2x Long STX ETF	-	USD	2	0	-	Cboe BZX	4
-equity	STXS	Stereotaxis, Inc.	-	USD	2	0	-	NYSE American	2
+equity	STXS	Stereotaxis, Inc.	-	USD	2	0	-	NYSE American	1
 etf	STXT	Strive Total Return Bond ETF	-	USD	2	0	-	NYSE	1
 etf	STXU	Leverage Shares 2X Long STX Daily ETF	-	USD	2	0	-	Cboe BZX	3
 etf	STXV	Strive 1000 Value ETF	-	USD	2	0	-	NYSE	-
@@ -9694,7 +9694,7 @@ etf	TBG	TBG Dividend Focus ETF	-	USD	2	0	-	NYSE Arca	3
 equity	TBI	TrueBlue, Inc.	-	USD	2	0	-	NYSE	2
 etf	TBIL	F/m US Treasury 3 Month Bill Fund	-	USD	2	0	-	NASDAQ	6
 etf	TBJL	Innovator 20  Year Treasury Bond 9 Buffer ETF	-	USD	2	0	-	Cboe BZX	2
-equity	TBLA	Taboola.com Ltd.	-	USD	2	0	-	NASDAQ	3
+equity	TBLA	Taboola.com Ltd.	-	USD	2	0	-	NASDAQ	2
 equity	TBLD	Thornburg Income Builder Opportunities Trust	-	USD	2	0	-	NASDAQ	3
 etf	TBLL	Invesco Short Term Treasury ETF	-	USD	2	0	-	NYSE Arca	4
 etf	TBLU	Tortoise Global Water ETF	-	USD	2	0	-	NYSE	2
@@ -9825,7 +9825,7 @@ etf	TGRT	T. Rowe Price Growth ETF	-	USD	2	0	-	NYSE Arca	3
 etf	TGRW	T. Rowe Price Growth Stock ETF	-	USD	2	0	-	NYSE Arca	3
 etf	TGRZ	China AI Tigers LLM ETF	-	USD	2	0	-	NASDAQ	-
 equity	TGS	Transportadora de Gas del Sur SA TGS	-	USD	2	0	-	NYSE	4
-equity	TGT	Target Corporation	-	USD	2	0	-	NYSE	7
+equity	TGT	Target Corporation	-	USD	2	0	-	NYSE	6
 equity	TGTX	TG Therapeutics, Inc.	-	USD	2	0	-	NASDAQ	5
 equity	TH	Target Hospitality Corp.	-	USD	2	0	-	NASDAQ	3
 equity	THC	Tenet Healthcare Corporation	-	USD	2	0	-	NYSE	5
@@ -9916,7 +9916,7 @@ equity	TLNC	Talon Capital Corp.	-	USD	2	0	-	NASDAQ	-
 equity	TLPH	Talphera, Inc.	-	USD	2	0	-	NASDAQ	1
 equity	TLRY	Tilray Brands, Inc.	-	USD	2	0	-	NASDAQ	2
 equity	TLS	Telos Corporation	-	USD	2	0	-	NASDAQ	3
-equity	TLSA	Tiziana Life Sciences Ltd	-	USD	2	0	-	NASDAQ	2
+equity	TLSA	Tiziana Life Sciences Ltd	-	USD	2	0	-	NASDAQ	1
 equity	TLSI	TriSalus Life Sciences, Inc.	-	USD	2	0	-	NASDAQ	2
 etf	TLT	iShares 20+ Year Treasury Bond ETF	-	USD	2	0	-	NASDAQ	9
 etf	TLTD	Northern Trust Morningstar Developed Markets ex-US Factor Tilt ETF	-	USD	2	0	-	NYSE Arca	2
@@ -10043,7 +10043,7 @@ etf	TRBF	Angel Oak Total Return ETF	-	USD	2	0	-	NASDAQ	-
 equity	TRBG	TurboGen Ltd.	-	USD	2	0	-	NASDAQ	1
 equity	TRC	Tejon Ranch Co	-	USD	2	0	-	NYSE	2
 equity	TRDA	Entrada Therapeutics, Inc.	-	USD	2	0	-	NASDAQ	2
-equity	TREE	LendingTree, Inc.	-	USD	2	0	-	NASDAQ	2
+equity	TREE	LendingTree, Inc.	-	USD	2	0	-	NASDAQ	3
 equity	TREO	Tactical Resources Corp.	-	USD	2	0	-	NASDAQ	1
 equity	TREX	Trex Company, Inc.	-	USD	2	0	-	NYSE	4
 etf	TRFK	Pacer Data and Digital Revolution ETF	-	USD	2	0	-	NYSE Arca	4
@@ -10060,7 +10060,7 @@ equity	TRLV	Trulieve Cannabis Corp. Subordinate Voting Shares	-	USD	2	0	-	NYSE	3
 equity	TRMB	Trimble Inc.	-	USD	2	0	-	NASDAQ	5
 equity	TRMD	TORM plc	-	USD	2	0	-	NASDAQ	4
 equity	TRMK	Trustmark Corporation	-	USD	2	0	-	NASDAQ	4
-equity	TRN	Trinity Industries, Inc.	-	USD	2	0	-	NYSE	3
+equity	TRN	Trinity Industries, Inc.	-	USD	2	0	-	NYSE	4
 etf	TRND	Pacer Trendpilot Fund of Funds ETF	-	USD	2	0	-	NYSE Arca	-
 equity	TRNO	Terreno Realty Corporation	-	USD	2	0	-	NYSE	5
 equity	TRNR	Interactive Strength Inc.	-	USD	2	0	-	NASDAQ	1
@@ -10211,7 +10211,7 @@ equity	TWST	Twist Bioscience Corporation	-	USD	2	0	-	NASDAQ	5
 etf	TXBC	21Shares FTSE Crypto 10 ex-BTC Index ETF	-	USD	2	0	-	NYSE Arca	1
 etf	TXCA	Northern Trust California Intermediate Tax-Exempt Bond ETF	-	USD	2	0	-	NASDAQ	1
 equity	TXCP	Texas Capital Bancshares, Inc.	-	USD	2	0	-	-	-
-equity	TXG	10x Genomics, Inc.	-	USD	2	0	-	NASDAQ	4
+equity	TXG	10x Genomics, Inc.	-	USD	2	0	-	NASDAQ	5
 equity	TXMD	TherapeuticsMD, Inc.	-	USD	2	0	-	NASDAQ	1
 equity	TXN	Texas Instruments Incorporated	-	USD	2	0	-	NASDAQ	8
 equity	TXNM	TXNM Energy, Inc.	-	USD	2	0	-	NYSE	4
@@ -11095,7 +11095,7 @@ etf	XJR	iShares ESG Select Screened S&P Small-Cap ETF	-	USD	2	0	-	Cboe BZX	3
 etf	XJUL	FT Vest U.S. Equity Enhance & Moderate Buffer ETF	-	USD	2	0	-	Cboe BZX	3
 etf	XJUN	FT Vest U.S. Equity Enhance & Moderate Buffer ETF	-	USD	2	0	-	Cboe BZX	1
 etf	XKRE	Corgi U.S. Regional Banks 2x Daily ETF	-	USD	2	0	-	Cboe BZX	1
-equity	XLAB	Exascale Labs Holdings Inc.	-	USD	2	0	-	NASDAQ	1
+equity	XLAB	Exascale Labs Holdings Inc.	-	USD	2	0	-	NASDAQ	2
 etf	XLB	State Street Materials Select Sector SPDR ETF	-	USD	2	0	-	NYSE Arca	8
 etf	XLBI	State Street Materials Select Sector SPDR Premium Income ETF	-	USD	2	0	-	NYSE Arca	1
 etf	XLBX	Corgi U.S. Materials 2x Daily ETF	-	USD	2	0	-	Cboe BZX	-
