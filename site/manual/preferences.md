@@ -104,7 +104,7 @@ crop: 276,56,2008,1328   (the whole dialog, 12px layout margin)
 | Data feed › **Yahoo Finance**, **thinkorswim** | The feed every chart gets its prices from. Open charts switch at once. | [Market data feeds](/manual/market-data/) |
 | thinkorswim › **Sign in…** / **Sign out** | Shown only while thinkorswim is chosen. | [Market data feeds](/manual/market-data/) |
 | Storage › **Cached data**, **Clear** | How much downloaded price data is kept, and a button to delete it all. | [Where your data lives](/manual/your-data/) |
-| Storage › **Keep at most** | 256 MB, 512 MB, 1 GB, 2 GB, 5 GB. | [Where your data lives](/manual/your-data/) |
+| Storage › **Keep at most** | 256 MB, 512 MB, 1 GB, 2 GB, 5 GB, Unlimited. | [Where your data lives](/manual/your-data/) |
 | Backups › **Last backup**, **Back Up Now**, **Restore…** | When settings were last backed up, and restoring one. | [Where your data lives](/manual/your-data/) |
 
 ### Agent

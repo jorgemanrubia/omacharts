@@ -38,6 +38,7 @@ impl Store {
     /// their tails. Coverage is the caller's to record with
     /// [`Self::cover_ladders`]; [`Self::save_ladder_history`] does both.
     pub fn save_ladder_days(&self, key: &str, tick_size: f64, days: &[Day]) -> rusqlite::Result<()> {
+        let key = &*super::market_key(key);
         let tx = self.conn.unchecked_transaction()?;
         for day in days {
             write_day(&tx, key, tick_size, day)?;
@@ -52,6 +53,7 @@ impl Store {
     /// A row that cannot be read is left out, and so is its coverage the
     /// next time anything asks what is missing — see [`Self::missing_ladders`].
     pub fn load_ladder_series(&self, key: &str, from_day: i64, to_day: i64) -> Series {
+        let key = &*super::market_key(key);
         let mut series = Series::new(0.0);
         let mut statement = match self.conn.prepare_cached(
             "SELECT tick_size, data, total FROM ladder_days
@@ -151,6 +153,7 @@ impl Store {
     /// Fold the live tails of days before `before_day` into their rows.
     /// Returns how many days it folded.
     pub fn compact_ladders(&self, key: &str, before_day: i64) -> rusqlite::Result<usize> {
+        let key = &*super::market_key(key);
         let tx = self.conn.unchecked_transaction()?;
         let numbers: Vec<i64> = {
             let mut statement =
@@ -174,6 +177,7 @@ impl Store {
 
     /// Record that every print in `from..to` is held.
     pub fn cover_ladders(&self, key: &str, from: i64, to: i64) -> rusqlite::Result<()> {
+        let key = &*super::market_key(key);
         let tx = self.conn.unchecked_transaction()?;
         add_span(&tx, key, from, to)?;
         tx.commit()
@@ -181,6 +185,7 @@ impl Store {
 
     /// The spans of `key` known complete, oldest first.
     pub fn ladder_coverage(&self, key: &str) -> Vec<(i64, i64)> {
+        let key = &*super::market_key(key);
         spans(&self.conn, key, i64::MIN, i64::MAX).unwrap_or_default()
     }
 
@@ -188,6 +193,7 @@ impl Store {
     /// provider for. A disconnect is one of these; a quiet stretch the feed
     /// watched is not.
     pub fn missing_ladders(&self, key: &str, from: i64, to: i64) -> Vec<(i64, i64)> {
+        let key = &*super::market_key(key);
         let mut missing = Vec::new();
         let mut at = from;
         for (a, b) in spans(&self.conn, key, from, to).unwrap_or_default() {
@@ -213,6 +219,7 @@ impl Store {
     /// stored for `key` at all, or the start of the span known whole it is
     /// in: the provider's history goes no further.
     pub fn load_ladder_held(&self, key: &str, days: &Days, from_day: i64, to_day: i64) -> Held {
+        let key = &*super::market_key(key);
         let mut held = Held::new(0.0);
         let tailed: Vec<i64> = self
             .conn
@@ -276,6 +283,7 @@ impl Store {
 
     /// One trading day of `key`, minutes and all, its tail applied.
     pub fn load_ladder_day(&self, key: &str, day: i64) -> Option<Day> {
+        let key = &*super::market_key(key);
         read_day(&self.conn, key, day).ok().flatten()
     }
 
@@ -284,6 +292,8 @@ impl Store {
     /// again, and what was kept under the root alone before a root was
     /// kept by its month. Whether anything went.
     pub fn forget_other_months(&self, key: &str, keep: &[String]) -> rusqlite::Result<bool> {
+        let key = &*super::market_key(key);
+        let keep: Vec<String> = keep.iter().map(|kept| super::market_key(kept).into_owned()).collect();
         let tx = self.conn.unchecked_transaction()?;
         // `key@…` is every key from `key@` up to, not including, `keyA`,
         // 'A' following '@': a range the primary keys answer.
@@ -313,6 +323,7 @@ impl Store {
     /// folded from its live tail, is stamped no later than its last minute,
     /// and stays. How many went.
     pub fn forget_ladders_read_late(&self, key: &str, since: i64) -> rusqlite::Result<usize> {
+        let key = &*super::market_key(key);
         let tx = self.conn.unchecked_transaction()?;
         let late: Vec<i64> = {
             let mut statement = tx.prepare_cached(
@@ -329,6 +340,7 @@ impl Store {
 
     /// Every day stored for `key`, as `(day, minutes)`, oldest first.
     pub fn ladder_days(&self, key: &str) -> Vec<(i64, i64)> {
+        let key = &*super::market_key(key);
         let Ok(mut statement) =
             self.conn.prepare_cached("SELECT day, minutes FROM ladder_days WHERE key = ?1 ORDER BY day")
         else {

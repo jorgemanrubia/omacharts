@@ -73,7 +73,9 @@ None of these carries the thinkorswim session. Sign in again on the other machin
 
 ## Downloaded prices
 
-Downloaded prices are kept on this machine, up to a limit. Past it the oldest are dropped, and at once when you lower the limit.
+Downloaded prices are kept on this machine, so a chart is downloaded once and then only brought up to date. That includes the order book and the trades the order-flow studies draw. Prices downloaded through one Rithmic login are there for every other Rithmic login.
+
+The prices are kept up to a limit. Past it the oldest downloads are dropped, and at once when you lower the limit. What the open chartbook's charts show is never dropped, even when it alone is over the limit. In that case the cache stays over the limit until you close those charts. A day of trades that was dropped is downloaded again only when a chart scrolls back to it.
 
 Preferences › Data › **Storage**:
 
@@ -81,7 +83,7 @@ Preferences › Data › **Storage**:
 |---|---|
 | **Cached data** | How many series are kept, the space they take, the limit and the share used, *16 series · 3.2 MB of 1 GB · 1%*. |
 | **Clear** | Deletes every downloaded series. Charts download their prices again. |
-| **Keep at most** | The limit: 256 MB, 512 MB, 1 GB (the default), 2 GB or 5 GB. There is no unlimited setting. |
+| **Keep at most** | The limit: 256 MB, 512 MB, 1 GB (the default), 2 GB, 5 GB or Unlimited. With Unlimited nothing is dropped. |
 
 ## Starting over
 

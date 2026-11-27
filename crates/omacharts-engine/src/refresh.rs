@@ -166,6 +166,34 @@ pub fn due(candidate: &Candidate, now: i64) -> Result<(), Held> {
     Ok(())
 }
 
+/// Is a chart shown again over the series kept for it current without a
+/// fetch?
+///
+/// Fetched within its period, or with its market shut for the whole of the
+/// time since it was fetched: there is nothing a fetch could bring. Showing
+/// a chart is the commonest thing done, flicking down a watchlist most of
+/// all, and each one asked for the series' tail again however current it
+/// was. Anything else is fetched: a chart left at midday on Friday and
+/// shown on Saturday still needs Friday's afternoon.
+pub fn current_without_fetch(candidate: &Candidate, now: i64) -> bool {
+    match due(candidate, now) {
+        Err(Held::Fresh) => true,
+        Err(Held::Closed) => candidate.fetched_at.is_some_and(|at| shut_between(candidate.instrument, at, now)),
+        _ => false,
+    }
+}
+
+/// Was `instrument`'s market shut at every moment from `from` to `to`?
+///
+/// Asked every five minutes, which no session is shorter than, and only
+/// over a long weekend's worth: further apart than that, the answer is no
+/// without asking.
+fn shut_between(instrument: &Instrument, from: i64, to: i64) -> bool {
+    const STEP: usize = 300;
+    const LONGEST: i64 = 4 * 86_400;
+    to - from <= LONGEST && (from..=to).step_by(STEP).all(|ts| !session::is_trading(instrument, ts))
+}
+
 /// Is this instrument trading, or has it only just stopped?
 ///
 /// The grace is what collects the bar that was forming at the close. Asking
@@ -451,5 +479,32 @@ mod tests {
         let share = share();
         let chart = charted(&share, tf("1m"), 7 * 86_400, now);
         assert_eq!(due(&chart, now), Err(Held::Closed), "a week stale, and still no");
+    }
+
+    // -- a chart shown again ------------------------------------------------
+
+    /// Fetched a moment ago: drawn from what is kept.
+    #[test]
+    fn a_chart_shown_again_just_after_its_fetch_asks_nothing() {
+        let share = share();
+        let now = midweek();
+        assert!(current_without_fetch(&charted(&share, tf("1m"), 30, now), now));
+        assert!(!current_without_fetch(&charted(&share, tf("1m"), 600, now), now), "ten minutes of bars missing");
+    }
+
+    /// Fetched after Friday's last session, the evening's, and shown on
+    /// Saturday: nothing has traded since. Fetched at Friday midday, the
+    /// afternoon is missing.
+    #[test]
+    fn a_chart_shown_again_over_a_weekend_asks_only_for_what_traded_since() {
+        let share = share();
+        let saturday = ny(16, 12, 0);
+        let after_close = saturday - ny(15, 20, 30);
+        assert!(current_without_fetch(&charted(&share, tf("5m"), after_close, saturday), saturday));
+        let midday = saturday - ny(15, 12, 0);
+        assert!(!current_without_fetch(&charted(&share, tf("5m"), midday, saturday), saturday));
+        // Nothing kept is never current.
+        let unkept = Candidate { fetched_at: None, ..charted(&share, tf("5m"), 0, saturday) };
+        assert!(!current_without_fetch(&unkept, saturday));
     }
 }

@@ -10449,9 +10449,23 @@ impl Window {
                     }
                 }
             }
-            None => feed
-                .loader
-                .fetch(Request { key, symbol, timeframe, speculative: false }, FOREGROUND),
+            None => {
+                // A series kept and current is drawn from the store alone:
+                // asking for its tail again on every show fetched the same
+                // bars over and over.
+                let candidate = refresh::Candidate {
+                    delivery: feed.provider.delivery(),
+                    visible: true,
+                    at_latest: true,
+                    timeframe,
+                    instrument: &instrument,
+                    fetched_at: self.store.coverage(&key, native).map(|coverage| coverage.fetched_at),
+                };
+                match !cached_was_empty && refresh::current_without_fetch(&candidate, chrono::Utc::now().timestamp()) {
+                    true => pane.set_feed_phase(pane::FeedPhase::Connected),
+                    false => feed.loader.fetch(Request { key, symbol, timeframe, speculative: false }, FOREGROUND),
+                }
+            }
         }
         pane.follow_load(load);
         self.load_comparisons(pane);

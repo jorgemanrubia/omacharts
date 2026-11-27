@@ -30,6 +30,22 @@ pub(crate) use prints::forget_day as forget_print_day;
 use crate::migrations;
 use rusqlite::{params, Connection, OptionalExtension};
 
+/// The key market data is kept under, for the feed's key `key`.
+///
+/// A feed of one login's, `rithmic@<id>:ES`, keeps it under its kind,
+/// `rithmic:ES`: the exchange's trades are the same whichever login fetched
+/// them, so two logins keep one copy, and the data login changed finds
+/// everything still there. Everything else a login has of its own — its
+/// session, its entitlements, which login serves a chart — goes by the
+/// feed's key, and never reaches the store.
+pub fn market_key(key: &str) -> std::borrow::Cow<'_, str> {
+    let Some((feed, rest)) = key.split_once(':') else { return key.into() };
+    match feed.split_once(omacharts_engine::providers::LOGIN_MARK) {
+        Some((kind, _)) => format!("{kind}:{rest}").into(),
+        None => key.into(),
+    }
+}
+
 pub struct Store {
     conn: Connection,
     /// The file behind it, when there is one. The background cache sweep
@@ -101,6 +117,12 @@ pub struct StoredCloses {
 
 impl Store {
     pub fn open() -> Result<Store, migrations::Error> {
+        // A test build's tests share one default store, and two opening it
+        // for the first time at once both set out to migrate it.
+        #[cfg(test)]
+        static OPENING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        #[cfg(test)]
+        let _opening = OPENING.lock().unwrap_or_else(|e| e.into_inner());
         let dir = data_dir();
         let _ = std::fs::create_dir_all(&dir);
         Store::open_at(&dir.join("omacharts.db"))
@@ -360,6 +382,7 @@ impl Store {
     // -- bars --------------------------------------------------------------
 
     pub fn coverage(&self, key: &str, timeframe: Timeframe) -> Option<Coverage> {
+        let key = &*market_key(key);
         self.conn
             .query_row(
                 "SELECT first_ts, last_ts, count, fetched_at FROM bar_series
@@ -385,6 +408,7 @@ impl Store {
     /// The sidebar asks this for every row, every time a quote moves, so the
     /// close column is read for the one series chosen, not for each of them.
     pub fn latest_intraday_close(&self, key: &str) -> Option<(i64, i64, f64)> {
+        let key = &*market_key(key);
         let (timeframe, last_ts, fetched_at) = self.latest_intraday_series(key)?;
         let close: Vec<u8> = self
             .conn
@@ -399,6 +423,7 @@ impl Store {
     /// resolution, the stamp of its last bar, and when it was fetched. The
     /// series [`Store::latest_intraday_close`] reads its close from.
     pub fn latest_intraday_series(&self, key: &str) -> Option<(Timeframe, i64, i64)> {
+        let key = &*market_key(key);
         let mut series = self
             .conn
             .prepare_cached("SELECT interval, last_ts, fetched_at FROM bar_series WHERE key = ?1")
@@ -426,6 +451,7 @@ impl Store {
     /// by, in the one place that comment admits it is blunt: a series being
     /// polled is a series somebody has on screen.
     pub fn mark_fetched(&self, key: &str, timeframe: Timeframe) {
+        let key = &*market_key(key);
         let _ = self.conn.execute(
             "UPDATE bar_series SET fetched_at = ?3 WHERE key = ?1 AND interval = ?2",
             params![key, timeframe.key(), chrono::Utc::now().timestamp()],
@@ -436,6 +462,7 @@ impl Store {
 
     /// Store the closes a batch brought back for `key`.
     pub fn write_closes(&self, key: &str, closes: &omacharts_engine::Closes) {
+        let key = &*market_key(key);
         let _ = self.conn.execute(
             "INSERT INTO quotes (key, last, previous, at, previous_at, fetched_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -461,6 +488,7 @@ impl Store {
     /// its bars instead, see [`crate::cli::plan_refresh`], rather than asking
     /// the batch again on every run and getting the same nothing.
     pub fn mark_closes_asked(&self, key: &str) {
+        let key = &*market_key(key);
         let _ = self.conn.execute(
             "INSERT INTO quotes (key, fetched_at) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET fetched_at = excluded.fetched_at,
@@ -471,6 +499,7 @@ impl Store {
 
     /// The closes last fetched for `key` in a batch, if any came back.
     pub fn load_closes(&self, key: &str) -> Option<StoredCloses> {
+        let key = &*market_key(key);
         self.conn
             .query_row(
                 "SELECT last, previous, at, previous_at, fetched_at FROM quotes
@@ -494,6 +523,7 @@ impl Store {
 
     /// When `key` was last asked for in a batch, answered or not.
     pub fn closes_fetched_at(&self, key: &str) -> Option<i64> {
+        let key = &*market_key(key);
         self.conn
             .query_row("SELECT fetched_at FROM quotes WHERE key = ?1", params![key], |r| r.get(0))
             .optional()
@@ -504,6 +534,7 @@ impl Store {
     /// Pretend a series was last fetched at `at`, for tests about staleness.
     #[cfg(test)]
     pub fn backdate(&self, key: &str, timeframe: Timeframe, at: i64) {
+        let key = &*market_key(key);
         let _ = self.conn.execute(
             "UPDATE bar_series SET fetched_at = ?3 WHERE key = ?1 AND interval = ?2",
             params![key, timeframe.key(), at],
@@ -513,6 +544,7 @@ impl Store {
     /// Pretend a batch of closes was last fetched at `at`.
     #[cfg(test)]
     pub fn backdate_closes(&self, key: &str, at: i64) {
+        let key = &*market_key(key);
         let _ = self.conn.execute("UPDATE quotes SET fetched_at = ?2 WHERE key = ?1", params![key, at]);
     }
 
@@ -520,6 +552,7 @@ impl Store {
     /// is read may be written back, so a chart cleans what it draws with
     /// [`omacharts_engine::drawable`] instead.
     pub fn load_bars(&self, key: &str, timeframe: Timeframe) -> Vec<Bar> {
+        let key = &*market_key(key);
         let row: Option<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = self
             .conn
             .query_row(
@@ -562,6 +595,7 @@ impl Store {
     /// forming when we saw it, so a bar arriving with a timestamp we already
     /// hold always wins. Returns the merged series.
     pub fn merge_bars(&self, key: &str, timeframe: Timeframe, fresh: &[Bar]) -> Vec<Bar> {
+        let key = &*market_key(key);
         let mut bars = self.load_bars(key, timeframe);
         if fresh.is_empty() {
             return bars;
@@ -583,6 +617,7 @@ impl Store {
     /// Replace a series wholesale. Used by [`Self::merge_bars`], and when an
     /// overlap mismatch means the cached history can no longer be trusted.
     pub fn write_bars(&self, key: &str, timeframe: Timeframe, bars: &[Bar]) {
+        let key = &*market_key(key);
         if bars.is_empty() {
             let _ = self.conn.execute(
                 "DELETE FROM bar_series WHERE key = ?1 AND interval = ?2",
@@ -621,6 +656,7 @@ impl Store {
     }
 
     pub fn drop_series(&self, key: &str, timeframe: Timeframe) {
+        let key = &*market_key(key);
         let _ = self.conn.execute(
             "DELETE FROM bar_series WHERE key = ?1 AND interval = ?2",
             params![key, timeframe.key()],
@@ -2041,6 +2077,18 @@ mod tests {
         let swept = crate::cache::evict(&store.conn, crate::cache::UNLIMITED, &Default::default()).unwrap();
         assert_eq!(swept.dropped, 0);
         assert_eq!(kept_days(&store, "fake:ES"), vec![20_000]);
+    }
+
+    /// Bars one Rithmic login fetched are there for another: the store keeps
+    /// the market's data once, whichever login asked for it.
+    #[test]
+    fn what_one_login_fetched_another_reads_without_asking() {
+        let store = Store::memory().unwrap();
+        store.write_bars("rithmic@first:ESZ6", Timeframe::days(1), &[bar(100, 1.0)]);
+        assert_eq!(store.load_bars("rithmic@second:ESZ6", Timeframe::days(1)).len(), 1);
+        assert_eq!(store.cached_series(), 1);
+        assert_eq!(market_key("rithmic@first:ESZ6"), "rithmic:ESZ6");
+        assert_eq!(market_key("yahoo:ES=F"), "yahoo:ES=F");
     }
 
     /// The usual case: a cache nowhere near its limit is left alone, and

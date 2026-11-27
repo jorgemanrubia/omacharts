@@ -944,11 +944,29 @@ fn attempt(request: &Request, provider: &dyn Provider) -> Outcome {
             Outcome::Done(Response::Bars { key, timeframe: native, bars: cached })
         }
         Ok(fresh) => {
-            // If the overlap disagrees or is missing, the cached history
-            // cannot be trusted. Start over.
-            if !cached.is_empty() && !overlap_agrees(&cached, &fresh) {
-                store.drop_series(&request.key, native);
-                return Outcome::StartOver;
+            match overlap(&cached, &fresh) {
+                Overlap::Agrees => {}
+                // Asked from further back than the provider keeps, after a
+                // long while away: what is kept stays, gap and all. Dropping
+                // it for the provider's window lost what nobody can fetch
+                // again, and asked for the same window twice.
+                Overlap::After if since.is_some_and(|since| reaches_past(provider, native, since)) => {}
+                // The cached history has been adjusted out from under us:
+                // it cannot be trusted. Asked from as far back as the
+                // provider goes, the answer is what starting over would
+                // fetch, so it is the series; otherwise, start over.
+                Overlap::After | Overlap::Disagrees => {
+                    store.drop_series(&request.key, native);
+                    if !since.is_some_and(|since| reaches_past(provider, native, since)) {
+                        return Outcome::StartOver;
+                    }
+                    let key = request.key.clone();
+                    if drawn_short(&request.key, native) {
+                        return Outcome::Done(Response::Bars { key, timeframe: native, bars: fresh });
+                    }
+                    let merged = store.merge_bars(&request.key, native, &fresh);
+                    return Outcome::Done(Response::Bars { key, timeframe: native, bars: merged });
+                }
             }
             if drawn_short(&request.key, native) {
                 // A stitched root short of a month or a gap just now: shown,
@@ -1152,29 +1170,59 @@ fn failed(request: &Request, bars: Vec<Bar>, failure: FetchFailure) -> Response 
     }
 }
 
+/// How an answer meets the bars already kept.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Overlap {
+    /// Nothing kept, or the bars it shares with them match.
+    Agrees,
+    /// It shares none, and starts after the newest kept: what came between
+    /// is unknown.
+    After,
+    /// A bar it shares does not match, or it shares none and does not
+    /// start after them: the kept history is not the provider's any more.
+    Disagrees,
+}
+
 /// Do the bars we already had still match what the provider just sent for the
 /// same timestamps?
 ///
-/// The answer has to share at least one bar with the cache. A tail fetch asks
-/// from before the newest cached bar, so an answer that shares none started
-/// after the cache, and what happened in between is unknown.
+/// A tail fetch asks from before the newest cached bar, so an answer that
+/// shares none either starts after the cache — the provider would not go
+/// back that far — or is on another grid altogether.
 ///
 /// The newest cached bar counts as shared but its prices are not compared: it
 /// may have been forming when we stored it, so they are expected to differ.
-fn overlap_agrees(cached: &[Bar], fresh: &[Bar]) -> bool {
-    let forming = cached.last().map(|b| b.ts).unwrap_or(i64::MIN);
+fn overlap(cached: &[Bar], fresh: &[Bar]) -> Overlap {
+    let Some(newest) = cached.last().map(|b| b.ts) else { return Overlap::Agrees };
     let mut shared = false;
     for bar in fresh {
         if let Ok(at) = cached.binary_search_by_key(&bar.ts, |b| b.ts) {
             shared = true;
-            if bar.ts < forming
+            if bar.ts < newest
                 && (!close(cached[at].close, bar.close) || !close(cached[at].open, bar.open))
             {
-                return false;
+                return Overlap::Disagrees;
             }
         }
     }
-    shared
+    match (shared, fresh.first()) {
+        (true, _) => Overlap::Agrees,
+        (false, Some(first)) if first.ts > newest => Overlap::After,
+        (false, _) => Overlap::Disagrees,
+    }
+}
+
+/// Was `since` older than anything `provider` serves at `timeframe`? Then
+/// a fetch from there was answered from the oldest it has, as a fetch of
+/// everything would be.
+fn reaches_past(provider: &dyn Provider, timeframe: Timeframe, since: i64) -> bool {
+    let Some(capability) = provider.capabilities().iter().find(|c| c.timeframe == timeframe) else { return false };
+    let days = match (capability.history_days, capability.max_request_days) {
+        (None, None) => return false,
+        (history, request) => history.unwrap_or(u32::MAX).min(request.unwrap_or(u32::MAX)),
+    };
+    // A day's slack: a feed's window is its own count of days.
+    since < chrono::Utc::now().timestamp() - (i64::from(days) - 1) * 86_400
 }
 
 fn close(a: f64, b: f64) -> bool {
@@ -1199,7 +1247,7 @@ mod tests {
         let fresh = vec![bar(100, 10.0), bar(200, 11.0), bar(300, 99.0), bar(400, 13.0)];
         // 300 is the newest cached bar and may have been forming, so its
         // disagreement is expected and ignored.
-        assert!(overlap_agrees(&cached, &fresh));
+        assert_eq!(overlap(&cached, &fresh), Overlap::Agrees);
     }
 
     /// A stitched root loaded while one of its months cannot be read is
@@ -1236,26 +1284,129 @@ mod tests {
         Store::open().unwrap().drop_series(&request.key, daily);
     }
 
+    /// A feed of one-minute bars that keeps only the last week, as Yahoo
+    /// does, and answers a request from before that from the oldest it has.
+    /// Its prices are `scale` times the minute's number.
+    struct Window {
+        asked: Mutex<Vec<Option<i64>>>,
+        scale: f64,
+    }
+
+    const WEEK_OF_MINUTES: &[omacharts_engine::Capability] = &[omacharts_engine::Capability {
+        timeframe: Timeframe::minutes(1),
+        history_days: Some(7),
+        max_request_days: Some(7),
+    }];
+
+    impl Provider for Window {
+        fn id(&self) -> &'static str {
+            "window"
+        }
+        fn label(&self) -> &'static str {
+            "Window"
+        }
+        fn delay_minutes(&self, _: omacharts_engine::InstrumentKind) -> u32 {
+            0
+        }
+        fn native_symbol(&self, instrument: &omacharts_engine::Instrument) -> Option<String> {
+            Some(instrument.symbol.clone())
+        }
+        fn capabilities(&self) -> &'static [omacharts_engine::Capability] {
+            WEEK_OF_MINUTES
+        }
+        fn bars(&self, _: &str, _: Timeframe, since: Option<i64>) -> Result<Vec<Bar>, ProviderError> {
+            self.asked.lock().unwrap().push(since);
+            let now = chrono::Utc::now().timestamp().div_euclid(60) * 60;
+            let oldest = now - 7 * 86_400 + 3_600;
+            let from = since.unwrap_or(oldest).max(oldest).div_euclid(60) * 60;
+            Ok((from..=now).step_by(60).map(|ts| bar(ts, (ts / 60) as f64 * self.scale)).collect())
+        }
+    }
+
+    fn minutes(from: i64, to: i64, scale: f64) -> Vec<Bar> {
+        (from.div_euclid(60) * 60..to).step_by(60).map(|ts| bar(ts, (ts / 60) as f64 * scale)).collect()
+    }
+
+    /// A chart of one-minute bars opened after a month away. The provider
+    /// keeps a week, so its answer starts long after the kept bars end:
+    /// they are kept, gap and all, and the provider is asked once.
+    #[test]
+    fn bars_kept_from_before_the_provider_s_window_are_kept() {
+        let minute = Timeframe::minutes(1);
+        let request = Request { speculative: false, key: "window:GAP".into(), symbol: "GAP".into(), timeframe: minute };
+        let store = Store::open().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let old = minutes(now - 30 * 86_400, now - 29 * 86_400, 1.0);
+        store.write_bars(&request.key, minute, &old);
+        let provider = Window { asked: Mutex::new(Vec::new()), scale: 1.0 };
+
+        let Outcome::Done(Response::Bars { bars, .. }) = attempt(&request, &provider) else { panic!("not answered at once") };
+        assert_eq!(provider.asked.lock().unwrap().len(), 1, "asked twice");
+        assert_eq!(bars.first(), old.first(), "the month-old bars were thrown away");
+        let kept = store.load_bars(&request.key, minute);
+        assert_eq!(kept.first(), old.first());
+        assert!(kept.last().is_some_and(|bar| bar.ts > now - 120), "the new bars were not kept");
+        store.drop_series(&request.key, minute);
+    }
+
+    /// The kept bars no longer match — adjusted for a split — and were
+    /// asked for from before the provider's window: the answer is all the
+    /// provider has, so it is kept as the series, and nothing is asked
+    /// again for the same window.
+    #[test]
+    fn a_disagreement_asked_from_past_the_window_is_written_not_asked_again() {
+        let minute = Timeframe::minutes(1);
+        let request = Request { speculative: false, key: "window:SPLIT".into(), symbol: "SPLIT".into(), timeframe: minute };
+        let store = Store::open().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        // Kept up to just inside the window: asked from just before it.
+        let edge = now - 7 * 86_400 + 3_600;
+        store.write_bars(&request.key, minute, &minutes(edge - 86_400, edge + 120, 10.0));
+        let provider = Window { asked: Mutex::new(Vec::new()), scale: 1.0 };
+
+        let Outcome::Done(Response::Bars { bars, .. }) = attempt(&request, &provider) else { panic!("started over") };
+        assert_eq!(provider.asked.lock().unwrap().len(), 1);
+        let kept = store.load_bars(&request.key, minute);
+        assert_eq!(kept, bars);
+        assert!(kept.iter().all(|bar| bar.close == (bar.ts / 60) as f64), "the old prices were kept");
+        store.drop_series(&request.key, minute);
+    }
+
+    /// Inside the window, a disagreement still starts over: the kept
+    /// history reaches back further than the answer did.
+    #[test]
+    fn a_disagreement_inside_the_window_starts_over() {
+        let minute = Timeframe::minutes(1);
+        let request = Request { speculative: false, key: "window:INSIDE".into(), symbol: "INSIDE".into(), timeframe: minute };
+        let store = Store::open().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        store.write_bars(&request.key, minute, &minutes(now - 2 * 86_400, now - 86_400, 10.0));
+        let provider = Window { asked: Mutex::new(Vec::new()), scale: 1.0 };
+        assert!(matches!(attempt(&request, &provider), Outcome::StartOver));
+        assert!(store.load_bars(&request.key, minute).is_empty());
+    }
+
     #[test]
     fn a_split_adjusted_history_disagrees() {
         let cached = vec![bar(100, 100.0), bar(200, 110.0), bar(300, 120.0)];
         // A 10:1 split rewrites every completed bar.
         let fresh = vec![bar(100, 10.0), bar(200, 11.0), bar(300, 12.0)];
-        assert!(!overlap_agrees(&cached, &fresh));
+        assert_eq!(overlap(&cached, &fresh), Overlap::Disagrees);
     }
 
     #[test]
     fn rounding_noise_is_not_a_split() {
         let cached = vec![bar(100, 100.0), bar(200, 110.0), bar(300, 120.0)];
         let fresh = vec![bar(100, 100.00001), bar(200, 109.99998), bar(300, 120.0)];
-        assert!(overlap_agrees(&cached, &fresh));
+        assert_eq!(overlap(&cached, &fresh), Overlap::Agrees);
     }
 
     #[test]
-    fn an_answer_that_starts_after_the_cache_disagrees() {
+    fn an_answer_that_starts_after_the_cache_is_told_apart() {
         let cached = vec![bar(100, 10.0), bar(200, 11.0)];
-        let fresh = vec![bar(500, 50.0), bar(600, 60.0)];
-        assert!(!overlap_agrees(&cached, &fresh));
+        assert_eq!(overlap(&cached, &[bar(500, 50.0), bar(600, 60.0)]), Overlap::After);
+        // Between the kept bars and sharing none: another grid.
+        assert_eq!(overlap(&cached, &[bar(150, 50.0), bar(250, 60.0)]), Overlap::Disagrees);
     }
 
     #[test]
@@ -1264,7 +1415,7 @@ mod tests {
         // the overlap sends back.
         let cached = vec![bar(100, 10.0), bar(200, 11.0)];
         let fresh = vec![bar(200, 11.5), bar(300, 12.0)];
-        assert!(overlap_agrees(&cached, &fresh));
+        assert_eq!(overlap(&cached, &fresh), Overlap::Agrees);
     }
 
     fn job(key: &str, priority: u32, seq: u64) -> Job {

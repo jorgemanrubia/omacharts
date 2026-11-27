@@ -128,9 +128,12 @@ pub struct InUse {
 impl InUse {
     fn holds(&self, what: &Evictable, reach: i64) -> bool {
         match what {
-            Evictable::Series { key, interval } => self.series.iter().any(|(k, i)| k == key && i == interval),
+            // The charts name a feed's key, the store its kind's.
+            Evictable::Series { key, interval } => {
+                self.series.iter().any(|(k, i)| crate::store::market_key(k) == key.as_str() && i == interval)
+            }
             Evictable::LadderDay { key, .. } | Evictable::PrintDay { key, .. } => {
-                self.days.iter().any(|(k, from)| k == key && reach >= *from)
+                self.days.iter().any(|(k, from)| crate::store::market_key(k) == key.as_str() && reach >= *from)
             }
         }
     }
