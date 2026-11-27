@@ -734,8 +734,10 @@ mod tests {
         store.save_ladder_days(KEY, TICK, &series.days).unwrap();
         store.cover_ladders(KEY, 0, 4 * 86_400).unwrap();
 
-        let swept = crate::cache::evict(&store.conn, 1).unwrap();
-        assert_eq!(swept.dropped, 3, "everything but one");
+        // A chart draws the last day.
+        let in_use = crate::cache::InUse { days: vec![(KEY.to_string(), 3 * 86_400)], ..Default::default() };
+        let swept = crate::cache::evict(&store.conn, 1, &in_use).unwrap();
+        assert_eq!(swept.dropped, 3, "everything but the chart's");
         assert_eq!(store.ladder_days(KEY), vec![(3, 1440)], "the oldest days went first");
         assert_eq!(store.missing_ladders(KEY, 0, 4 * 86_400), vec![(0, 3 * 86_400)]);
     }

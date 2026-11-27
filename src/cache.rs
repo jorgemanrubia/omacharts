@@ -20,17 +20,21 @@ use crate::store::Store;
 /// What the cache may occupy before the oldest of it is dropped.
 pub const DEFAULT_LIMIT: i64 = 1024 * 1024 * 1024;
 
+/// No limit: what was fetched is kept for good, and a sweep drops nothing.
+pub const UNLIMITED: i64 = i64::MAX;
+
 /// The sizes offered in settings, largest last.
 ///
-/// No unlimited: the whole point of the setting is that the cache stops
-/// growing, and an option that turns that off is the behaviour being fixed.
-/// Anybody who wants more room picks more room.
-pub const LIMITS: [(i64, &str); 5] = [
+/// Unlimited last of all, for anybody with the disk to keep everything ever
+/// fetched: a limit is only ever met by dropping data that may have to be
+/// fetched again one day.
+pub const LIMITS: [(i64, &str); 6] = [
     (256 * 1024 * 1024, "256 MB"),
     (512 * 1024 * 1024, "512 MB"),
     (1024 * 1024 * 1024, "1 GB"),
     (2 * 1024 * 1024 * 1024, "2 GB"),
     (5 * 1024 * 1024 * 1024, "5 GB"),
+    (UNLIMITED, "Unlimited"),
 ];
 
 /// How much of the limit a sweep leaves behind.
@@ -85,38 +89,64 @@ pub fn limit_label(bytes: i64) -> String {
         .unwrap_or_else(|| format!("{} MB", bytes / (1024 * 1024)))
 }
 
-/// How many of the oldest series and ladder days to drop to get `before`
-/// down to `target`.
+/// How many of the oldest series and days to drop to get `before` down to
+/// `target`.
 ///
-/// `sizes` is every one's payload, oldest first. The payload is a little
-/// under what the series costs in pages, so this errs towards dropping one
+/// `sizes` is every droppable one's payload, oldest first. The payload is a
+/// little under what it costs in pages, so this errs towards dropping one
 /// more rather than one fewer, which is the right way to be wrong when the
-/// alternative is still being over the limit afterwards.
+/// alternative is still being over the limit afterwards. What the open
+/// charts draw is never among them (see [`InUse`]), so a cache that cannot
+/// get under its limit without it stops short rather than dropping it.
 fn drop_count(sizes: &[i64], before: i64, target: i64) -> usize {
-    // Always leave one. A single series larger than the whole limit would
-    // otherwise be dropped on every sweep and fetched straight back by the
-    // chart still showing it.
-    let droppable = sizes.len().saturating_sub(1);
     let mut freed = 0;
-    for (dropped, size) in sizes.iter().take(droppable).enumerate() {
+    for (dropped, size) in sizes.iter().enumerate() {
         if freed >= before - target {
             return dropped;
         }
         freed += size;
     }
-    droppable
+    sizes.len()
+}
+
+/// What the charts open now draw, which a sweep never drops.
+///
+/// Dropping it is what made a sweep pointless: the chart showing it fetched
+/// it straight back, every series and every day of it, and the next sweep
+/// found the cache as full as before and dropped it again. Anything else
+/// is dropped oldest first, and fetched again only if a chart comes to need
+/// it. A cache whose open charts alone are over the limit is left over it.
+#[derive(Clone, Default, Debug, PartialEq)]
+pub struct InUse {
+    /// Each bar series drawn, `(key, interval)`.
+    pub series: Vec<(String, String)>,
+    /// Each contract whose ladders or single trades are drawn, `(stored key,
+    /// from)`: every day of it ending after `from`, unix seconds.
+    pub days: Vec<(String, i64)>,
+}
+
+impl InUse {
+    fn holds(&self, what: &Evictable, reach: i64) -> bool {
+        match what {
+            Evictable::Series { key, interval } => self.series.iter().any(|(k, i)| k == key && i == interval),
+            Evictable::LadderDay { key, .. } | Evictable::PrintDay { key, .. } => {
+                self.days.iter().any(|(k, from)| k == key && reach >= *from)
+            }
+        }
+    }
 }
 
 /// One thing the sweep can drop: a whole bar series, or one trading day of
-/// a contract's minute ladders.
+/// a contract's minute ladders or of its single trades.
 #[derive(Clone, PartialEq, Debug)]
 enum Evictable {
     Series { key: String, interval: String },
     LadderDay { key: String, day: i64 },
+    PrintDay { key: String, day: i64 },
 }
 
-/// Drop the oldest series and ladder days until the database is back under
-/// its limit.
+/// Drop the oldest series, ladder days and trade days until the database is
+/// back under its limit, leaving alone whatever `in_use` names.
 ///
 /// Oldest by `fetched_at`, which is when a series or a day was last
 /// *written* rather than last read. That is a closer proxy for use than it
@@ -128,17 +158,19 @@ enum Evictable {
 /// happens twice a day at most and only once a cache has grown past a
 /// gigabyte.
 ///
-/// A contract's ladder days are usually written together, so they tie on
-/// `fetched_at` and go oldest trading day first: a sweep trims the far end
-/// of a contract's history rather than punching holes in it. A day dropped
-/// takes its coverage with it, so the loader knows to fetch it again.
-pub fn evict(conn: &Connection, limit: i64) -> rusqlite::Result<Swept> {
+/// A contract's ladder and trade days are usually written together, so they
+/// tie on `fetched_at` and go oldest trading day first: a sweep trims the
+/// far end of a contract's history rather than punching holes in it. A
+/// ladder day dropped takes its coverage with it, so the loader knows to
+/// fetch it again; a trade day dropped is simply not kept, and read again
+/// only by a chart reaching back to it.
+pub fn evict(conn: &Connection, limit: i64, in_use: &InUse) -> rusqlite::Result<Swept> {
     let before = used_bytes(conn);
     if before <= limit {
         return Ok(Swept { dropped: 0, before, after: before });
     }
 
-    let rows = evictable(conn)?;
+    let rows = evictable(conn, in_use)?;
     let sizes: Vec<i64> = rows.iter().map(|r| r.1).collect();
     let dropped = drop_count(&sizes, before, (limit as f64 * KEEP) as i64);
     if dropped == 0 {
@@ -151,6 +183,7 @@ pub fn evict(conn: &Connection, limit: i64) -> rusqlite::Result<Swept> {
                 tx.execute("DELETE FROM bar_series WHERE key = ?1 AND interval = ?2", [key, interval])?;
             }
             Evictable::LadderDay { key, day } => crate::store::forget_ladder_day(&tx, key, *day)?,
+            Evictable::PrintDay { key, day } => crate::store::forget_print_day(&tx, key, *day)?,
         }
     }
     tx.commit()?;
@@ -164,36 +197,51 @@ pub fn evict(conn: &Connection, limit: i64) -> rusqlite::Result<Swept> {
     Ok(Swept { dropped, before, after: used_bytes(conn) })
 }
 
-/// Every series and ladder day, as `(fetched_at, payload bytes, what)`, in
-/// the order they go.
+/// Every series, ladder day and trade day no open chart draws, as
+/// `(fetched_at, payload bytes, what)`, in the order they go.
 ///
 /// The order measured is the order dropped, so it has to be total:
-/// `fetched_at` alone ties. Among rows written in the same second, ladder
-/// days go first and by trading day, oldest first, then series by key.
-fn evictable(conn: &Connection) -> rusqlite::Result<Vec<(i64, i64, Evictable)>> {
-    let mut rows: Vec<(i64, i64, Evictable)> = Vec::new();
+/// `fetched_at` alone ties. Among rows written in the same second, days go
+/// first and by trading day, oldest first, ladders before trades, then
+/// series by key.
+fn evictable(conn: &Connection, in_use: &InUse) -> rusqlite::Result<Vec<(i64, i64, Evictable)>> {
+    // Each with how far it reaches, unix seconds, for what the charts draw.
+    let mut rows: Vec<(i64, i64, Evictable, i64)> = Vec::new();
     let mut stmt = conn.prepare(
         "SELECT fetched_at, LENGTH(ts) + LENGTH(open) + LENGTH(high) + LENGTH(low)
-              + LENGTH(close) + LENGTH(volume), key, interval
+              + LENGTH(close) + LENGTH(volume), key, interval, last_ts
          FROM bar_series",
     )?;
     let series = stmt.query_map([], |row| {
-        Ok((row.get(0)?, row.get(1)?, Evictable::Series { key: row.get(2)?, interval: row.get(3)? }))
+        Ok((row.get(0)?, row.get(1)?, Evictable::Series { key: row.get(2)?, interval: row.get(3)? }, row.get(4)?))
     })?;
     rows.extend(series.flatten());
-    let mut stmt = conn.prepare("SELECT fetched_at, LENGTH(data) + LENGTH(total), key, day FROM ladder_days")?;
+    let mut stmt = conn.prepare("SELECT fetched_at, LENGTH(data) + LENGTH(total), key, day, last_ts FROM ladder_days")?;
     let days = stmt.query_map([], |row| {
-        Ok((row.get(0)?, row.get(1)?, Evictable::LadderDay { key: row.get(2)?, day: row.get(3)? }))
+        Ok((row.get(0)?, row.get(1)?, Evictable::LadderDay { key: row.get(2)?, day: row.get(3)? }, row.get(4)?))
     })?;
     rows.extend(days.flatten());
+    // `upto` is nanoseconds, and a day known to nothing reaches nowhere.
+    let mut stmt = conn.prepare("SELECT fetched_at, LENGTH(data), key, day, upto FROM print_days")?;
+    let days = stmt.query_map([], |row| {
+        let upto: i64 = row.get(4)?;
+        Ok((row.get(0)?, row.get(1)?, Evictable::PrintDay { key: row.get(2)?, day: row.get(3)? }, upto.div_euclid(1_000_000_000)))
+    })?;
+    rows.extend(days.flatten());
+    let mut rows: Vec<(i64, i64, Evictable)> = rows
+        .into_iter()
+        .filter(|(_, _, what, reach)| !in_use.holds(what, *reach))
+        .map(|(at, size, what, _)| (at, size, what))
+        .collect();
     rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| order(&a.2).cmp(&order(&b.2))));
     Ok(rows)
 }
 
-fn order(what: &Evictable) -> (u8, i64, &str, &str) {
+fn order(what: &Evictable) -> (u8, i64, u8, &str, &str) {
     match what {
-        Evictable::LadderDay { key, day } => (0, *day, key, ""),
-        Evictable::Series { key, interval } => (1, 0, key, interval),
+        Evictable::LadderDay { key, day } => (0, *day, 0, key, ""),
+        Evictable::PrintDay { key, day } => (0, *day, 1, key, ""),
+        Evictable::Series { key, interval } => (1, 0, 0, key, interval),
     }
 }
 
@@ -202,7 +250,7 @@ fn order(what: &Evictable) -> (u8, i64, &str, &str) {
 /// Its own connection to the same file rather than the window's: WAL lets a
 /// writer work alongside readers, and the alternative is holding the one
 /// connection the UI draws from while several hundred megabytes go.
-pub fn sweep_in_background(path: PathBuf, limit: i64, done: impl Fn(Swept) + 'static) {
+pub fn sweep_in_background(path: PathBuf, limit: i64, in_use: InUse, done: impl Fn(Swept) + 'static) {
     let (sender, receiver) = async_channel::bounded::<Swept>(1);
 
     std::thread::spawn(move || {
@@ -210,7 +258,7 @@ pub fn sweep_in_background(path: PathBuf, limit: i64, done: impl Fn(Swept) + 'st
         // has to agree with it about how they are written.
         let Ok(conn) = crate::store::connect(&path) else { return };
 
-        let Ok(swept) = evict(&conn, limit) else { return };
+        let Ok(swept) = evict(&conn, limit, &in_use) else { return };
         let store = Store::adopt(conn);
         store.set_setting(SETTING_SWEPT_AT, &chrono::Utc::now().timestamp().to_string());
         let _ = sender.send_blocking(swept);
@@ -252,11 +300,11 @@ mod tests {
         assert_eq!(drop_count(&sizes, 300, 100), 3);
     }
 
-    /// Dropping the lot would take the chart on screen with it, and the next
-    /// fetch would put it straight back — twice a day, for ever.
+    /// Short of the target with everything droppable gone: all of it, and
+    /// no more — what the charts draw was never offered.
     #[test]
-    fn one_series_always_survives_however_big_it_is() {
-        assert_eq!(drop_count(&[5_000], 5_000, 800), 0);
-        assert_eq!(drop_count(&[5_000, 5_000], 10_000, 800), 1);
+    fn a_cache_that_cannot_reach_its_target_drops_what_it_may_and_stops() {
+        assert_eq!(drop_count(&[10, 10], 5_000, 800), 2);
+        assert_eq!(drop_count(&[], 5_000, 800), 0);
     }
 }

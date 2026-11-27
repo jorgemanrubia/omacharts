@@ -41,7 +41,7 @@ use rusqlite::{params, Connection};
 pub const LATEST: i32 = 11;
 
 /// How far the market data file's own migrations go.
-pub const MARKET_LATEST: i32 = 4;
+pub const MARKET_LATEST: i32 = 6;
 
 /// The schema the market data file is attached as.
 pub const MARKET: &str = "market";
@@ -435,7 +435,44 @@ Migration {
     // was read from: a day kept from the other is read again. Every day kept
     // before this is from nowhere known, and read again once.
     step: Step::Sql("ALTER TABLE market.print_days ADD COLUMN source TEXT NOT NULL DEFAULT '';"),
+}, Migration {
+    version: 5,
+    name: "when a day's prints were written",
+    risky: false,
+    // What the cache sweep orders trade days by, as it does ladder days.
+    // Every day kept before this is from the start of time, and goes first.
+    step: Step::Sql("ALTER TABLE market.print_days ADD COLUMN fetched_at INTEGER NOT NULL DEFAULT 0;"),
+}, Migration {
+    version: 6,
+    name: "the cache's version kept with the cache",
+    risky: false,
+    step: Step::Rust(cache_version_moves_in),
 }];
+
+/// Market version 6: whether the bars kept were fetched in a way still
+/// trusted, kept beside them rather than in the settings file. Kept there, a
+/// settings file started afresh next to a market file read as a cache of
+/// unknown age, and every bar in it was thrown away.
+///
+/// The version the settings file has, when it has one; with no settings
+/// file yet, the version of the day, `2`: a market file can only have been
+/// written by a build that checked its bars at that version.
+fn cache_version_moves_in(tx: &Connection) -> rusqlite::Result<()> {
+    tx.execute_batch("CREATE TABLE market.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")?;
+    let settings: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = 'meta')",
+        [],
+        |row| row.get(0),
+    )?;
+    match settings {
+        true => tx.execute(
+            "INSERT INTO market.meta (key, value) SELECT key, value FROM main.meta WHERE key = 'cache_version'",
+            [],
+        )?,
+        false => tx.execute("INSERT INTO market.meta (key, value) VALUES ('cache_version', '2')", [])?,
+    };
+    Ok(())
+}
 
 /// Version 4: the bars and quotes over to the market data file, then out of
 /// this one.
@@ -711,7 +748,8 @@ mod tests {
                 "ladder_coverage:key,from_ts,to_ts",
                 "ladder_days:key,day,tick_size,minutes,first_ts,last_ts,fetched_at,data,total",
                 "ladder_tail:key,ts,day,tick_size,data",
-                "print_days:key,day,tick_size,upto,complete,data,source",
+                "meta:key,value",
+                "print_days:key,day,tick_size,upto,complete,data,source,fetched_at",
                 "quotes:key,last,previous,at,fetched_at,previous_at",
             ]
         );

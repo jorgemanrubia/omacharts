@@ -1671,6 +1671,8 @@ fn build_data_page(context: &Rc<Context>) {
             let limit = store.cache_limit();
             row.set_subtitle(&if series == 0 {
                 describe_count(series)
+            } else if limit == cache::UNLIMITED {
+                format!("{} · {}", describe_count(series), describe_bytes(used))
             } else {
                 format!(
                     "{} · {} of {} · {}",
@@ -1721,7 +1723,7 @@ fn build_data_page(context: &Rc<Context>) {
         // nothing, and they are standing here watching the number.
         let Some(path) = ctx.store.path().map(std::path::Path::to_path_buf) else { return };
         let swept = refreshed.clone();
-        cache::sweep_in_background(path, *bytes, move |_| swept());
+        cache::sweep_in_background(path, *bytes, ctx.window.in_use(), move |_| swept());
     });
     group.add(&limit);
 

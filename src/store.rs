@@ -25,6 +25,7 @@ pub const SETTING_DRAWING_CONFIGURATIONS: &str = "drawing_configurations";
 mod ladders;
 pub mod prints;
 pub(crate) use ladders::forget_day as forget_ladder_day;
+pub(crate) use prints::forget_day as forget_print_day;
 
 use crate::migrations;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -260,7 +261,7 @@ impl Store {
         const CACHE_VERSION: i64 = 2;
         let stored: i64 = self
             .conn
-            .query_row("SELECT value FROM meta WHERE key = 'cache_version'", [], |r| {
+            .query_row("SELECT value FROM market.meta WHERE key = 'cache_version'", [], |r| {
                 r.get::<_, String>(0)
             })
             .ok()
@@ -272,7 +273,7 @@ impl Store {
         self.conn.execute("DELETE FROM bar_series", [])?;
         self.conn.execute("DELETE FROM quotes", [])?;
         self.conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('cache_version', ?1)
+            "INSERT INTO market.meta (key, value) VALUES ('cache_version', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![CACHE_VERSION.to_string()],
         )?;
@@ -664,15 +665,25 @@ impl Store {
     }
 
     /// What the cache is allowed to occupy.
+    /// What the cache is allowed to occupy: [`crate::cache::UNLIMITED`] for
+    /// no limit at all.
     pub fn cache_limit(&self) -> i64 {
-        self.setting(crate::cache::SETTING_LIMIT)
+        let stored = self.setting(crate::cache::SETTING_LIMIT);
+        if stored.as_deref().is_some_and(|v| v.trim().eq_ignore_ascii_case("unlimited")) {
+            return crate::cache::UNLIMITED;
+        }
+        stored
             .and_then(|v| v.parse::<i64>().ok())
             .filter(|bytes| *bytes > 0)
             .unwrap_or(crate::cache::DEFAULT_LIMIT)
     }
 
     pub fn set_cache_limit(&self, bytes: i64) {
-        self.set_setting(crate::cache::SETTING_LIMIT, &bytes.to_string());
+        let value = match bytes {
+            crate::cache::UNLIMITED => "unlimited".to_string(),
+            bytes => bytes.to_string(),
+        };
+        self.set_setting(crate::cache::SETTING_LIMIT, &value);
     }
 
     /// Whether enough time has passed to be worth looking again.
@@ -1939,7 +1950,7 @@ mod tests {
 
         let full = store.used_bytes();
         let limit = full / 2;
-        let swept = crate::cache::evict(&store.conn, limit).unwrap();
+        let swept = crate::cache::evict(&store.conn, limit, &Default::default()).unwrap();
 
         assert!(swept.dropped > 0, "something had to go to get under {limit}");
         assert!(swept.after <= limit, "{} is still over {limit}", swept.after);
@@ -1954,6 +1965,84 @@ mod tests {
         );
     }
 
+    /// A day of single trades, `n` of them, kept for `key` as day `day`.
+    fn trades(store: &Store, key: &str, day: i64, n: i64) {
+        use omacharts_engine::studies::orders::{Aggressor, Print};
+        let start = day * 86_400;
+        let held = prints::PrintDay {
+            tick_size: 0.25,
+            upto: (start + 86_400) * 1_000_000_000,
+            complete: true,
+            prints: (0..n).map(|i| Print::new((start + i) * 1_000_000_000, 1, 1, Aggressor::Buy, false)).collect(),
+            source: String::new(),
+        };
+        store.save_print_day(key, day, &held).unwrap();
+    }
+
+    fn kept_days(store: &Store, key: &str) -> Vec<i64> {
+        let mut statement = store.conn.prepare("SELECT day FROM print_days WHERE key = ?1 ORDER BY day").unwrap();
+        statement.query_map([key], |row| row.get(0)).unwrap().flatten().collect()
+    }
+
+    /// Single trades are most of what a futures cache holds. A sweep that
+    /// could not drop them never got under its limit, and dropped every
+    /// series and ladder day it could on every sweep instead.
+    #[test]
+    fn trade_days_are_dropped_oldest_first_like_ladder_days() {
+        let store = Store::memory().unwrap();
+        for day in 20_000..20_010 {
+            trades(&store, "fake:ES", day, 20_000);
+        }
+        store.write_bars("yahoo:SPY", Timeframe::days(1), &[bar(100, 1.0)]);
+        let limit = store.used_bytes() / 2;
+        let swept = crate::cache::evict(&store.conn, limit, &Default::default()).unwrap();
+        assert!(swept.after <= limit, "{} is still over {limit}", swept.after);
+        let kept = kept_days(&store, "fake:ES");
+        assert!(!kept.is_empty() && kept.len() < 10, "{kept:?}");
+        assert_eq!(kept.last(), Some(&20_009), "the newest day went: {kept:?}");
+        assert!(kept.windows(2).all(|pair| pair[1] == pair[0] + 1), "a hole punched in the middle: {kept:?}");
+    }
+
+    /// What the open charts draw is never dropped: a sweep that cannot get
+    /// under its limit without it stops short, and the next one, finding
+    /// the same, drops nothing — rather than dropping it for the charts to
+    /// fetch straight back, sweep after sweep.
+    #[test]
+    fn what_the_open_charts_draw_is_never_dropped_however_far_over() {
+        let store = Store::memory().unwrap();
+        for day in 20_000..20_010 {
+            trades(&store, "fake:ES", day, 20_000);
+            trades(&store, "fake:NQ", day, 2_000);
+        }
+        let bars: Vec<Bar> = (0..1000).map(|i| bar(i, i as f64)).collect();
+        store.write_bars("fake:ES", Timeframe::minutes(1), &bars);
+        store.write_bars("yahoo:SPY", Timeframe::days(1), &bars);
+        let in_use = crate::cache::InUse {
+            series: vec![("fake:ES".into(), Timeframe::minutes(1).key())],
+            // The chart's first bar is in day 20,004: from it on.
+            days: vec![("fake:ES".into(), 20_004 * 86_400 + 600)],
+        };
+        let swept = crate::cache::evict(&store.conn, 1, &in_use).unwrap();
+        assert!(swept.dropped > 0);
+        assert_eq!(kept_days(&store, "fake:ES"), (20_004..20_010).collect::<Vec<_>>(), "the chart's days went");
+        assert!(kept_days(&store, "fake:NQ").is_empty(), "nothing draws these");
+        assert_eq!(store.load_bars("fake:ES", Timeframe::minutes(1)).len(), 1000, "the chart's bars went");
+        assert!(store.load_bars("yahoo:SPY", Timeframe::days(1)).is_empty());
+
+        let again = crate::cache::evict(&store.conn, 1, &in_use).unwrap();
+        assert_eq!(again.dropped, 0, "the next sweep dropped what the charts draw");
+    }
+
+    /// Unlimited keeps everything ever fetched.
+    #[test]
+    fn an_unlimited_cache_drops_nothing() {
+        let store = Store::memory().unwrap();
+        trades(&store, "fake:ES", 20_000, 20_000);
+        let swept = crate::cache::evict(&store.conn, crate::cache::UNLIMITED, &Default::default()).unwrap();
+        assert_eq!(swept.dropped, 0);
+        assert_eq!(kept_days(&store, "fake:ES"), vec![20_000]);
+    }
+
     /// The usual case: a cache nowhere near its limit is left alone, and
     /// nothing is read or rewritten to find that out.
     #[test]
@@ -1961,7 +2050,7 @@ mod tests {
         let store = Store::memory().unwrap();
         store.write_bars("yahoo:ES=F", Timeframe::days(1), &[bar(100, 1.0)]);
 
-        let swept = crate::cache::evict(&store.conn, 1024 * 1024 * 1024).unwrap();
+        let swept = crate::cache::evict(&store.conn, 1024 * 1024 * 1024, &Default::default()).unwrap();
         assert_eq!(swept.dropped, 0);
         assert_eq!(swept.before, swept.after);
         assert_eq!(store.cached_series(), 1);
@@ -1998,6 +2087,30 @@ mod tests {
         // Nonsense in the settings table is not a reason to have no limit.
         store.set_setting(crate::cache::SETTING_LIMIT, "nonsense");
         assert_eq!(store.cache_limit(), crate::cache::DEFAULT_LIMIT);
+
+        // Asking for none is.
+        store.set_cache_limit(crate::cache::UNLIMITED);
+        assert_eq!(store.setting(crate::cache::SETTING_LIMIT).as_deref(), Some("unlimited"));
+        assert_eq!(store.cache_limit(), crate::cache::UNLIMITED);
+    }
+
+    /// The settings file started afresh — restored, moved aside, or never
+    /// copied over — beside the market file that was always there: the
+    /// cache is the same cache, and nothing in it is fetched again.
+    #[test]
+    fn a_fresh_settings_file_keeps_the_market_file_beside_it() {
+        let dir = scratch_dir("fresh-settings");
+        let file = dir.join("omacharts.db");
+        {
+            let store = Store::open_at(&file).unwrap();
+            store.write_bars("k", Timeframe::days(1), &[bar(100, 1.0)]);
+        }
+        for leftover in ["omacharts.db", "omacharts.db-wal", "omacharts.db-shm"] {
+            let _ = std::fs::remove_file(dir.join(leftover));
+        }
+        let store = Store::open_at(&file).unwrap();
+        assert_eq!(store.cached_series(), 1, "the bars beside a new settings file were thrown away");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2012,7 +2125,7 @@ mod tests {
             // Pretend it was written before the fix.
             store
                 .conn
-                .execute("UPDATE meta SET value = '1' WHERE key = 'cache_version'", [])
+                .execute("UPDATE market.meta SET value = '1' WHERE key = 'cache_version'", [])
                 .unwrap();
         }
 

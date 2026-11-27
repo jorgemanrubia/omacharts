@@ -8381,6 +8381,15 @@ fn plugin_uninstall(home: &std::path::Path, as_json: bool) -> Result<String, Fau
 
 fn cache_status(store: &Store, as_json: bool) -> Result<String, Fault> {
     let (used, limit, series) = (store.used_bytes(), store.cache_limit(), store.cached_series());
+    if limit == crate::cache::UNLIMITED {
+        return match as_json {
+            true => Ok(format!(
+                "{}\n",
+                json!({"series": series, "usedBytes": used, "limitBytes": null, "percent": null})
+            )),
+            false => Ok(format!("{series} series · {} · no limit\n", bytes(used))),
+        };
+    }
     let share = if limit > 0 { used as f64 / limit as f64 * 100.0 } else { 0.0 };
     match as_json {
         true => Ok(format!(
@@ -8407,13 +8416,19 @@ fn cache_clear(store: &Store, as_json: bool) -> Result<String, Fault> {
 fn cache_limit(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
     let Some(text) = arg(m, "SIZE") else {
         let limit = store.cache_limit();
-        return match as_json {
-            true => Ok(format!("{}\n", json!({"limitBytes": limit}))),
-            false => Ok(format!("{}\n", bytes(limit))),
+        return match (as_json, limit == crate::cache::UNLIMITED) {
+            (true, true) => Ok(format!("{}\n", json!({"limitBytes": null}))),
+            (true, false) => Ok(format!("{}\n", json!({"limitBytes": limit}))),
+            (false, true) => Ok("unlimited\n".to_string()),
+            (false, false) => Ok(format!("{}\n", bytes(limit))),
         };
     };
+    if text.trim().eq_ignore_ascii_case("unlimited") {
+        store.set_cache_limit(crate::cache::UNLIMITED);
+        return said(as_json, json!({"limitBytes": null}), "the cache will keep everything".to_string());
+    }
     let parsed = parse_bytes(text)
-        .ok_or_else(|| Fault::usage(format!("{text:?} is not a size; try 512MB or 2GB")))?;
+        .ok_or_else(|| Fault::usage(format!("{text:?} is not a size; try 512MB, 2GB or unlimited")))?;
     store.set_cache_limit(parsed);
     said(
         as_json,

@@ -256,6 +256,12 @@ impl AtPrice {
         }
     }
 
+    /// What the charts draw of the ladders kept: each contract's stored key,
+    /// and the first moment wanted of it. The cache sweep leaves it be.
+    pub fn in_use(&self) -> Vec<(String, i64)> {
+        self.entries.borrow().values().map(|entry| (entry.stored.clone(), entry.from)).collect()
+    }
+
     /// What `key`'s data is kept under: a root that rolls keeps each month
     /// apart.
     pub fn stored_for(&self, key: &str, symbol: &str) -> String {

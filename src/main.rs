@@ -250,16 +250,20 @@ fn run() -> glib::ExitCode {
             }
 
             if let Some((path, limit)) = sweep {
-                glib::idle_add_local_once(move || {
-                    omacharts::cache::sweep_in_background(path, limit, |swept| {
+                // A minute in, not at the first idle: by then the charts
+                // have read what they draw, and the sweep knows to leave it.
+                let charts = window.borrow().as_ref().map(Rc::downgrade);
+                glib::timeout_add_seconds_local_once(60, move || {
+                    let in_use = charts.and_then(|charts| charts.upgrade()).map(|window| window.in_use()).unwrap_or_default();
+                    omacharts::cache::sweep_in_background(path, limit, in_use, |swept| {
                         if swept.dropped > 0 {
                             eprintln!(
-                                "omacharts: cache over its limit, dropped {} series",
+                                "omacharts: cache over its limit, dropped {} series and days",
                                 swept.dropped
                             );
                             log_words::say(log_words::note(
                                 "Price cache",
-                                format!("Over its limit · dropped {} series", swept.dropped),
+                                format!("Over its limit · dropped {} series and days", swept.dropped),
                             ));
                         }
                     });
