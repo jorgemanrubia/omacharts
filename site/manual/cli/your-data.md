@@ -72,5 +72,7 @@ cleared 21 cached series
 `cache limit` without a size reads it. A size is a number with `MB` or `GB`
 (`512MB`, `2GB`, `1.5GB`). Any size is accepted, not only the sizes
 Preferences offers; something that is not a size is refused with exit 2.
+`cache limit unlimited` keeps everything. `cache limit` then reads
+`unlimited`, and `cache status` ends in `no limit` instead of a share.
 `config set cache_limit` takes the same limit, in bytes. `cache clear`
 removes downloaded prices only. Settings, watchlists and chartbooks stay.

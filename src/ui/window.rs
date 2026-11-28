@@ -10449,9 +10449,23 @@ impl Window {
                     }
                 }
             }
-            None => feed
-                .loader
-                .fetch(Request { key, symbol, timeframe, speculative: false }, FOREGROUND),
+            None => {
+                // A series kept and current is drawn from the store alone:
+                // asking for its tail again on every show fetched the same
+                // bars over and over.
+                let candidate = refresh::Candidate {
+                    delivery: feed.provider.delivery(),
+                    visible: true,
+                    at_latest: true,
+                    timeframe,
+                    instrument: &instrument,
+                    fetched_at: self.store.coverage(&key, native).map(|coverage| coverage.fetched_at),
+                };
+                match !cached_was_empty && refresh::current_without_fetch(&candidate, chrono::Utc::now().timestamp()) {
+                    true => pane.set_feed_phase(pane::FeedPhase::Connected),
+                    false => feed.loader.fetch(Request { key, symbol, timeframe, speculative: false }, FOREGROUND),
+                }
+            }
         }
         pane.follow_load(load);
         self.load_comparisons(pane);
@@ -10850,6 +10864,29 @@ impl Window {
 
     /// Offer a tail fetch for each chart on screen that has gone stale.
     ///
+    /// What the charts of the open chartbook draw from the cache, which a
+    /// sweep of it leaves alone: each chart's series, and the ladders and
+    /// trades each feed holds for them. The charts hidden behind a
+    /// maximized one too: they are drawn again the moment it is put back.
+    pub fn in_use(&self) -> crate::cache::InUse {
+        let mut in_use = crate::cache::InUse::default();
+        for pane in self.panes.borrow().iter() {
+            let instrument = pane.instrument.borrow().clone();
+            let Some(instrument) = instrument else { continue };
+            let Some(routed) = self.route_pane(pane, &instrument) else { continue };
+            in_use.series.push((routed.key(), pane.timeframe.get().native().key()));
+        }
+        for feed in self.feeds().iter() {
+            if let Some(at_price) = &feed.at_price {
+                in_use.days.extend(at_price.in_use());
+            }
+            if let Some(large) = &feed.large_orders {
+                in_use.days.extend(large.in_use());
+            }
+        }
+        in_use
+    }
+
     /// Deliberately asks [`refresh::due`] about every chart rather than
     /// second-guessing any of it here, so that there is exactly one place
     /// where the decision lives and exactly one place to read to find out

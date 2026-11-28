@@ -1700,6 +1700,9 @@ the cache will be pruned back under 2.0 GB
   [exit 0]
 ```
 
+`cache limit unlimited` keeps everything; `cache status` then ends in
+`no limit`. What the open charts show is never pruned.
+
 `cache clear` throws every cached series away. Settings, watchlists and
 chartbooks are not cache and are left alone.
 

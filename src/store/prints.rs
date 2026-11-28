@@ -20,6 +20,13 @@ use omacharts_engine::studies::orders::Print;
 
 use super::Store;
 
+/// Forget day `day` of `key`'s trades, on any connection: the cache sweep's
+/// own, in its transaction.
+pub(crate) fn forget_day(conn: &rusqlite::Connection, key: &str, day: i64) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM print_days WHERE key = ?1 AND day = ?2", params![key, day])?;
+    Ok(())
+}
+
 /// Bytes a trade.
 const PRINT_BYTES: usize = 16;
 
@@ -65,6 +72,7 @@ impl Store {
     /// Day `day` of `key`'s trades, if it is kept in `tick_size`'s ticks,
     /// read from `source`.
     pub fn load_print_day(&self, key: &str, day: i64, tick_size: f64, source: &str) -> Option<PrintDay> {
+        let key = &*super::market_key(key);
         let row = self
             .conn
             .prepare_cached("SELECT tick_size, upto, complete, data, source FROM print_days WHERE key = ?1 AND day = ?2")
@@ -83,25 +91,59 @@ impl Store {
     /// Is day `day` of `key`'s trades kept whole, in `tick_size`'s ticks,
     /// as read from `source`? Asked without reading the day.
     pub fn print_day_complete(&self, key: &str, day: i64, tick_size: f64, source: &str) -> bool {
+        let key = &*super::market_key(key);
         self.conn
             .prepare_cached("SELECT 1 FROM print_days WHERE key = ?1 AND day = ?2 AND tick_size = ?3 AND source = ?4 AND complete")
             .and_then(|mut s| s.exists(params![key, day, tick_size, source]))
             .unwrap_or(false)
     }
 
-    /// Keep day `day` of `key`'s trades, in place of what was kept.
+    /// Keep day `day` of `key`'s trades, in place of what was kept, stamped
+    /// now: what the cache sweep orders days by.
     pub fn save_print_day(&self, key: &str, day: i64, held: &PrintDay) -> rusqlite::Result<()> {
+        let key = &*super::market_key(key);
         self.conn.execute(
-            "INSERT OR REPLACE INTO print_days (key, day, tick_size, upto, complete, data, source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![key, day, held.tick_size, held.upto, held.complete, encode_prints(&held.prints), held.source],
+            "INSERT OR REPLACE INTO print_days (key, day, tick_size, upto, complete, data, source, fetched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                key,
+                day,
+                held.tick_size,
+                held.upto,
+                held.complete,
+                encode_prints(&held.prints),
+                held.source,
+                chrono::Utc::now().timestamp()
+            ],
         )?;
         Ok(())
+    }
+
+    /// Is any day of `key`'s trades from before day `day` kept whole with
+    /// trades in it, in `tick_size`'s ticks, as read from `source`? What
+    /// tells a gap — days the cache let go, or a feed's holidays — from the
+    /// start of what there is.
+    pub fn print_days_kept_before(&self, key: &str, day: i64, tick_size: f64, source: &str) -> bool {
+        let key = &*super::market_key(key);
+        self.conn
+            .prepare_cached(
+                "SELECT 1 FROM print_days WHERE key = ?1 AND day < ?2 AND tick_size = ?3 AND source = ?4
+                 AND complete AND LENGTH(data) > 0",
+            )
+            .and_then(|mut s| s.exists(params![key, day, tick_size, source]))
+            .unwrap_or(false)
+    }
+
+    /// Forget day `day` of `key`'s trades, as the cache sweep does.
+    pub fn forget_print_day(&self, key: &str, day: i64) -> rusqlite::Result<()> {
+        let key = &*super::market_key(key);
+        forget_day(&self.conn, key, day)
     }
 
     /// Forget `key`'s trades from before day `before`: a month that rolled
     /// off, or days past what is wanted.
     pub fn forget_print_days(&self, key: &str, before: i64) -> rusqlite::Result<usize> {
+        let key = &*super::market_key(key);
         self.conn.execute("DELETE FROM print_days WHERE key = ?1 AND day < ?2", params![key, before])
     }
 }

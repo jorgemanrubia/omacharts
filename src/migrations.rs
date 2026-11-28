@@ -38,10 +38,10 @@ use rusqlite::{params, Connection};
 
 /// How far the migrations go. A database claiming more than this was written
 /// by a newer Omacharts than the one opening it.
-pub const LATEST: i32 = 11;
+pub const LATEST: i32 = 12;
 
 /// How far the market data file's own migrations go.
-pub const MARKET_LATEST: i32 = 4;
+pub const MARKET_LATEST: i32 = 6;
 
 /// The schema the market data file is attached as.
 pub const MARKET: &str = "market";
@@ -332,7 +332,109 @@ Migration {
     // login. Nothing is lost, so nothing to snapshot.
     risky: false,
     step: Step::Rust(rithmic_cache_follows_its_login),
+},
+Migration {
+    version: 12,
+    name: "market data is kept once, whichever login fetched it",
+    // Version 11 kept what each Rithmic login fetched apart, under
+    // `rithmic@<login id>:…`: two logins kept the same trades twice, and
+    // the data login changed asked for everything again. Now it is kept
+    // under the feed's kind, `rithmic:…`, whichever login fetched it; where
+    // two logins kept the same series or day, the more complete stays. A
+    // cache, so nothing to snapshot.
+    risky: false,
+    step: Step::Rust(market_data_kept_once),
 }];
+
+/// Version 12: every market data row kept under one login's feed,
+/// `<kind>@<login>:<symbol>`, moves to `<kind>:<symbol>`; where a row is
+/// there already, the more complete of the two stays.
+fn market_data_kept_once(tx: &Connection) -> rusqlite::Result<()> {
+    // Each table: the columns that, with the key, name a row; and what
+    // makes one row more complete than another of the same name.
+    let tables: [(&str, &str, &str); 6] = [
+        ("bar_series", "interval", "count, fetched_at"),
+        ("quotes", "", "fetched_at"),
+        ("ladder_days", "day", "minutes, fetched_at"),
+        ("ladder_tail", "ts", "0"),
+        ("ladder_coverage", "from_ts", "to_ts"),
+        ("print_days", "day", "complete, LENGTH(data), upto"),
+    ];
+    for (table, names, complete) in tables {
+        let named = |prefix: &str| match names {
+            "" => " AND ?2 IS NULL".to_string(),
+            names => format!(" AND {prefix}{names} = ?2"),
+        };
+        // A constant orders nothing (and SQLite reads a bare number as a
+        // column's place), so a table where any row will do goes by rowid.
+        let mut descending: Vec<String> = complete
+            .split(',')
+            .map(str::trim)
+            .filter(|column| column.parse::<i64>().is_err())
+            .map(|column| format!("{column} DESC"))
+            .collect();
+        if descending.is_empty() {
+            descending.push("rowid".to_string());
+        }
+        let rows: Vec<(i64, String, rusqlite::types::Value)> = {
+            let mut statement = tx.prepare(&format!(
+                "SELECT rowid, key, {} FROM market.{table}
+                 WHERE instr(key, '@') > 0 AND instr(key, '@') < instr(key, ':')
+                 ORDER BY {}",
+                if names.is_empty() { "NULL" } else { names },
+                descending.join(", "),
+            ))?;
+            statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<Result<_, _>>()?
+        };
+        for (rowid, key, name) in rows {
+            let Some((feed, symbol)) = key.split_once(':') else { continue };
+            let kind = feed.split('@').next().unwrap_or(feed);
+            let to = format!("{kind}:{symbol}");
+            // Most complete first: the first to arrive at a name keeps it,
+            // unless the row already there is more complete still.
+            let there: bool = tx.query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM market.{table} kept, market.{table} moving
+                     WHERE kept.key = ?1{} AND moving.rowid = ?3
+                       AND ({complete_kept}) >= ({complete_moving}))",
+                    named("kept."),
+                    complete_kept = prefixed(complete, "kept."),
+                    complete_moving = prefixed(complete, "moving."),
+                ),
+                rusqlite::params![to, name, rowid],
+                |row| row.get(0),
+            )?;
+            match there {
+                true => tx.execute(&format!("DELETE FROM market.{table} WHERE rowid = ?1"), [rowid])?,
+                false => {
+                    tx.execute(
+                        &format!("DELETE FROM market.{table} WHERE key = ?1{}", named("")),
+                        rusqlite::params![to, name],
+                    )?;
+                    tx.execute(&format!("UPDATE market.{table} SET key = ?1 WHERE rowid = ?2"), rusqlite::params![to, rowid])?
+                }
+            };
+        }
+    }
+    Ok(())
+}
+
+/// `columns`, a list of them, each read from the row `row`: `kept.count,
+/// kept.fetched_at`. A function of a column keeps its call.
+fn prefixed(columns: &str, row: &str) -> String {
+    columns
+        .split(',')
+        .map(|column| {
+            let column = column.trim();
+            match column.split_once('(') {
+                Some((call, inner)) => format!("{call}({row}{inner}"),
+                None if column.parse::<i64>().is_ok() => column.to_string(),
+                None => format!("{row}{column}"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 /// Everything that has ever been true of the market data file.
 ///
@@ -435,7 +537,44 @@ Migration {
     // was read from: a day kept from the other is read again. Every day kept
     // before this is from nowhere known, and read again once.
     step: Step::Sql("ALTER TABLE market.print_days ADD COLUMN source TEXT NOT NULL DEFAULT '';"),
+}, Migration {
+    version: 5,
+    name: "when a day's prints were written",
+    risky: false,
+    // What the cache sweep orders trade days by, as it does ladder days.
+    // Every day kept before this is from the start of time, and goes first.
+    step: Step::Sql("ALTER TABLE market.print_days ADD COLUMN fetched_at INTEGER NOT NULL DEFAULT 0;"),
+}, Migration {
+    version: 6,
+    name: "the cache's version kept with the cache",
+    risky: false,
+    step: Step::Rust(cache_version_moves_in),
 }];
+
+/// Market version 6: whether the bars kept were fetched in a way still
+/// trusted, kept beside them rather than in the settings file. Kept there, a
+/// settings file started afresh next to a market file read as a cache of
+/// unknown age, and every bar in it was thrown away.
+///
+/// The version the settings file has, when it has one; with no settings
+/// file yet, the version of the day, `2`: a market file can only have been
+/// written by a build that checked its bars at that version.
+fn cache_version_moves_in(tx: &Connection) -> rusqlite::Result<()> {
+    tx.execute_batch("CREATE TABLE market.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")?;
+    let settings: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = 'meta')",
+        [],
+        |row| row.get(0),
+    )?;
+    match settings {
+        true => tx.execute(
+            "INSERT INTO market.meta (key, value) SELECT key, value FROM main.meta WHERE key = 'cache_version'",
+            [],
+        )?,
+        false => tx.execute("INSERT INTO market.meta (key, value) VALUES ('cache_version', '2')", [])?,
+    };
+    Ok(())
+}
 
 /// Version 4: the bars and quotes over to the market data file, then out of
 /// this one.
@@ -711,7 +850,8 @@ mod tests {
                 "ladder_coverage:key,from_ts,to_ts",
                 "ladder_days:key,day,tick_size,minutes,first_ts,last_ts,fetched_at,data,total",
                 "ladder_tail:key,ts,day,tick_size,data",
-                "print_days:key,day,tick_size,upto,complete,data,source",
+                "meta:key,value",
+                "print_days:key,day,tick_size,upto,complete,data,source,fetched_at",
                 "quotes:key,last,previous,at,fetched_at,previous_at",
             ]
         );
@@ -993,6 +1133,59 @@ mod tests {
         assert_eq!(unreadable.0.as_deref(), Some("not a list"), "carried, not lost");
     }
 
+    /// What two Rithmic logins fetched of the same contract is kept once,
+    /// under the feed's kind: the more complete of the two where both kept
+    /// the same series or day, and whatever either kept alone. Other feeds
+    /// are untouched.
+    #[test]
+    fn market_data_is_kept_once_whichever_login_fetched_it() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("ATTACH ':memory:' AS market", []).unwrap();
+        apply(&conn, MARKET, MARKET_MIGRATIONS, MARKET_LATEST, None).unwrap();
+        apply(&conn, "main", &MIGRATIONS[..11], 11, None).unwrap();
+        let series = |key: &str, interval: &str, count: i64| {
+            conn.execute(
+                "INSERT INTO market.bar_series (key, interval, first_ts, last_ts, count, fetched_at, ts, open, high, low, close, volume)
+                 VALUES (?1, ?2, 0, 0, ?3, 0, x'', x'', x'', x'', x'', x'')",
+                rusqlite::params![key, interval, count],
+            )
+            .unwrap();
+        };
+        series("rithmic@1:ESZ6", "1m", 500);
+        series("rithmic@2:ESZ6", "1m", 900);
+        series("rithmic@2:ESZ6", "1D", 10);
+        series("rithmic@1:NQZ6", "1m", 7);
+        series("yahoo:SPY", "1D", 3);
+        let day = |key: &str, day: i64, complete: bool, data: &[u8]| {
+            conn.execute(
+                "INSERT INTO market.print_days (key, day, tick_size, upto, complete, data) VALUES (?1, ?2, 0.25, 0, ?3, ?4)",
+                rusqlite::params![key, day, complete, data],
+            )
+            .unwrap();
+        };
+        day("rithmic@1:ESZ6", 1, true, &[0; 32]);
+        day("rithmic@2:ESZ6", 1, false, &[0; 64]);
+        day("rithmic@2:ESZ6", 2, true, &[0; 16]);
+        conn.execute("INSERT INTO market.quotes (key, last, fetched_at) VALUES ('rithmic@1:ESZ6', 1.0, 5)", []).unwrap();
+        conn.execute("INSERT INTO market.quotes (key, last, fetched_at) VALUES ('rithmic@2:ESZ6', 2.0, 9)", []).unwrap();
+
+        run(&conn, None).unwrap();
+        let rows = |sql: &str| -> Vec<String> {
+            let mut statement = conn.prepare(sql).unwrap();
+            statement.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+        };
+        assert_eq!(
+            rows("SELECT key || ' ' || interval || ' ' || count FROM market.bar_series ORDER BY key, interval"),
+            ["rithmic:ESZ6 1D 10", "rithmic:ESZ6 1m 900", "rithmic:NQZ6 1m 7", "yahoo:SPY 1D 3"]
+        );
+        assert_eq!(
+            rows("SELECT key || ' ' || day || ' ' || complete || ' ' || LENGTH(data) FROM market.print_days ORDER BY day"),
+            ["rithmic:ESZ6 1 1 32", "rithmic:ESZ6 2 1 16"],
+            "a whole day is more complete than a longer one still open"
+        );
+        assert_eq!(rows("SELECT key || ' ' || last FROM market.quotes"), ["rithmic:ESZ6 2.0"]);
+    }
+
     /// What was fetched through Rithmic is kept under the feed of the login
     /// that fetched it: the data login, or the first Rithmic login without
     /// one. A row the new feed already has is the one kept, other feeds are
@@ -1013,7 +1206,7 @@ mod tests {
                 conn.execute("INSERT INTO market.ladder_coverage (key, from_ts, to_ts) VALUES (?1, 0, 60)", [key])
                     .unwrap();
             }
-            run(&conn, None).unwrap();
+            apply(&conn, "main", &MIGRATIONS[..11], 11, None).unwrap();
             let keys = |table: &str| -> Vec<String> {
                 let mut statement = conn.prepare(&format!("SELECT key FROM market.{table} ORDER BY key")).unwrap();
                 statement.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()

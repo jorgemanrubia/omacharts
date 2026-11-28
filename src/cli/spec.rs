@@ -2078,7 +2078,7 @@ pub const SURFACE: &[Noun] = &[
             Verb {
                 name: "limit",
                 about: "Read or set the size the cache is pruned back under",
-                args: &[Arg::opt("SIZE", "such as 512MB or 2GB; omit to read it")],
+                args: &[Arg::opt("SIZE", "such as 512MB or 2GB, or unlimited; omit to read it")],
                 flags: &[],
                 example: "omacharts cache limit 2GB",
                 json: true,

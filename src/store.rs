@@ -25,9 +25,26 @@ pub const SETTING_DRAWING_CONFIGURATIONS: &str = "drawing_configurations";
 mod ladders;
 pub mod prints;
 pub(crate) use ladders::forget_day as forget_ladder_day;
+pub(crate) use prints::forget_day as forget_print_day;
 
 use crate::migrations;
 use rusqlite::{params, Connection, OptionalExtension};
+
+/// The key market data is kept under, for the feed's key `key`.
+///
+/// A feed of one login's, `rithmic@<id>:ES`, keeps it under its kind,
+/// `rithmic:ES`: the exchange's trades are the same whichever login fetched
+/// them, so two logins keep one copy, and the data login changed finds
+/// everything still there. Everything else a login has of its own — its
+/// session, its entitlements, which login serves a chart — goes by the
+/// feed's key, and never reaches the store.
+pub fn market_key(key: &str) -> std::borrow::Cow<'_, str> {
+    let Some((feed, rest)) = key.split_once(':') else { return key.into() };
+    match feed.split_once(omacharts_engine::providers::LOGIN_MARK) {
+        Some((kind, _)) => format!("{kind}:{rest}").into(),
+        None => key.into(),
+    }
+}
 
 pub struct Store {
     conn: Connection,
@@ -100,6 +117,12 @@ pub struct StoredCloses {
 
 impl Store {
     pub fn open() -> Result<Store, migrations::Error> {
+        // A test build's tests share one default store, and two opening it
+        // for the first time at once both set out to migrate it.
+        #[cfg(test)]
+        static OPENING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        #[cfg(test)]
+        let _opening = OPENING.lock().unwrap_or_else(|e| e.into_inner());
         let dir = data_dir();
         let _ = std::fs::create_dir_all(&dir);
         Store::open_at(&dir.join("omacharts.db"))
@@ -260,7 +283,7 @@ impl Store {
         const CACHE_VERSION: i64 = 2;
         let stored: i64 = self
             .conn
-            .query_row("SELECT value FROM meta WHERE key = 'cache_version'", [], |r| {
+            .query_row("SELECT value FROM market.meta WHERE key = 'cache_version'", [], |r| {
                 r.get::<_, String>(0)
             })
             .ok()
@@ -272,7 +295,7 @@ impl Store {
         self.conn.execute("DELETE FROM bar_series", [])?;
         self.conn.execute("DELETE FROM quotes", [])?;
         self.conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('cache_version', ?1)
+            "INSERT INTO market.meta (key, value) VALUES ('cache_version', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![CACHE_VERSION.to_string()],
         )?;
@@ -359,6 +382,7 @@ impl Store {
     // -- bars --------------------------------------------------------------
 
     pub fn coverage(&self, key: &str, timeframe: Timeframe) -> Option<Coverage> {
+        let key = &*market_key(key);
         self.conn
             .query_row(
                 "SELECT first_ts, last_ts, count, fetched_at FROM bar_series
@@ -384,6 +408,7 @@ impl Store {
     /// The sidebar asks this for every row, every time a quote moves, so the
     /// close column is read for the one series chosen, not for each of them.
     pub fn latest_intraday_close(&self, key: &str) -> Option<(i64, i64, f64)> {
+        let key = &*market_key(key);
         let (timeframe, last_ts, fetched_at) = self.latest_intraday_series(key)?;
         let close: Vec<u8> = self
             .conn
@@ -398,6 +423,7 @@ impl Store {
     /// resolution, the stamp of its last bar, and when it was fetched. The
     /// series [`Store::latest_intraday_close`] reads its close from.
     pub fn latest_intraday_series(&self, key: &str) -> Option<(Timeframe, i64, i64)> {
+        let key = &*market_key(key);
         let mut series = self
             .conn
             .prepare_cached("SELECT interval, last_ts, fetched_at FROM bar_series WHERE key = ?1")
@@ -425,6 +451,7 @@ impl Store {
     /// by, in the one place that comment admits it is blunt: a series being
     /// polled is a series somebody has on screen.
     pub fn mark_fetched(&self, key: &str, timeframe: Timeframe) {
+        let key = &*market_key(key);
         let _ = self.conn.execute(
             "UPDATE bar_series SET fetched_at = ?3 WHERE key = ?1 AND interval = ?2",
             params![key, timeframe.key(), chrono::Utc::now().timestamp()],
@@ -435,6 +462,7 @@ impl Store {
 
     /// Store the closes a batch brought back for `key`.
     pub fn write_closes(&self, key: &str, closes: &omacharts_engine::Closes) {
+        let key = &*market_key(key);
         let _ = self.conn.execute(
             "INSERT INTO quotes (key, last, previous, at, previous_at, fetched_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -460,6 +488,7 @@ impl Store {
     /// its bars instead, see [`crate::cli::plan_refresh`], rather than asking
     /// the batch again on every run and getting the same nothing.
     pub fn mark_closes_asked(&self, key: &str) {
+        let key = &*market_key(key);
         let _ = self.conn.execute(
             "INSERT INTO quotes (key, fetched_at) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET fetched_at = excluded.fetched_at,
@@ -470,6 +499,7 @@ impl Store {
 
     /// The closes last fetched for `key` in a batch, if any came back.
     pub fn load_closes(&self, key: &str) -> Option<StoredCloses> {
+        let key = &*market_key(key);
         self.conn
             .query_row(
                 "SELECT last, previous, at, previous_at, fetched_at FROM quotes
@@ -493,6 +523,7 @@ impl Store {
 
     /// When `key` was last asked for in a batch, answered or not.
     pub fn closes_fetched_at(&self, key: &str) -> Option<i64> {
+        let key = &*market_key(key);
         self.conn
             .query_row("SELECT fetched_at FROM quotes WHERE key = ?1", params![key], |r| r.get(0))
             .optional()
@@ -503,6 +534,7 @@ impl Store {
     /// Pretend a series was last fetched at `at`, for tests about staleness.
     #[cfg(test)]
     pub fn backdate(&self, key: &str, timeframe: Timeframe, at: i64) {
+        let key = &*market_key(key);
         let _ = self.conn.execute(
             "UPDATE bar_series SET fetched_at = ?3 WHERE key = ?1 AND interval = ?2",
             params![key, timeframe.key(), at],
@@ -512,6 +544,7 @@ impl Store {
     /// Pretend a batch of closes was last fetched at `at`.
     #[cfg(test)]
     pub fn backdate_closes(&self, key: &str, at: i64) {
+        let key = &*market_key(key);
         let _ = self.conn.execute("UPDATE quotes SET fetched_at = ?2 WHERE key = ?1", params![key, at]);
     }
 
@@ -519,6 +552,7 @@ impl Store {
     /// is read may be written back, so a chart cleans what it draws with
     /// [`omacharts_engine::drawable`] instead.
     pub fn load_bars(&self, key: &str, timeframe: Timeframe) -> Vec<Bar> {
+        let key = &*market_key(key);
         let row: Option<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = self
             .conn
             .query_row(
@@ -561,6 +595,7 @@ impl Store {
     /// forming when we saw it, so a bar arriving with a timestamp we already
     /// hold always wins. Returns the merged series.
     pub fn merge_bars(&self, key: &str, timeframe: Timeframe, fresh: &[Bar]) -> Vec<Bar> {
+        let key = &*market_key(key);
         let mut bars = self.load_bars(key, timeframe);
         if fresh.is_empty() {
             return bars;
@@ -582,6 +617,7 @@ impl Store {
     /// Replace a series wholesale. Used by [`Self::merge_bars`], and when an
     /// overlap mismatch means the cached history can no longer be trusted.
     pub fn write_bars(&self, key: &str, timeframe: Timeframe, bars: &[Bar]) {
+        let key = &*market_key(key);
         if bars.is_empty() {
             let _ = self.conn.execute(
                 "DELETE FROM bar_series WHERE key = ?1 AND interval = ?2",
@@ -620,6 +656,7 @@ impl Store {
     }
 
     pub fn drop_series(&self, key: &str, timeframe: Timeframe) {
+        let key = &*market_key(key);
         let _ = self.conn.execute(
             "DELETE FROM bar_series WHERE key = ?1 AND interval = ?2",
             params![key, timeframe.key()],
@@ -664,15 +701,25 @@ impl Store {
     }
 
     /// What the cache is allowed to occupy.
+    /// What the cache is allowed to occupy: [`crate::cache::UNLIMITED`] for
+    /// no limit at all.
     pub fn cache_limit(&self) -> i64 {
-        self.setting(crate::cache::SETTING_LIMIT)
+        let stored = self.setting(crate::cache::SETTING_LIMIT);
+        if stored.as_deref().is_some_and(|v| v.trim().eq_ignore_ascii_case("unlimited")) {
+            return crate::cache::UNLIMITED;
+        }
+        stored
             .and_then(|v| v.parse::<i64>().ok())
             .filter(|bytes| *bytes > 0)
             .unwrap_or(crate::cache::DEFAULT_LIMIT)
     }
 
     pub fn set_cache_limit(&self, bytes: i64) {
-        self.set_setting(crate::cache::SETTING_LIMIT, &bytes.to_string());
+        let value = match bytes {
+            crate::cache::UNLIMITED => "unlimited".to_string(),
+            bytes => bytes.to_string(),
+        };
+        self.set_setting(crate::cache::SETTING_LIMIT, &value);
     }
 
     /// Whether enough time has passed to be worth looking again.
@@ -1939,7 +1986,7 @@ mod tests {
 
         let full = store.used_bytes();
         let limit = full / 2;
-        let swept = crate::cache::evict(&store.conn, limit).unwrap();
+        let swept = crate::cache::evict(&store.conn, limit, &Default::default()).unwrap();
 
         assert!(swept.dropped > 0, "something had to go to get under {limit}");
         assert!(swept.after <= limit, "{} is still over {limit}", swept.after);
@@ -1954,6 +2001,96 @@ mod tests {
         );
     }
 
+    /// A day of single trades, `n` of them, kept for `key` as day `day`.
+    fn trades(store: &Store, key: &str, day: i64, n: i64) {
+        use omacharts_engine::studies::orders::{Aggressor, Print};
+        let start = day * 86_400;
+        let held = prints::PrintDay {
+            tick_size: 0.25,
+            upto: (start + 86_400) * 1_000_000_000,
+            complete: true,
+            prints: (0..n).map(|i| Print::new((start + i) * 1_000_000_000, 1, 1, Aggressor::Buy, false)).collect(),
+            source: String::new(),
+        };
+        store.save_print_day(key, day, &held).unwrap();
+    }
+
+    fn kept_days(store: &Store, key: &str) -> Vec<i64> {
+        let mut statement = store.conn.prepare("SELECT day FROM print_days WHERE key = ?1 ORDER BY day").unwrap();
+        statement.query_map([key], |row| row.get(0)).unwrap().flatten().collect()
+    }
+
+    /// Single trades are most of what a futures cache holds. A sweep that
+    /// could not drop them never got under its limit, and dropped every
+    /// series and ladder day it could on every sweep instead.
+    #[test]
+    fn trade_days_are_dropped_oldest_first_like_ladder_days() {
+        let store = Store::memory().unwrap();
+        for day in 20_000..20_010 {
+            trades(&store, "fake:ES", day, 20_000);
+        }
+        store.write_bars("yahoo:SPY", Timeframe::days(1), &[bar(100, 1.0)]);
+        let limit = store.used_bytes() / 2;
+        let swept = crate::cache::evict(&store.conn, limit, &Default::default()).unwrap();
+        assert!(swept.after <= limit, "{} is still over {limit}", swept.after);
+        let kept = kept_days(&store, "fake:ES");
+        assert!(!kept.is_empty() && kept.len() < 10, "{kept:?}");
+        assert_eq!(kept.last(), Some(&20_009), "the newest day went: {kept:?}");
+        assert!(kept.windows(2).all(|pair| pair[1] == pair[0] + 1), "a hole punched in the middle: {kept:?}");
+    }
+
+    /// What the open charts draw is never dropped: a sweep that cannot get
+    /// under its limit without it stops short, and the next one, finding
+    /// the same, drops nothing — rather than dropping it for the charts to
+    /// fetch straight back, sweep after sweep.
+    #[test]
+    fn what_the_open_charts_draw_is_never_dropped_however_far_over() {
+        let store = Store::memory().unwrap();
+        for day in 20_000..20_010 {
+            trades(&store, "fake:ES", day, 20_000);
+            trades(&store, "fake:NQ", day, 2_000);
+        }
+        let bars: Vec<Bar> = (0..1000).map(|i| bar(i, i as f64)).collect();
+        store.write_bars("fake:ES", Timeframe::minutes(1), &bars);
+        store.write_bars("yahoo:SPY", Timeframe::days(1), &bars);
+        let in_use = crate::cache::InUse {
+            series: vec![("fake:ES".into(), Timeframe::minutes(1).key())],
+            // The chart's first bar is in day 20,004: from it on.
+            days: vec![("fake:ES".into(), 20_004 * 86_400 + 600)],
+        };
+        let swept = crate::cache::evict(&store.conn, 1, &in_use).unwrap();
+        assert!(swept.dropped > 0);
+        assert_eq!(kept_days(&store, "fake:ES"), (20_004..20_010).collect::<Vec<_>>(), "the chart's days went");
+        assert!(kept_days(&store, "fake:NQ").is_empty(), "nothing draws these");
+        assert_eq!(store.load_bars("fake:ES", Timeframe::minutes(1)).len(), 1000, "the chart's bars went");
+        assert!(store.load_bars("yahoo:SPY", Timeframe::days(1)).is_empty());
+
+        let again = crate::cache::evict(&store.conn, 1, &in_use).unwrap();
+        assert_eq!(again.dropped, 0, "the next sweep dropped what the charts draw");
+    }
+
+    /// Unlimited keeps everything ever fetched.
+    #[test]
+    fn an_unlimited_cache_drops_nothing() {
+        let store = Store::memory().unwrap();
+        trades(&store, "fake:ES", 20_000, 20_000);
+        let swept = crate::cache::evict(&store.conn, crate::cache::UNLIMITED, &Default::default()).unwrap();
+        assert_eq!(swept.dropped, 0);
+        assert_eq!(kept_days(&store, "fake:ES"), vec![20_000]);
+    }
+
+    /// Bars one Rithmic login fetched are there for another: the store keeps
+    /// the market's data once, whichever login asked for it.
+    #[test]
+    fn what_one_login_fetched_another_reads_without_asking() {
+        let store = Store::memory().unwrap();
+        store.write_bars("rithmic@first:ESZ6", Timeframe::days(1), &[bar(100, 1.0)]);
+        assert_eq!(store.load_bars("rithmic@second:ESZ6", Timeframe::days(1)).len(), 1);
+        assert_eq!(store.cached_series(), 1);
+        assert_eq!(market_key("rithmic@first:ESZ6"), "rithmic:ESZ6");
+        assert_eq!(market_key("yahoo:ES=F"), "yahoo:ES=F");
+    }
+
     /// The usual case: a cache nowhere near its limit is left alone, and
     /// nothing is read or rewritten to find that out.
     #[test]
@@ -1961,7 +2098,7 @@ mod tests {
         let store = Store::memory().unwrap();
         store.write_bars("yahoo:ES=F", Timeframe::days(1), &[bar(100, 1.0)]);
 
-        let swept = crate::cache::evict(&store.conn, 1024 * 1024 * 1024).unwrap();
+        let swept = crate::cache::evict(&store.conn, 1024 * 1024 * 1024, &Default::default()).unwrap();
         assert_eq!(swept.dropped, 0);
         assert_eq!(swept.before, swept.after);
         assert_eq!(store.cached_series(), 1);
@@ -1998,6 +2135,30 @@ mod tests {
         // Nonsense in the settings table is not a reason to have no limit.
         store.set_setting(crate::cache::SETTING_LIMIT, "nonsense");
         assert_eq!(store.cache_limit(), crate::cache::DEFAULT_LIMIT);
+
+        // Asking for none is.
+        store.set_cache_limit(crate::cache::UNLIMITED);
+        assert_eq!(store.setting(crate::cache::SETTING_LIMIT).as_deref(), Some("unlimited"));
+        assert_eq!(store.cache_limit(), crate::cache::UNLIMITED);
+    }
+
+    /// The settings file started afresh — restored, moved aside, or never
+    /// copied over — beside the market file that was always there: the
+    /// cache is the same cache, and nothing in it is fetched again.
+    #[test]
+    fn a_fresh_settings_file_keeps_the_market_file_beside_it() {
+        let dir = scratch_dir("fresh-settings");
+        let file = dir.join("omacharts.db");
+        {
+            let store = Store::open_at(&file).unwrap();
+            store.write_bars("k", Timeframe::days(1), &[bar(100, 1.0)]);
+        }
+        for leftover in ["omacharts.db", "omacharts.db-wal", "omacharts.db-shm"] {
+            let _ = std::fs::remove_file(dir.join(leftover));
+        }
+        let store = Store::open_at(&file).unwrap();
+        assert_eq!(store.cached_series(), 1, "the bars beside a new settings file were thrown away");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2012,7 +2173,7 @@ mod tests {
             // Pretend it was written before the fix.
             store
                 .conn
-                .execute("UPDATE meta SET value = '1' WHERE key = 'cache_version'", [])
+                .execute("UPDATE market.meta SET value = '1' WHERE key = 'cache_version'", [])
                 .unwrap();
         }
 

@@ -112,6 +112,8 @@ pub struct Done {
 
 /// One contract, on the main thread.
 struct Entry {
+    /// What its trades are kept under.
+    stored: String,
     watchers: HashMap<u32, Settings>,
     /// The settings each chart last drew a book of before they changed:
     /// that book is kept, and kept current, so changing back draws at once.
@@ -259,6 +261,7 @@ impl LargeOrders {
         self.by_pane.borrow_mut().insert(pane, key.to_string());
         let mut entries = self.entries.borrow_mut();
         let entry = entries.entry(key.to_string()).or_insert_with(|| Entry {
+            stored: stored.to_string(),
             watchers: HashMap::new(),
             before: HashMap::new(),
             from,
@@ -268,6 +271,7 @@ impl LargeOrders {
             tick_size,
             live: None,
         });
+        stored.clone_into(&mut entry.stored);
         // The settings a chart moves from are kept only if they have a
         // book: stepped through ten values, it keeps the one it last drew.
         if let Some(was) = entry.watchers.insert(pane, settings)
@@ -358,6 +362,12 @@ impl LargeOrders {
         for key in keys {
             self.send(Job::Refresh { key, now });
         }
+    }
+
+    /// What the charts draw of the trades kept: each contract's stored key,
+    /// and the first moment wanted of it. The cache sweep leaves it be.
+    pub fn in_use(&self) -> Vec<(String, i64)> {
+        self.entries.borrow().values().map(|entry| (entry.stored.clone(), entry.from)).collect()
     }
 
     /// The book chart `pane`'s indicator of `settings` draws, and the tick
@@ -470,6 +480,9 @@ struct Held {
     open: BTreeMap<i64, PrintDay>,
     /// Open days with trades the store has not had yet.
     dirty: BTreeSet<i64>,
+    /// The empty weekdays a walk back has come to since the last day with
+    /// trades, newest first: kept once an older day says they were holidays.
+    quiet: Vec<(i64, PrintDay)>,
     saved_at: Instant,
     builders: HashMap<Settings, Builder>,
 }
@@ -604,6 +617,7 @@ fn work(
                     whole: BTreeSet::new(),
                     open: BTreeMap::new(),
                     dirty: BTreeSet::new(),
+                    quiet: Vec::new(),
                     saved_at: Instant::now(),
                     builders: HashMap::new(),
                 });
@@ -616,6 +630,7 @@ fn work(
                 let last = days.of(now);
                 let near = last - (FIRST_DAYS - 1);
                 let first = days.of(from).max(last - DEEPEST);
+                contract.quiet.clear();
                 let walked = read_days(&store, ladders, &mut contract, first.max(near), last, now);
                 let fresh = mailboxes.take(&key);
                 append(&mut contract, fresh);
@@ -654,6 +669,7 @@ fn work(
                     contract.whole.clear();
                     contract.open.clear();
                     contract.dirty.clear();
+                    contract.quiet.clear();
                     let settings: Vec<Settings> = contract.builders.keys().copied().collect();
                     let (first, last) = (contract.days.of(contract.from), contract.days.of(now));
                     read_days(&store, ladders, contract, first.max(last - DEEPEST), last, now);
@@ -678,12 +694,21 @@ fn work(
                     }
                 };
                 let added = append(contract, fresh);
-                // Known to here now, whatever came.
+                // Known to here now, whatever came: the day of the minute
+                // asked, open or not. Over a weekend that is Monday's, which
+                // nothing has opened yet, and a day not noted here was asked
+                // for again, a minute longer each minute, all weekend.
                 let day = contract.days.of(to - 1);
-                if let Some(open) = contract.open.get_mut(&day) {
-                    open.upto = open.upto.max(to * 1_000_000_000);
-                    contract.dirty.insert(day);
-                }
+                let (tick_size, source) = (contract.tick_size, contract.source.clone());
+                let open = contract.open.entry(day).or_insert_with(|| PrintDay {
+                    tick_size,
+                    upto: i64::MIN,
+                    complete: false,
+                    prints: Vec::new(),
+                    source,
+                });
+                open.upto = open.upto.max(to * 1_000_000_000);
+                contract.dirty.insert(day);
                 if !added.is_empty() {
                     let wanted = wants.of(&key);
                     contract.builders.retain(|s, _| wanted.kept.contains(s));
@@ -793,21 +818,39 @@ fn append(contract: &mut Held, mut fresh: Vec<Print>) -> Vec<Print> {
 }
 
 /// Read `contract`'s days `first..=last`, newest first, as they stand at
-/// `now`: a day the
-/// store has whole is only noted; any other is asked of the provider from
-/// where it is known to. Stops at the first weekday the provider has
-/// nothing of, answering false: there is nothing further back.
+/// `now`: a day the store has whole is only noted; any other is asked of the
+/// provider from where it is known to. Answers false when there is nothing
+/// further back: [`EMPTY_RUN`] weekdays in a row the provider has nothing
+/// of, with no day kept before them.
+///
+/// One empty weekday is not the end: an exchange holiday is one, and the
+/// days before it are still there. An empty weekday is kept, as empty and
+/// whole, once a day older than it is found with trades, so a holiday is
+/// asked about once. Nor is a run of them the end when older days are kept:
+/// the days between are ones the cache let go, and the provider no longer
+/// has.
 fn read_days(store: &Store, ladders: &dyn omacharts_engine::Ladders, contract: &mut Held, first: i64, last: i64, now: i64) -> bool {
     let days = contract.days.clone();
     let settled = (now - SETTLED).div_euclid(60) * 60;
+    // The empty weekdays since the last day with trades, kept as holidays.
+    let keep = |store: &Store, contract: &mut Held| {
+        for (day, held) in std::mem::take(&mut contract.quiet) {
+            let _ = store.save_print_day(&contract.stored, day, &held);
+            contract.whole.insert(day);
+        }
+    };
     let mut day = last;
     while day >= first {
         let (start, end) = (days.start(day), days.start(day + 1));
-        if contract.whole.contains(&day) || store.print_day_complete(&contract.stored, day, contract.tick_size, &contract.source) {
+        // Asked of the store every time, never of what was noted: a day the
+        // cache sweep let go is read again.
+        if store.print_day_complete(&contract.stored, day, contract.tick_size, &contract.source) {
+            keep(store, contract);
             contract.whole.insert(day);
             day -= 1;
             continue;
         }
+        contract.whole.remove(&day);
         let mut open = contract
             .open
             .remove(&day)
@@ -840,11 +883,21 @@ fn read_days(store: &Store, ladders: &dyn omacharts_engine::Ladders, contract: &
             open.upto = open.upto.max(to * 1_000_000_000);
         }
         open.complete = end <= settled;
-        let empty = open.prints.is_empty();
-        // A weekday with nothing, before today, is past what the feed keeps:
-        // not written down, so a feed that later keeps more is asked again.
-        if empty && open.complete && is_weekday(start) {
-            return false;
+        // A weekday with nothing, before today: a holiday, a day let go, or
+        // past what the feed keeps. Not written down until an older day says
+        // which, so a feed that later keeps more is asked again.
+        if open.prints.is_empty() && open.complete && is_weekday(start) {
+            contract.quiet.push((day, open));
+            if contract.quiet.len() >= EMPTY_RUN
+                && !store.print_days_kept_before(&contract.stored, day, contract.tick_size, &contract.source)
+            {
+                return false;
+            }
+            day -= 1;
+            continue;
+        }
+        if !open.prints.is_empty() {
+            keep(store, contract);
         }
         let _ = store.save_print_day(&contract.stored, day, &open);
         match open.complete {
@@ -857,8 +910,19 @@ fn read_days(store: &Store, ladders: &dyn omacharts_engine::Ladders, contract: &
         }
         day -= 1;
     }
+    // Back to the chart's first day on a holiday: one with days kept before
+    // it is one too.
+    if let Some(&(oldest, _)) = contract.quiet.last()
+        && store.print_days_kept_before(&contract.stored, oldest, contract.tick_size, &contract.source)
+    {
+        keep(store, contract);
+    }
     true
 }
+
+/// Weekdays in a row with no trades that end a walk back: more than a
+/// holiday, or a holiday beside a weekend, ever makes.
+const EMPTY_RUN: usize = 3;
 
 /// Does a trading day beginning at `start` fall on a weekday? A day that
 /// begins on a Sunday evening is Monday's.
@@ -904,6 +968,10 @@ pub(crate) mod tests {
         /// of ES takes from Rithmic's history plant.
         slow: Duration,
         slow_before: i64,
+        /// Spans the feed has nothing of: an exchange holiday.
+        quiet: Vec<(i64, i64)>,
+        /// No stream of trades: asked a minute at a time instead.
+        unstreamed: bool,
     }
 
     /// A feed of single trades, one an hour: what the window's tests chart
@@ -953,13 +1021,19 @@ pub(crate) mod tests {
             std::thread::sleep(slow);
             let mut asked = self.0.lock().unwrap();
             asked.spans.push((from, to));
-            Ok(hourly(from.max(asked.depth), asked.stops.map_or(to, |stops| to.min(stops))))
+            let mut prints = hourly(from.max(asked.depth), asked.stops.map_or(to, |stops| to.min(stops)));
+            prints.retain(|print| !asked.quiet.iter().any(|(a, b)| (a * 1_000_000_000..b * 1_000_000_000).contains(&print.ts_nanos)));
+            Ok(prints)
         }
         fn source(&self, _: &str) -> Option<String> {
             self.0.lock().unwrap().source.clone()
         }
         fn watch_prints(&self, _: &str, _: f64, sink: PrintSink) -> Result<Option<Box<dyn Subscription>>, ProviderError> {
-            self.0.lock().unwrap().sinks.push(sink);
+            let mut asked = self.0.lock().unwrap();
+            if asked.unstreamed {
+                return Ok(None);
+            }
+            asked.sinks.push(sink);
             Ok(Some(Box::new(Open)))
         }
     }
@@ -1130,14 +1204,118 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_walk_back_stops_at_the_first_weekday_the_feed_has_nothing_of() {
+    fn a_walk_back_stops_at_a_run_of_weekdays_the_feed_has_nothing_of() {
         let asked = Arc::new(Mutex::new(Asked { depth: NOW - 3 * DAY, ..Asked::default() }));
         let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(scratch("depth"))).unwrap();
         large.set_clock(now);
         large.want(1, KEY, KEY, "ES", &es(), NOW - 60 * DAY, SETTINGS, false);
         settle(&large);
         let spans = asked.lock().unwrap().spans.clone();
-        assert!(spans.len() <= 6, "stopped near the feed's depth, not sixty days back: {}", spans.len());
+        assert!(spans.len() <= 8, "stopped near the feed's depth, not sixty days back: {}", spans.len());
+    }
+
+    /// A weekday `back` trading days before today's.
+    fn weekday_back(back: i64) -> (i64, i64) {
+        let days = Days::new(&es());
+        let mut day = days.of(NOW) - back;
+        while !is_weekday(days.start(day)) {
+            day -= 1;
+        }
+        (days.start(day), days.start(day + 1))
+    }
+
+    /// An exchange holiday is one empty weekday, not the end of history:
+    /// the days before it are read, and the holiday is kept as empty, so
+    /// the next load asks for none of it again.
+    #[test]
+    fn a_holiday_is_walked_past_and_asked_about_once() {
+        let path = scratch("holiday");
+        let holiday = weekday_back(8);
+        let asked = Arc::new(Mutex::new(Asked { quiet: vec![holiday], ..Asked::default() }));
+        {
+            let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(path.clone())).unwrap();
+            large.set_clock(now);
+            large.want(1, KEY, KEY, "ES", &es(), NOW - 14 * DAY, SETTINGS, false);
+            settle(&large);
+            let spans = asked.lock().unwrap().spans.clone();
+            assert!(spans.iter().any(|(from, _)| *from < holiday.0), "stopped at the holiday: {spans:?}");
+            large.shutdown();
+        }
+        asked.lock().unwrap().spans.clear();
+        let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(path)).unwrap();
+        large.set_clock(now);
+        large.want(1, KEY, KEY, "ES", &es(), NOW - 14 * DAY, SETTINGS, false);
+        settle(&large);
+        let spans = asked.lock().unwrap().spans.clone();
+        assert!(spans.iter().all(|(from, _)| *from >= NOW - DAY), "asked about again: {spans:?}");
+    }
+
+    /// Days the cache let go, older than the feed still has: a gap, not the
+    /// end of history. The days kept before it still draw their bubbles.
+    #[test]
+    fn days_let_go_past_the_feed_s_depth_are_not_the_end_of_history() {
+        let path = scratch("let-go");
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        {
+            let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(path.clone())).unwrap();
+            large.set_clock(now);
+            large.want(1, KEY, KEY, "ES", &es(), NOW - 14 * DAY, SETTINGS, false);
+            settle(&large);
+            large.shutdown();
+        }
+        // The sweep let a week go, and the feed now keeps only the last week.
+        let (gap_from, gap_to) = (weekday_back(12).0, weekday_back(7).1);
+        let days = Days::new(&es());
+        let store = Store::open_at(&path).unwrap();
+        for day in days.of(gap_from)..days.of(gap_to) {
+            store.forget_print_day(KEY, day).unwrap();
+        }
+        drop(store);
+        asked.lock().unwrap().depth = NOW - 6 * DAY;
+        let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(path)).unwrap();
+        large.set_clock(now);
+        large.want(1, KEY, KEY, "ES", &es(), NOW - 14 * DAY, SETTINGS, false);
+        settle(&large);
+        let orders = of(&large, SETTINGS).unwrap_or_default();
+        assert!(
+            orders.iter().any(|(ts, _)| *ts < gap_from * 1_000_000_000),
+            "the days kept before the gap were left out"
+        );
+    }
+
+    static CLOCK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    fn clock() -> i64 {
+        CLOCK.load(Ordering::SeqCst)
+    }
+
+    /// A feed with no stream of trades, over a weekend: each minute asks
+    /// for the minute, not for everything since Friday's close again.
+    #[test]
+    fn over_a_weekend_a_feed_without_a_stream_asks_a_minute_at_a_time() {
+        // Friday 10:00 UTC, the last trade at 20:00, then Saturday noon:
+        // a trading day nothing has opened, as Monday's is on Sunday.
+        let friday = NOW + 3 * DAY;
+        let close = NOW + 3 * DAY + 10 * HOUR;
+        let saturday = NOW + 4 * DAY + 2 * HOUR;
+        let asked = Arc::new(Mutex::new(Asked { unstreamed: true, stops: Some(close), ..Asked::default() }));
+        let large = LargeOrders::new(Arc::new(Fake(asked.clone())), Some(scratch("weekend"))).unwrap();
+        CLOCK.store(friday, Ordering::SeqCst);
+        large.set_clock(clock);
+        large.want(1, KEY, KEY, "ES", &es(), friday - DAY, SETTINGS, false);
+        settle(&large);
+        for minute in 0..3 {
+            CLOCK.store(saturday + minute * 60, Ordering::SeqCst);
+            large.tick();
+            let until = Instant::now() + Duration::from_secs(5);
+            while asked.lock().unwrap().spans.last().is_none_or(|(_, to)| *to < saturday + minute * 60 - 120) {
+                assert!(Instant::now() < until, "not asked");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        let spans = asked.lock().unwrap().spans.clone();
+        let (from, to) = spans.last().copied().unwrap();
+        assert!(to - from <= 60, "asked for {} seconds again: {spans:?}", to - from);
     }
 
     #[test]
